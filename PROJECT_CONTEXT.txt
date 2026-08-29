@@ -1,0 +1,187 @@
+LIQUID GLASS CIRCLE — AGENT HANDOFF CONTEXT
+============================================
+
+User goal
+---------
+Build a medium-sized draggable liquid-glass circle that lives directly on the
+desktop, not inside a normal framed window. It should feel live while dragging,
+with the desktop visible through it, blur/refraction, and an iPhone-like liquid
+glass appearance.
+
+User preference / working rule
+------------------------------
+If a quality gap is technically doable, implement it instead of presenting it
+as a limitation. Continue iterating and testing. Do not leave known doable work
+as a caveat.
+
+Starting state
+--------------
+The workspace started effectively empty (only OMX runtime state existed and
+there was no git repository). A fresh Windows desktop prototype was created.
+The machine has .NET SDK 10.0.203 and Windows Desktop runtime installed.
+
+Implementation history
+----------------------
+1. First pass used WPF:
+   - Full-screen transparent borderless Window.
+   - 280px circular visual with gradient layers, rings, drop shadow, and
+     animated sheen.
+   - Native WM_NCHITTEST returned HTTRANSPARENT outside the circle.
+   - Dragging and Escape-to-close were implemented.
+   - Added live CopyFromScreen texture capture and initial pixel refraction.
+
+2. WPF startup/visibility was unreliable in the execution environment:
+   - The process stayed alive but the native WPF window was hidden/zero-sized.
+   - Explicit startup, activation, SetWindowPos, and ShowWindow attempts did
+     not produce a usable visible native surface.
+
+3. Current implementation switched to native WinForms:
+   - The old WPF files were deleted: App.xaml, App.xaml.cs, MainWindow.xaml,
+     MainWindow.xaml.cs.
+   - Current entry point is Program.cs.
+   - Current overlay implementation is OverlayForm.cs.
+
+Current project
+---------------
+LiquidGlassCircle.csproj:
+   - TargetFramework: net10.0-windows
+   - OutputType: WinExe
+   - UseWindowsForms: true
+   - UseWPF: false
+   - AllowUnsafeBlocks: true (currently not required by the final code but kept
+     available for future pixel/GPU optimizations)
+   - Nullable and implicit usings enabled.
+
+Program.cs:
+   - STAThread entry point.
+   - ApplicationConfiguration.Initialize().
+   - Runs Application.Run(new OverlayForm()).
+
+Overlay behavior
+----------------
+OverlayForm is:
+   - Borderless, topmost, hidden from taskbar and Alt+Tab.
+   - Sized to SystemInformation.VirtualScreen.
+   - BackColor/TransparencyKey uses Color.Magenta so only the circle is visible.
+   - Circle size is 280x280 (the requested medium size).
+   - Initial circle is centered in the primary working area.
+   - Escape closes the app.
+   - Left mouse drag moves the circle and clamps it to the virtual desktop.
+   - WmNcHitTest returns HTTRANSPARENT outside the circle so underlying apps
+     remain interactive.
+
+Live glass pipeline
+-------------------
+The circle samples the desktop behind its current location:
+   - Capture timer runs every 33ms (about 30 FPS target).
+   - Capture is performed on a Task.Run worker, not the UI thread.
+   - _capturing prevents overlapping capture/process jobs.
+   - SetWindowDisplayAffinity(Handle, WDA_EXCLUDEFROMCAPTURE) is set on Shown
+     to keep the overlay from appearing in its own screen samples.
+   - CopyFromScreen captures a 280x280 desktop region.
+   - The image is reduced to 140x140 for processing to reduce CPU work.
+   - A separable 5-tap Gaussian blur kernel [1,4,6,4,1] is applied horizontally
+     and vertically.
+   - A radial edge-weighted lens bend plus a subtle sinusoidal wave applies
+     liquid refraction.
+   - Bilinear sampling smooths the refracted result.
+   - The processed 140px texture is upscaled to 280px and painted into the
+     circle.
+   - If CopyFromScreen fails, the form remains visible and paints a radial glass
+     fallback instead of hiding/crashing.
+
+Visual design currently
+-----------------------
+   - Live blurred/refracted desktop image inside the circle.
+   - Low-opacity blue glass tint.
+   - One clean outer white rim and subtle inner highlight.
+   - No concentric inner rings.
+   - Broad soft glint rather than a full-height moving scan bar.
+   - Double-buffered painting and high-quality interpolation.
+
+Problems already fixed
+----------------------
+Blinking:
+   - Cause: the initial capture path hid and re-showed the overlay for every
+     sample.
+   - Fix: removed Hide/Show from the capture loop and added display affinity.
+
+Scanning appearance:
+   - Cause: a narrow full-height moving white sheen looked like a scan line.
+   - Fix: removed it and replaced it with a wide, soft, low-opacity ellipse
+     glint with very slow motion.
+
+Lag:
+   - Cause: full 280px blur/refraction ran synchronously on the UI thread.
+   - Fix: moved capture and processing to a worker, added overlap protection,
+     and reduced optical processing resolution to 140px before smooth upscale.
+   - Status: partially improved, NOT SOLVED. The user still reports that the
+     live drag frame rate feels slow. Treat FPS/responsiveness as an open bug,
+     not a completed fix.
+
+Static texture while dragging:
+   - Cause: UpdateGlass explicitly returned while _dragging was true.
+   - Fix: removed that early return. Capture continues while dragging.
+
+Invisible overlay:
+   - Cause: WPF transparent host was not creating a usable visible native
+     surface in this environment; one capture path could also hide the form
+     before a failed capture restored it.
+   - Fix: switched to WinForms and made failed capture paths always leave the
+     form visible.
+
+Commands
+--------
+From the project directory:
+
+    dotnet build
+    dotnet run
+
+Direct executable:
+
+    .\bin\Debug\net10.0-windows\LiquidGlassCircle.exe
+
+To stop an agent-launched instance during development:
+
+    Get-Process LiquidGlassCircle -ErrorAction SilentlyContinue | Stop-Process -Force
+
+Validation completed
+---------------------
+   - dotnet build completed successfully with 0 warnings and 0 errors after the
+     current WinForms implementation and performance changes.
+   - Multiple runtime smoke launches completed with a responsive process.
+   - The app was launched from the agent environment several times.
+   - User-reported FPS issue remains unresolved despite the background-worker
+     and half-resolution optimizations.
+   - The agent terminal environment does not provide reliable interactive GUI
+     pixel inspection; visual checks should be done by launching the built EXE
+     from a normal interactive PowerShell/Desktop session.
+
+Important guardrails for the next agent
+---------------------------------------
+   - Do not reintroduce a Hide/Show cycle on every capture; it causes blinking.
+   - Do not pause capture during drag; the user explicitly wants the glass to
+     update live while moving.
+   - Avoid adding visible concentric rings or narrow scanning highlights.
+   - Keep heavy pixel work off the UI thread.
+   - Preserve click-through behavior outside the circle.
+   - Preserve the no-frame desktop overlay behavior.
+   - No external NuGet dependencies have been added.
+   - Any further visual refinement should be tested against responsiveness while
+     dragging, not only while stationary.
+
+Likely next iteration targets
+-----------------------------
+   - Verify the current build visually on the user's interactive desktop.
+   - Prioritize the unresolved FPS issue: measure capture time, blur/refraction
+     time, bitmap allocation/GC pressure, and paint time during drag.
+   - Prefer reusable buffers and a GPU-backed compositor/shader or native
+     Windows backdrop surface for the live path. The current per-frame Bitmap
+     allocations and CPU blur are still likely limiting smoothness.
+   - Tune blur radius, tint strength, edge bend, and glint opacity based on that
+     visual result.
+   - If more performance is needed, use a reusable pixel buffer or a GPU-backed
+     compositor/shader rather than returning work to the UI thread.
+   - If capture exclusion is unavailable on a target Windows configuration,
+     implement a non-blinking alternative rather than falling back to repeated
+     Hide/Show.
