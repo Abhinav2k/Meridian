@@ -371,13 +371,13 @@ internal sealed class OverlayForm : Form
             return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius);
         }
 
-        // 1. Sped-up drop phase: droplet swiftly drops into center in the first 18% of the animation
-        double dropProgress = Math.Clamp(p / 0.18, 0.0, 1.0);
+        // 1. Drop descent: moves from top edge into vertical resting position
+        double dropProgress = Math.Clamp(p / 0.45, 0.0, 1.0);
         double dropEase = EaseOutCubic(dropProgress);
         double currentCenterY = spawnCenterY + (targetCenterY - spawnCenterY) * dropEase;
 
-        // 2. Sped-up expansion phase: blooms out quickly from center and settles smoothly
-        double morphProgress = Math.Clamp((p - 0.12) / 0.72, 0.0, 1.0);
+        // 2. Simultaneous expansion: begins expanding horizontally and vertically right as the circle enters
+        double morphProgress = Math.Clamp(p / 0.82, 0.0, 1.0);
         double morphEase = EaseOutCubic(morphProgress);
 
         double currentHalfWidth = spawnRadius + (targetHalfWidth - spawnRadius) * morphEase;
