@@ -371,11 +371,13 @@ internal sealed class OverlayForm : Form
             return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius);
         }
 
-        double dropProgress = Math.Clamp(p / 0.35, 0.0, 1.0);
-        double dropEase = EaseInOutCubic(dropProgress);
+        // 1. Sped-up drop phase: droplet swiftly drops into center in the first 18% of the animation
+        double dropProgress = Math.Clamp(p / 0.18, 0.0, 1.0);
+        double dropEase = EaseOutCubic(dropProgress);
         double currentCenterY = spawnCenterY + (targetCenterY - spawnCenterY) * dropEase;
 
-        double morphProgress = Math.Clamp((p - 0.20) / 0.80, 0.0, 1.0);
+        // 2. Morph & bloom phase: pill expands smoothly once in center
+        double morphProgress = Math.Clamp((p - 0.14) / 0.86, 0.0, 1.0);
         double morphEase = EaseInOutQuad(morphProgress);
 
         double currentHalfWidth = spawnRadius + (targetHalfWidth - spawnRadius) * morphEase;
@@ -388,9 +390,9 @@ internal sealed class OverlayForm : Form
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
     }
 
-    private static double EaseInOutCubic(double x)
+    private static double EaseOutCubic(double x)
     {
-        return x < 0.5 ? 4.0 * x * x * x : 1.0 - Math.Pow(-2.0 * x + 2.0, 3.0) / 2.0;
+        return 1.0 - Math.Pow(1.0 - x, 3.0);
     }
 
     private static double EaseInOutQuad(double x)
