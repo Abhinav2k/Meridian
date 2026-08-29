@@ -233,7 +233,7 @@ internal sealed class OverlayForm : Form
         _renderSurface = new FastSurface(SurfaceWidth, SurfaceHeight);
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
 
-        var (mask, w, h) = PrecomputeTextMask("Hello", 19f);
+        var (mask, w, h) = PrecomputeTextMask("Hello", 20f);
         _textMask = mask;
         _textWidth = w;
         _textHeight = h;
@@ -241,55 +241,73 @@ internal sealed class OverlayForm : Form
 
     private static (byte[] mask, int width, int height) PrecomputeTextMask(string text, float fontSize)
     {
+        // 4x Supersampling for razor-sharp vector-quality typography
+        const float superScale = 4.0f;
+        float scaledFontSize = fontSize * superScale;
+
         Font? font = null;
         string[] fontCandidates = { "Segoe UI Variable Display", "SF Pro Display", "Segoe UI", "Arial" };
         foreach (var name in fontCandidates)
         {
             try
             {
-                using var testFont = new Font(name, fontSize, FontStyle.Bold);
+                using var testFont = new Font(name, scaledFontSize, FontStyle.Bold);
                 if (testFont.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
                 {
-                    font = new Font(name, fontSize, FontStyle.Bold);
+                    font = new Font(name, scaledFontSize, FontStyle.Bold);
                     break;
                 }
             }
             catch { }
         }
-        font ??= new Font(FontFamily.GenericSansSerif, fontSize, FontStyle.Bold);
+        font ??= new Font(FontFamily.GenericSansSerif, scaledFontSize, FontStyle.Bold);
 
         using (font)
         using (var bmpMeasure = new Bitmap(1, 1))
         using (var gMeasure = Graphics.FromImage(bmpMeasure))
         {
             var size = gMeasure.MeasureString(text, font, PointF.Empty, StringFormat.GenericTypographic);
-            int w = (int)Math.Ceiling(size.Width) + 8;
-            int h = (int)Math.Ceiling(size.Height) + 8;
+            int superW = (int)Math.Ceiling(size.Width) + 16;
+            int superH = (int)Math.Ceiling(size.Height) + 16;
 
-            using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
-            using (var g = Graphics.FromImage(bmp))
+            using var superBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(superBmp))
             {
                 g.Clear(Color.Transparent);
-                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
                 using var brush = new SolidBrush(Color.White);
-                g.DrawString(text, font, brush, 4f, 4f, StringFormat.GenericTypographic);
+                g.DrawString(text, font, brush, 8f, 8f, StringFormat.GenericTypographic);
             }
 
-            var data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            byte[] mask = new byte[w * h];
+            int targetW = superW / (int)superScale;
+            int targetH = superH / (int)superScale;
+            byte[] mask = new byte[targetW * targetH];
+
+            var data = superBmp.LockBits(new Rectangle(0, 0, superW, superH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
             unsafe
             {
                 byte* scan = (byte*)data.Scan0;
-                for (int y = 0; y < h; y++)
+                for (int y = 0; y < targetH; y++)
                 {
-                    for (int x = 0; x < w; x++)
+                    for (int x = 0; x < targetW; x++)
                     {
-                        mask[y * w + x] = scan[(y * w + x) * 4 + 3];
+                        int sum = 0;
+                        for (int dy = 0; dy < 4; dy++)
+                        {
+                            int sy = y * 4 + dy;
+                            int rowOffset = sy * superW * 4;
+                            for (int dx = 0; dx < 4; dx++)
+                            {
+                                int sx = x * 4 + dx;
+                                sum += scan[rowOffset + sx * 4 + 3];
+                            }
+                        }
+                        mask[y * targetW + x] = (byte)(sum >> 4);
                     }
                 }
             }
-            bmp.UnlockBits(data);
-            return (mask, w, h);
+            superBmp.UnlockBits(data);
+            return (mask, targetW, targetH);
         }
     }
 
@@ -694,7 +712,7 @@ internal sealed class OverlayForm : Form
                 double textT = Math.Clamp((_progress - 0.55) / 0.45, 0.0, 1.0);
                 double textEase = EaseOutCubic(textT);
                 double textAlpha = textEase;
-                double textScale = 0.92 + 0.08 * textEase;
+                double textScale = 0.94 + 0.06 * textEase;
 
                 int tw = _textWidth;
                 int th = _textHeight;
@@ -704,6 +722,49 @@ internal sealed class OverlayForm : Form
                 int startX = (int)Math.Round(geom.CenterX - sw * 0.5);
                 int startY = (int)Math.Round(geom.CenterY - sh * 0.5);
 
+                // Pass 1: Crisp Ambient Drop Shadow (1px offset)
+                double shadowAlpha = textAlpha * 0.50;
+                for (int ty = 0; ty < sh; ty++)
+                {
+                    int dstY = startY + ty + 1;
+                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+
+                    int srcY = (int)Math.Floor((ty / (double)sh) * th);
+                    srcY = Math.Clamp(srcY, 0, th - 1);
+                    int srcRow = srcY * tw;
+                    int dstRow = dstY * SurfaceWidth;
+
+                    for (int tx = 0; tx < sw; tx++)
+                    {
+                        int dstX = startX + tx;
+                        if (dstX < 0 || dstX >= SurfaceWidth) continue;
+
+                        int srcX = (int)Math.Floor((tx / (double)sw) * tw);
+                        srcX = Math.Clamp(srcX, 0, tw - 1);
+
+                        byte maskA = _textMask[srcRow + srcX];
+                        if (maskA == 0) continue;
+
+                        int dstIdx = dstRow + dstX;
+                        uint bg = pDst[dstIdx];
+                        byte bgA = (byte)(bg >> 24);
+                        if (bgA == 0) continue;
+
+                        double sFactor = (maskA / 255.0) * shadowAlpha;
+                        double invS = 1.0 - sFactor;
+
+                        byte bgR = (byte)(bg >> 16);
+                        byte bgG = (byte)(bg >> 8);
+                        byte bgB = (byte)bg;
+
+                        uint pR = (uint)Math.Round(bgR * invS);
+                        uint pG = (uint)Math.Round(bgG * invS);
+                        uint pB = (uint)Math.Round(bgB * invS);
+                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                    }
+                }
+
+                // Pass 2: Razor-Sharp Pure Luminous White Text
                 for (int ty = 0; ty < sh; ty++)
                 {
                     int dstY = startY + ty;
@@ -734,19 +795,14 @@ internal sealed class OverlayForm : Form
                         byte bgG = (byte)(bg >> 8);
                         byte bgB = (byte)bg;
 
-                        int r0 = (bgR * 255) / bgA;
-                        int g0 = (bgG * 255) / bgA;
-                        int b0 = (bgB * 255) / bgA;
+                        double fgA = (maskA / 255.0) * textAlpha * 0.98;
+                        double invA = 1.0 - fgA;
+                        double whiteVal = 255.0 * fgA * (bgA / 255.0);
 
-                        // Soft Ambient Text Shadow (1px down)
-                        double fgAlpha = (maskA / 255.0) * textAlpha * 0.95;
-                        int rFinal = (int)Math.Round(r0 * (1.0 - fgAlpha) + 255.0 * fgAlpha);
-                        int gFinal = (int)Math.Round(g0 * (1.0 - fgAlpha) + 255.0 * fgAlpha);
-                        int bFinal = (int)Math.Round(b0 * (1.0 - fgAlpha) + 255.0 * fgAlpha);
+                        uint pR = (uint)Math.Min(255, Math.Round(bgR * invA + whiteVal));
+                        uint pG = (uint)Math.Min(255, Math.Round(bgG * invA + whiteVal));
+                        uint pB = (uint)Math.Min(255, Math.Round(bgB * invA + whiteVal));
 
-                        uint pR = (uint)((rFinal * bgA) / 255);
-                        uint pG = (uint)((gFinal * bgA) / 255);
-                        uint pB = (uint)((bFinal * bgA) / 255);
                         pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
                     }
                 }
