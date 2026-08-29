@@ -150,6 +150,10 @@ internal sealed class OverlayForm : Form
     private readonly byte[] _blurHBuffer = new byte[HalfWidth * HalfHeight * 4];
     private readonly byte[] _blurredBuffer = new byte[HalfWidth * HalfHeight * 4];
 
+    private byte[]? _textMask;
+    private int _textWidth;
+    private int _textHeight;
+
     private readonly AutoResetEvent _renderSignal = new(false);
     private Thread? _renderThread;
     private volatile bool _running = true;
@@ -228,6 +232,65 @@ internal sealed class OverlayForm : Form
         _screenCapturer = new FastSurface(SurfaceWidth, SurfaceHeight);
         _renderSurface = new FastSurface(SurfaceWidth, SurfaceHeight);
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
+
+        var (mask, w, h) = PrecomputeTextMask("Hello", 19f);
+        _textMask = mask;
+        _textWidth = w;
+        _textHeight = h;
+    }
+
+    private static (byte[] mask, int width, int height) PrecomputeTextMask(string text, float fontSize)
+    {
+        Font? font = null;
+        string[] fontCandidates = { "Segoe UI Variable Display", "SF Pro Display", "Segoe UI", "Arial" };
+        foreach (var name in fontCandidates)
+        {
+            try
+            {
+                using var testFont = new Font(name, fontSize, FontStyle.Bold);
+                if (testFont.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    font = new Font(name, fontSize, FontStyle.Bold);
+                    break;
+                }
+            }
+            catch { }
+        }
+        font ??= new Font(FontFamily.GenericSansSerif, fontSize, FontStyle.Bold);
+
+        using (font)
+        using (var bmpMeasure = new Bitmap(1, 1))
+        using (var gMeasure = Graphics.FromImage(bmpMeasure))
+        {
+            var size = gMeasure.MeasureString(text, font, PointF.Empty, StringFormat.GenericTypographic);
+            int w = (int)Math.Ceiling(size.Width) + 8;
+            int h = (int)Math.Ceiling(size.Height) + 8;
+
+            using var bmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.Transparent);
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                using var brush = new SolidBrush(Color.White);
+                g.DrawString(text, font, brush, 4f, 4f, StringFormat.GenericTypographic);
+            }
+
+            var data = bmp.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+            byte[] mask = new byte[w * h];
+            unsafe
+            {
+                byte* scan = (byte*)data.Scan0;
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        mask[y * w + x] = scan[(y * w + x) * 4 + 3];
+                    }
+                }
+            }
+            bmp.UnlockBits(data);
+            return (mask, w, h);
+        }
     }
 
     public void StepForward()
@@ -440,8 +503,8 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2. Dual-pass 5-tap Gaussian Blur on 270x55 (Rich frosted diffusion with 4x less processing!)
-            // Pass 1: Horizontal (pHalfRaw -> pBlurH)
+            // 2. Single-pass 5-tap Gaussian Blur on 270x55 (Crisp, elegant frosted glass diffusion)
+            // Horizontal (pHalfRaw -> pBlurH)
             for (int y = 0; y < HalfHeight; y++)
             {
                 int rowOffset = y * HalfWidth * 4;
@@ -471,68 +534,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Pass 1: Vertical (pBlurH -> pBlurred)
-            for (int y = 0; y < HalfHeight; y++)
-            {
-                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
-                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
-                int y0 = y * HalfWidth * 4;
-                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
-                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
-
-                for (int x = 0; x < HalfWidth; x++)
-                {
-                    int colOffset = x * 4;
-                    int offM2 = ym2 + colOffset;
-                    int offM1 = ym1 + colOffset;
-                    int off0 = y0 + colOffset;
-                    int offP1 = yp1 + colOffset;
-                    int offP2 = yp2 + colOffset;
-
-                    for (int c = 0; c < 3; c++)
-                    {
-                        int sum = pBlurH[offM2 + c] +
-                                  (pBlurH[offM1 + c] << 2) +
-                                  pBlurH[off0 + c] * 6 +
-                                  (pBlurH[offP1 + c] << 2) +
-                                  pBlurH[offP2 + c];
-                        pBlurred[off0 + c] = (byte)(sum >> 4);
-                    }
-                    pBlurred[off0 + 3] = 255;
-                }
-            }
-
-            // Pass 2: Horizontal (pBlurred -> pBlurH)
-            for (int y = 0; y < HalfHeight; y++)
-            {
-                int rowOffset = y * HalfWidth * 4;
-                for (int x = 0; x < HalfWidth; x++)
-                {
-                    int xm2 = Math.Max(0, x - 2);
-                    int xm1 = Math.Max(0, x - 1);
-                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
-                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
-
-                    int offM2 = rowOffset + xm2 * 4;
-                    int offM1 = rowOffset + xm1 * 4;
-                    int off0 = rowOffset + x * 4;
-                    int offP1 = rowOffset + xp1 * 4;
-                    int offP2 = rowOffset + xp2 * 4;
-
-                    for (int c = 0; c < 3; c++)
-                    {
-                        int sum = pBlurred[offM2 + c] +
-                                  (pBlurred[offM1 + c] << 2) +
-                                  pBlurred[off0 + c] * 6 +
-                                  (pBlurred[offP1 + c] << 2) +
-                                  pBlurred[offP2 + c];
-                        pBlurH[off0 + c] = (byte)(sum >> 4);
-                    }
-                    pBlurH[off0 + 3] = 255;
-                }
-            }
-
-            // Pass 2: Vertical (pBlurH -> pBlurred)
+            // Vertical (pBlurH -> pBlurred)
             for (int y = 0; y < HalfHeight; y++)
             {
                 int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
@@ -683,6 +685,70 @@ internal sealed class OverlayForm : Form
                     uint pG = (uint)((g * a) / 255);
                     uint pB = (uint)((b * a) / 255);
                     pDst[idx] = ((uint)a << 24) | (pR << 16) | (pG << 8) | pB;
+                }
+            }
+
+            // 4. Option 1 Typography: Liquid Bloom & Scale-In for "Hello" text
+            if (_progress >= 0.55 && _textMask != null && _textWidth > 0 && _textHeight > 0)
+            {
+                double textT = Math.Clamp((_progress - 0.55) / 0.45, 0.0, 1.0);
+                double textEase = EaseOutCubic(textT);
+                double textAlpha = textEase;
+                double textScale = 0.92 + 0.08 * textEase;
+
+                int tw = _textWidth;
+                int th = _textHeight;
+                int sw = Math.Max(1, (int)Math.Round(tw * textScale));
+                int sh = Math.Max(1, (int)Math.Round(th * textScale));
+
+                int startX = (int)Math.Round(geom.CenterX - sw * 0.5);
+                int startY = (int)Math.Round(geom.CenterY - sh * 0.5);
+
+                for (int ty = 0; ty < sh; ty++)
+                {
+                    int dstY = startY + ty;
+                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+
+                    int srcY = (int)Math.Floor((ty / (double)sh) * th);
+                    srcY = Math.Clamp(srcY, 0, th - 1);
+                    int srcRow = srcY * tw;
+                    int dstRow = dstY * SurfaceWidth;
+
+                    for (int tx = 0; tx < sw; tx++)
+                    {
+                        int dstX = startX + tx;
+                        if (dstX < 0 || dstX >= SurfaceWidth) continue;
+
+                        int srcX = (int)Math.Floor((tx / (double)sw) * tw);
+                        srcX = Math.Clamp(srcX, 0, tw - 1);
+
+                        byte maskA = _textMask[srcRow + srcX];
+                        if (maskA == 0) continue;
+
+                        int dstIdx = dstRow + dstX;
+                        uint bg = pDst[dstIdx];
+                        byte bgA = (byte)(bg >> 24);
+                        if (bgA == 0) continue;
+
+                        byte bgR = (byte)(bg >> 16);
+                        byte bgG = (byte)(bg >> 8);
+                        byte bgB = (byte)bg;
+
+                        int r0 = (bgR * 255) / bgA;
+                        int g0 = (bgG * 255) / bgA;
+                        int b0 = (bgB * 255) / bgA;
+
+                        // Soft Ambient Text Shadow (1px down)
+                        double fgAlpha = (maskA / 255.0) * textAlpha * 0.95;
+                        int rFinal = (int)Math.Round(r0 * (1.0 - fgAlpha) + 255.0 * fgAlpha);
+                        int gFinal = (int)Math.Round(g0 * (1.0 - fgAlpha) + 255.0 * fgAlpha);
+                        int bFinal = (int)Math.Round(b0 * (1.0 - fgAlpha) + 255.0 * fgAlpha);
+
+                        uint pR = (uint)((rFinal * bgA) / 255);
+                        uint pG = (uint)((gFinal * bgA) / 255);
+                        uint pB = (uint)((bFinal * bgA) / 255);
+                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                    }
                 }
             }
         }
