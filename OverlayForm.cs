@@ -10,6 +10,8 @@ internal sealed class OverlayForm : Form
 {
     private const int SurfaceWidth = 540;
     private const int SurfaceHeight = 110;
+    private const int HalfWidth = SurfaceWidth / 2;   // 270
+    private const int HalfHeight = SurfaceHeight / 2; // 55
     private const int TargetPillWidth = 500;
     private const int TargetPillHeight = 64;
     private const int TopPadding = 18;
@@ -144,8 +146,9 @@ internal sealed class OverlayForm : Form
 
     private FastSurface? _screenCapturer;
     private FastSurface? _renderSurface;
-    private readonly byte[] _blurHBuffer = new byte[SurfaceWidth * SurfaceHeight * 4];
-    private readonly byte[] _blurredBuffer = new byte[SurfaceWidth * SurfaceHeight * 4];
+    private readonly byte[] _halfRawBuffer = new byte[HalfWidth * HalfHeight * 4];
+    private readonly byte[] _blurHBuffer = new byte[HalfWidth * HalfHeight * 4];
+    private readonly byte[] _blurredBuffer = new byte[HalfWidth * HalfHeight * 4];
 
     private readonly AutoResetEvent _renderSignal = new(false);
     private Thread? _renderThread;
@@ -320,8 +323,8 @@ internal sealed class OverlayForm : Form
     {
         while (_running)
         {
-            // 8ms interval (~120 FPS)
-            _renderSignal.WaitOne(8);
+            // 6ms interval (~165 FPS ultra-high refresh fluidity)
+            _renderSignal.WaitOne(6);
             if (!_running) break;
 
             IntPtr hwnd = _hwnd;
@@ -408,18 +411,46 @@ internal sealed class OverlayForm : Form
         uint* pDst = (uint*)surface.BitsPtr;
         if (pRaw == null || pDst == null) return;
 
+        fixed (byte* pHalfRaw = _halfRawBuffer)
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
         {
-            for (int y = 0; y < SurfaceHeight; y++)
+            // 1. Box downsample (540x110 -> 270x55): 4x fewer pixels, anti-aliased pre-filter
+            for (int y = 0; y < HalfHeight; y++)
             {
-                int rowOffset = y * SurfaceWidth * 4;
-                for (int x = 0; x < SurfaceWidth; x++)
+                int srcRow0 = (y * 2) * SurfaceWidth * 4;
+                int srcRow1 = (y * 2 + 1) * SurfaceWidth * 4;
+                int dstRow = y * HalfWidth * 4;
+
+                for (int x = 0; x < HalfWidth; x++)
+                {
+                    int srcX0 = (x * 2) * 4;
+                    int srcX1 = srcX0 + 4;
+                    int dstX = dstRow + x * 4;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pRaw[srcRow0 + srcX0 + c] +
+                                  pRaw[srcRow0 + srcX1 + c] +
+                                  pRaw[srcRow1 + srcX0 + c] +
+                                  pRaw[srcRow1 + srcX1 + c];
+                        pHalfRaw[dstX + c] = (byte)(sum >> 2);
+                    }
+                    pHalfRaw[dstX + 3] = 255;
+                }
+            }
+
+            // 2. Dual-pass 5-tap Gaussian Blur on 270x55 (Rich frosted diffusion with 4x less processing!)
+            // Pass 1: Horizontal (pHalfRaw -> pBlurH)
+            for (int y = 0; y < HalfHeight; y++)
+            {
+                int rowOffset = y * HalfWidth * 4;
+                for (int x = 0; x < HalfWidth; x++)
                 {
                     int xm2 = Math.Max(0, x - 2);
                     int xm1 = Math.Max(0, x - 1);
-                    int xp1 = Math.Min(SurfaceWidth - 1, x + 1);
-                    int xp2 = Math.Min(SurfaceWidth - 1, x + 2);
+                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
+                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
 
                     int offM2 = rowOffset + xm2 * 4;
                     int offM1 = rowOffset + xm1 * 4;
@@ -429,26 +460,27 @@ internal sealed class OverlayForm : Form
 
                     for (int c = 0; c < 3; c++)
                     {
-                        int sum = pRaw[offM2 + c] +
-                                  (pRaw[offM1 + c] << 2) +
-                                  pRaw[off0 + c] * 6 +
-                                  (pRaw[offP1 + c] << 2) +
-                                  pRaw[offP2 + c];
+                        int sum = pHalfRaw[offM2 + c] +
+                                  (pHalfRaw[offM1 + c] << 2) +
+                                  pHalfRaw[off0 + c] * 6 +
+                                  (pHalfRaw[offP1 + c] << 2) +
+                                  pHalfRaw[offP2 + c];
                         pBlurH[off0 + c] = (byte)(sum >> 4);
                     }
                     pBlurH[off0 + 3] = 255;
                 }
             }
 
-            for (int y = 0; y < SurfaceHeight; y++)
+            // Pass 1: Vertical (pBlurH -> pBlurred)
+            for (int y = 0; y < HalfHeight; y++)
             {
-                int ym2 = Math.Max(0, y - 2) * SurfaceWidth * 4;
-                int ym1 = Math.Max(0, y - 1) * SurfaceWidth * 4;
-                int y0 = y * SurfaceWidth * 4;
-                int yp1 = Math.Min(SurfaceHeight - 1, y + 1) * SurfaceWidth * 4;
-                int yp2 = Math.Min(SurfaceHeight - 1, y + 2) * SurfaceWidth * 4;
+                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
+                int y0 = y * HalfWidth * 4;
+                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
+                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
 
-                for (int x = 0; x < SurfaceWidth; x++)
+                for (int x = 0; x < HalfWidth; x++)
                 {
                     int colOffset = x * 4;
                     int offM2 = ym2 + colOffset;
@@ -470,15 +502,16 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            for (int y = 0; y < SurfaceHeight; y++)
+            // Pass 2: Horizontal (pBlurred -> pBlurH)
+            for (int y = 0; y < HalfHeight; y++)
             {
-                int rowOffset = y * SurfaceWidth * 4;
-                for (int x = 0; x < SurfaceWidth; x++)
+                int rowOffset = y * HalfWidth * 4;
+                for (int x = 0; x < HalfWidth; x++)
                 {
                     int xm2 = Math.Max(0, x - 2);
                     int xm1 = Math.Max(0, x - 1);
-                    int xp1 = Math.Min(SurfaceWidth - 1, x + 1);
-                    int xp2 = Math.Min(SurfaceWidth - 1, x + 2);
+                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
+                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
 
                     int offM2 = rowOffset + xm2 * 4;
                     int offM1 = rowOffset + xm1 * 4;
@@ -499,15 +532,16 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            for (int y = 0; y < SurfaceHeight; y++)
+            // Pass 2: Vertical (pBlurH -> pBlurred)
+            for (int y = 0; y < HalfHeight; y++)
             {
-                int ym2 = Math.Max(0, y - 2) * SurfaceWidth * 4;
-                int ym1 = Math.Max(0, y - 1) * SurfaceWidth * 4;
-                int y0 = y * SurfaceWidth * 4;
-                int yp1 = Math.Min(SurfaceHeight - 1, y + 1) * SurfaceWidth * 4;
-                int yp2 = Math.Min(SurfaceHeight - 1, y + 2) * SurfaceWidth * 4;
+                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
+                int y0 = y * HalfWidth * 4;
+                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
+                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
 
-                for (int x = 0; x < SurfaceWidth; x++)
+                for (int x = 0; x < HalfWidth; x++)
                 {
                     int colOffset = x * 4;
                     int offM2 = ym2 + colOffset;
@@ -529,6 +563,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
+            // 3. Liquid Glass Refraction, Continuous Bilinear Reconstruction & Specular Lighting
             double straightW = geom.HalfWidth - geom.Radius;
             double straightH = geom.HalfHeight - geom.Radius;
 
@@ -589,20 +624,24 @@ internal sealed class OverlayForm : Form
                     double sx = Math.Clamp(x - nx * bend, 0.0, SurfaceWidth - 2.0);
                     double sy = Math.Clamp(y - ny * bend, 0.0, SurfaceHeight - 2.0);
 
-                    int ix = (int)Math.Floor(sx);
-                    int iy = (int)Math.Floor(sy);
-                    double fx = sx - ix;
-                    double fy = sy - iy;
+                    // Smooth bilinear sampling from half-resolution frosted glass buffer
+                    double hx = Math.Clamp(sx * 0.5, 0.0, HalfWidth - 2.0);
+                    double hy = Math.Clamp(sy * 0.5, 0.0, HalfHeight - 2.0);
+
+                    int ix = (int)Math.Floor(hx);
+                    int iy = (int)Math.Floor(hy);
+                    double fx = hx - ix;
+                    double fy = hy - iy;
 
                     int w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
                     int w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
                     int w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
                     int w11 = Math.Max(0, 256 - (w00 + w10 + w01));
 
-                    int off00 = (iy * SurfaceWidth + ix) * 4;
-                    int off10 = (iy * SurfaceWidth + ix + 1) * 4;
-                    int off01 = ((iy + 1) * SurfaceWidth + ix) * 4;
-                    int off11 = ((iy + 1) * SurfaceWidth + ix + 1) * 4;
+                    int off00 = (iy * HalfWidth + ix) * 4;
+                    int off10 = (iy * HalfWidth + ix + 1) * 4;
+                    int off01 = ((iy + 1) * HalfWidth + ix) * 4;
+                    int off11 = ((iy + 1) * HalfWidth + ix + 1) * 4;
 
                     int b = (pBlurred[off00 + 0] * w00 + pBlurred[off10 + 0] * w10 + pBlurred[off01 + 0] * w01 + pBlurred[off11 + 0] * w11) >> 8;
                     int g = (pBlurred[off00 + 1] * w00 + pBlurred[off10 + 1] * w10 + pBlurred[off01 + 1] * w01 + pBlurred[off11 + 1] * w11) >> 8;
