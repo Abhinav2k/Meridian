@@ -8,8 +8,9 @@ window or frame. Only the circle is painted, and clicks outside its bounds pass
 through to the desktop.
  
 - **Drag**: Left click and drag the circle anywhere on your screen.
+- **Snapshot**: Press `S` to save a high-resolution PNG snapshot (`liquid-glass-snapshot.png`).
 - **Quit**: Press `Esc` or right-click the circle.
-- **Performance**: High-speed, zero-allocation optical pipeline running at 120 FPS with sub-millisecond background capture, full-resolution 280x280 native Gaussian blur, precomputed refraction, chromatic dispersion (prism effect), and direct GPU DWM compositing.
+- **Performance**: High-speed, zero-allocation optical pipeline running at 120 FPS with sub-millisecond background capture, full-resolution 280x280 native Gaussian blur, precomputed refraction, and direct GPU DWM compositing.
  
 ```powershell
 dotnet run

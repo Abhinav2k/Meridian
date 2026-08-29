@@ -117,34 +117,19 @@ internal sealed class OverlayForm : Form
 
     private readonly struct RefractionPixel
     {
-        public readonly int OffR00, OffR10, OffR01, OffR11;
-        public readonly int WR00, WR10, WR01, WR11;
-
-        public readonly int OffG00, OffG10, OffG01, OffG11;
-        public readonly int WG00, WG10, WG01, WG11;
-
-        public readonly int OffB00, OffB10, OffB01, OffB11;
-        public readonly int WB00, WB10, WB01, WB11;
-
+        public readonly int Off00, Off10, Off01, Off11;
+        public readonly int W00, W10, W01, W11;
         public readonly byte Alpha;
         public readonly byte RimLight;
         public readonly byte InnerRim;
 
         public RefractionPixel(
-            int offR00, int offR10, int offR01, int offR11, int wr00, int wr10, int wr01, int wr11,
-            int offG00, int offG10, int offG01, int offG11, int wg00, int wg10, int wg01, int wg11,
-            int offB00, int offB10, int offB01, int offB11, int wb00, int wb10, int wb01, int wb11,
+            int off00, int off10, int off01, int off11,
+            int w00, int w10, int w01, int w11,
             byte alpha, byte rimLight, byte innerRim)
         {
-            OffR00 = offR00; OffR10 = offR10; OffR01 = offR01; OffR11 = offR11;
-            WR00 = wr00; WR10 = wr10; WR01 = wr01; WR11 = wr11;
-
-            OffG00 = offG00; OffG10 = offG10; OffG01 = offG01; OffG11 = offG11;
-            WG00 = wg00; WG10 = wg00; WG01 = wg01; WG11 = wg11;
-
-            OffB00 = offB00; OffB10 = offB10; OffB01 = offB01; OffB11 = offB11;
-            WB00 = wb00; WB10 = wb10; WB01 = wb01; WB11 = wb11;
-
+            Off00 = off00; Off10 = off10; Off01 = off01; Off11 = off11;
+            W00 = w00; W10 = w10; W01 = w01; W11 = w11;
             Alpha = alpha;
             RimLight = rimLight;
             InnerRim = innerRim;
@@ -194,8 +179,32 @@ internal sealed class OverlayForm : Form
         };
 
         KeyPreview = true;
-        KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Close(); };
+        KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Escape) Close();
+            else if (e.KeyCode == Keys.S) SaveSnapshot();
+        };
         MouseClick += (_, e) => { if (e.Button == MouseButtons.Right) Close(); };
+    }
+
+    private void SaveSnapshot()
+    {
+        try
+        {
+            var surface = _renderSurface;
+            if (surface != null && surface.BitsPtr != IntPtr.Zero)
+            {
+                using var bmp = new Bitmap(CircleSize, CircleSize, PixelFormat.Format32bppArgb);
+                var data = bmp.LockBits(new Rectangle(0, 0, CircleSize, CircleSize), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                unsafe
+                {
+                    Buffer.MemoryCopy((void*)surface.BitsPtr, (void*)data.Scan0, CircleSize * CircleSize * 4, CircleSize * CircleSize * 4);
+                }
+                bmp.UnlockBits(data);
+                bmp.Save("liquid-glass-snapshot.png", ImageFormat.Png);
+            }
+        }
+        catch { }
     }
 
     protected override CreateParams CreateParams
@@ -348,7 +357,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2. Full-Resolution Lens Refraction with Chromatic Dispersion & Specular Lighting
+            // 2. High-Clarity Liquid Lens Refraction & Specular Lighting
             int glintCenterX = 90 + (int)(Math.Sin(_phase * 0.18) * 22);
 
             for (int y = 0; y < CircleSize; y++)
@@ -368,22 +377,27 @@ internal sealed class OverlayForm : Form
                         continue;
                     }
 
-                    // Chromatic Dispersion bilinear sampling (Red, Green, Blue at optical dispersion offsets)
-                    int r = (pBlurred[pixel.OffR00 + 2] * pixel.WR00 + pBlurred[pixel.OffR10 + 2] * pixel.WR10 + pBlurred[pixel.OffR01 + 2] * pixel.WR01 + pBlurred[pixel.OffR11 + 2] * pixel.WR11) >> 8;
-                    int g = (pBlurred[pixel.OffG00 + 1] * pixel.WG00 + pBlurred[pixel.OffG10 + 1] * pixel.WG10 + pBlurred[pixel.OffG01 + 1] * pixel.WG01 + pBlurred[pixel.OffG11 + 1] * pixel.WG11) >> 8;
-                    int b = (pBlurred[pixel.OffB00 + 0] * pixel.WB00 + pBlurred[pixel.OffB10 + 0] * pixel.WB10 + pBlurred[pixel.OffB01 + 0] * pixel.WB01 + pBlurred[pixel.OffB11 + 0] * pixel.WB11) >> 8;
+                    // Bilinear sample with strictly verified non-negative weights
+                    int b = (pBlurred[pixel.Off00 + 0] * pixel.W00 + pBlurred[pixel.Off10 + 0] * pixel.W10 + pBlurred[pixel.Off01 + 0] * pixel.W01 + pBlurred[pixel.Off11 + 0] * pixel.W11) >> 8;
+                    int g = (pBlurred[pixel.Off00 + 1] * pixel.W00 + pBlurred[pixel.Off10 + 1] * pixel.W10 + pBlurred[pixel.Off01 + 1] * pixel.W01 + pBlurred[pixel.Off11 + 1] * pixel.W11) >> 8;
+                    int r = (pBlurred[pixel.Off00 + 2] * pixel.W00 + pBlurred[pixel.Off10 + 2] * pixel.W10 + pBlurred[pixel.Off01 + 2] * pixel.W01 + pBlurred[pixel.Off11 + 2] * pixel.W11) >> 8;
 
-                    // Apple Liquid Glass Blue Tint (High transmission: 92% pass-through + crystal tint)
-                    r = (r * 236 + 185 * 20) >> 8;
-                    g = (g * 236 + 215 * 20) >> 8;
-                    b = (b * 236 + 255 * 20) >> 8;
+                    // Ensure clean bounds
+                    b = Math.Clamp(b, 0, 255);
+                    g = Math.Clamp(g, 0, 255);
+                    r = Math.Clamp(r, 0, 255);
+
+                    // Apple Liquid Glass Crystal Tint (high 95% transmission + subtle cool glass tone)
+                    r = (r * 242 + 200 * 14) >> 8;
+                    g = (g * 242 + 225 * 14) >> 8;
+                    b = (b * 242 + 255 * 14) >> 8;
 
                     // Smooth animated glint sheen
                     double gdx = (x - glintCenterX) / 48.0;
                     double gdist2 = gdx * gdx + gdy2;
                     if (gdist2 < 1.0)
                     {
-                        int glint = (int)((1.0 - gdist2) * 58.0);
+                        int glint = (int)((1.0 - gdist2) * 50.0);
                         r = Math.Min(255, r + glint);
                         g = Math.Min(255, g + glint);
                         b = Math.Min(255, b + glint);
@@ -474,13 +488,9 @@ internal sealed class OverlayForm : Form
                 double wave = Math.Sin(normalized * 12.0 + y * 0.015) * normalized * 0.5;
                 double safeDist = Math.Max(distance, 0.001);
 
-                // Chromatic dispersion offsets: Red (0.97x bend), Green (1.00x bend), Blue (1.03x bend)
-                ComputeSample(center, dx, dy, safeDist, distance, bendBase * 0.97, wave,
-                    out int offR00, out int offR10, out int offR01, out int offR11, out int wR00, out int wR10, out int wR01, out int wR11);
-                ComputeSample(center, dx, dy, safeDist, distance, bendBase * 1.00, wave,
-                    out int offG00, out int offG10, out int offG01, out int offG11, out int wG00, out int wG10, out int wG01, out int wG11);
-                ComputeSample(center, dx, dy, safeDist, distance, bendBase * 1.03, wave,
-                    out int offB00, out int offB10, out int offB01, out int offB11, out int wB00, out int wB10, out int wB01, out int wB11);
+                ComputeSample(center, dx, dy, safeDist, distance, bendBase, wave,
+                    out int off00, out int off10, out int off01, out int off11,
+                    out int w00, out int w10, out int w01, out int w11);
 
                 // Specular outer rim & inner reflection highlight
                 double rimExp = Math.Exp(-Math.Pow((distance - 137.2) / 1.5, 2));
@@ -490,9 +500,7 @@ internal sealed class OverlayForm : Form
                 byte innerRim = (byte)Math.Clamp(Math.Round(innerExp * 45.0 * alphaFactor), 0, 255);
 
                 map[y * CircleSize + x] = new RefractionPixel(
-                    offR00, offR10, offR01, offR11, wR00, wR10, wR01, wR11,
-                    offG00, offG10, offG01, offG11, wG00, wG10, wG01, wG11,
-                    offB00, offB10, offB01, offB11, wB00, wB10, wB01, wB11,
+                    off00, off10, off01, off11, w00, w10, w01, w11,
                     alpha, rimLight, innerRim);
             }
         }
@@ -508,15 +516,20 @@ internal sealed class OverlayForm : Form
         double sx = center + (dx / safeDist) * (distance - bend) + wave;
         double sy = center + (dy / safeDist) * (distance - bend) + (wave * 0.5);
 
-        int ix = Math.Clamp((int)Math.Floor(sx), 0, CircleSize - 2);
-        int iy = Math.Clamp((int)Math.Floor(sy), 0, CircleSize - 2);
+        // Strictly clamp continuous coordinates within valid sampling box [0, CircleSize - 2]
+        sx = Math.Clamp(sx, 0.0, CircleSize - 2.0);
+        sy = Math.Clamp(sy, 0.0, CircleSize - 2.0);
+
+        int ix = (int)Math.Floor(sx);
+        int iy = (int)Math.Floor(sy);
         double fx = sx - ix;
         double fy = sy - iy;
 
+        // fx and fy are now GUARANTEED in [0.0, 1.0]
         w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
         w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
         w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
-        w11 = 256 - (w00 + w10 + w01);
+        w11 = Math.Max(0, 256 - (w00 + w10 + w01));
 
         off00 = (iy * CircleSize + ix) * 4;
         off10 = (iy * CircleSize + ix + 1) * 4;
