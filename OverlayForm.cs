@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -7,11 +8,16 @@ namespace LiquidGlassCircle;
 
 internal sealed class OverlayForm : Form
 {
-    private const int CircleSize = 280;
+    private const int SurfaceWidth = 540;
+    private const int SurfaceHeight = 110;
+    private const int TargetPillWidth = 500;
+    private const int TargetPillHeight = 64;
+    private const int TopPadding = 18;
+    private const double AnimationDuration = 1.15; // seconds
+
     private const uint WdaExcludeFromCapture = 0x11;
     private const int WmNcHitTest = 0x84;
     private const int HtTransparent = -1;
-    private const int HtClient = 1;
 
     private const int WsExLayered = 0x80000;
     private const int WsExToolWindow = 0x80;
@@ -58,6 +64,9 @@ internal sealed class OverlayForm : Form
     [DllImport("gdi32.dll")]
     private static extern bool BitBlt(IntPtr hdcDest, int nXDest, int nYDest, int nWidth, int nHeight, IntPtr hdcSrc, int nXSrc, int nYSrc, uint dwRop);
 
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT
     {
@@ -84,6 +93,15 @@ internal sealed class OverlayForm : Form
     }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct BITMAPINFOHEADER
     {
         public int biSize;
@@ -106,55 +124,35 @@ internal sealed class OverlayForm : Form
         public uint bmiColors;
     }
 
-    private readonly struct RefractionPixel
+    private sealed class PillGeometry
     {
-        public readonly int Off00, Off10, Off01, Off11;
-        public readonly int W00, W10, W01, W11;
-        public readonly byte Alpha;
-        public readonly byte DomeLight;
-        public readonly byte RimLight;
-        public readonly byte InnerRim;
+        public readonly double CenterX;
+        public readonly double CenterY;
+        public readonly double HalfWidth;
+        public readonly double HalfHeight;
+        public readonly double Radius;
 
-        public RefractionPixel(
-            int off00, int off10, int off01, int off11,
-            int w00, int w10, int w01, int w11,
-            byte alpha, byte domeLight, byte rimLight, byte innerRim)
+        public PillGeometry(double cx, double cy, double hw, double hh, double r)
         {
-            Off00 = off00; Off10 = off10; Off01 = off01; Off11 = off11;
-            W00 = w00; W10 = w10; W01 = w01; W11 = w11;
-            Alpha = alpha;
-            DomeLight = domeLight;
-            RimLight = rimLight;
-            InnerRim = innerRim;
+            CenterX = cx;
+            CenterY = cy;
+            HalfWidth = hw;
+            HalfHeight = hh;
+            Radius = r;
         }
     }
 
-    [DllImport("user32.dll")]
-    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    private static readonly RefractionPixel[] RefractionMap = PrecomputeRefractionMap();
-
     private FastSurface? _screenCapturer;
     private FastSurface? _renderSurface;
-    private readonly byte[] _blurHBuffer = new byte[CircleSize * CircleSize * 4];
-    private readonly byte[] _blurredBuffer = new byte[CircleSize * CircleSize * 4];
+    private readonly byte[] _blurHBuffer = new byte[SurfaceWidth * SurfaceHeight * 4];
+    private readonly byte[] _blurredBuffer = new byte[SurfaceWidth * SurfaceHeight * 4];
 
     private readonly AutoResetEvent _renderSignal = new(false);
     private Thread? _renderThread;
     private volatile bool _running = true;
     private IntPtr _hwnd;
-
-    private bool _dragging;
-    private Point _dragStartOffset;
+    private readonly Stopwatch _animStopwatch = new();
+    private volatile PillGeometry _currentGeometry = new(SurfaceWidth * 0.5, -20.0, 14.0, 14.0, 14.0);
 
     public OverlayForm()
     {
@@ -162,26 +160,20 @@ internal sealed class OverlayForm : Form
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
-        ClientSize = new Size(CircleSize, CircleSize);
+        ClientSize = new Size(SurfaceWidth, SurfaceHeight);
 
-        // Center initially on primary working area
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
         Location = new Point(
-            workingArea.Left + (workingArea.Width - CircleSize) / 2,
-            workingArea.Top + (workingArea.Height - CircleSize) / 2);
+            workingArea.Left + (workingArea.Width - SurfaceWidth) / 2,
+            Screen.PrimaryScreen?.Bounds.Top ?? 0);
 
         Shown += (_, _) =>
         {
-            _hwnd = Handle;
-            _screenCapturer = new FastSurface(CircleSize, CircleSize);
-            _renderSurface = new FastSurface(CircleSize, CircleSize);
-            SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
-
             _renderThread = new Thread(RenderLoop)
             {
                 IsBackground = true,
                 Priority = ThreadPriority.AboveNormal,
-                Name = "LiquidGlassRenderLoop"
+                Name = "LiquidPillRenderLoop"
             };
             _renderThread.Start();
             _renderSignal.Set();
@@ -191,9 +183,30 @@ internal sealed class OverlayForm : Form
         KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.Escape) Close();
+            else if (e.KeyCode == Keys.Space) TriggerSpawnAnimation();
             else if (e.KeyCode == Keys.S) SaveSnapshot();
         };
-        MouseClick += (_, e) => { if (e.Button == MouseButtons.Right) Close(); };
+        MouseClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Right) Close();
+            else if (e.Button == MouseButtons.Left) TriggerSpawnAnimation();
+        };
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        _hwnd = Handle;
+        _screenCapturer = new FastSurface(SurfaceWidth, SurfaceHeight);
+        _renderSurface = new FastSurface(SurfaceWidth, SurfaceHeight);
+        SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
+        _animStopwatch.Start();
+    }
+
+    public void TriggerSpawnAnimation()
+    {
+        _animStopwatch.Restart();
+        _renderSignal.Set();
     }
 
     private void SaveSnapshot()
@@ -203,14 +216,17 @@ internal sealed class OverlayForm : Form
             var surface = _renderSurface;
             if (surface != null && surface.BitsPtr != IntPtr.Zero)
             {
-                using var bmp = new Bitmap(CircleSize, CircleSize, PixelFormat.Format32bppArgb);
-                var data = bmp.LockBits(new Rectangle(0, 0, CircleSize, CircleSize), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                using var bmp = new Bitmap(SurfaceWidth, SurfaceHeight, PixelFormat.Format32bppArgb);
+                var data = bmp.LockBits(new Rectangle(0, 0, SurfaceWidth, SurfaceHeight), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
                 unsafe
                 {
-                    Buffer.MemoryCopy((void*)surface.BitsPtr, (void*)data.Scan0, CircleSize * CircleSize * 4, CircleSize * CircleSize * 4);
+                    Buffer.MemoryCopy((void*)surface.BitsPtr, (void*)data.Scan0, SurfaceWidth * SurfaceHeight * 4, SurfaceWidth * SurfaceHeight * 4);
                 }
                 bmp.UnlockBits(data);
-                bmp.Save("liquid-glass-snapshot.png", ImageFormat.Png);
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
+                string path = Path.Combine(rootDir, "liquid-glass-snapshot.png");
+                bmp.Save(path, ImageFormat.Png);
             }
         }
         catch { }
@@ -221,8 +237,8 @@ internal sealed class OverlayForm : Form
         get
         {
             var parameters = base.CreateParams;
-            parameters.ExStyle |= WsExLayered;     // Per-pixel 32-bit ARGB DWM GPU compositing
-            parameters.ExStyle |= WsExToolWindow;  // Hidden from taskbar / Alt+Tab
+            parameters.ExStyle |= WsExLayered;
+            parameters.ExStyle |= WsExToolWindow;
             return parameters;
         }
     }
@@ -232,60 +248,32 @@ internal sealed class OverlayForm : Form
         if (m.Msg == WmNcHitTest)
         {
             var pt = PointToClient(Cursor.Position);
-            double center = CircleSize * 0.5;
-            double dx = pt.X - center;
-            double dy = pt.Y - center;
-            if ((dx * dx) + (dy * dy) > center * center)
+            var geom = _currentGeometry;
+
+            double px = pt.X - geom.CenterX;
+            double py = pt.Y - geom.CenterY;
+            double qx = Math.Abs(px) - (geom.HalfWidth - geom.Radius);
+            double qy = Math.Abs(py) - (geom.HalfHeight - geom.Radius);
+            double outsideX = Math.Max(0.0, qx);
+            double outsideY = Math.Max(0.0, qy);
+            double outsideDist = Math.Sqrt(outsideX * outsideX + outsideY * outsideY);
+            double insideDist = Math.Min(0.0, Math.Max(qx, qy));
+            double sdf = outsideDist + insideDist - geom.Radius;
+
+            if (sdf > 0.5)
             {
-                m.Result = (IntPtr)HtTransparent; // Click-through outside circle
+                m.Result = (IntPtr)HtTransparent;
                 return;
             }
         }
         base.WndProc(ref m);
     }
 
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        base.OnMouseDown(e);
-        if (e.Button == MouseButtons.Left)
-        {
-            _dragging = true;
-            _dragStartOffset = e.Location;
-            Capture = true;
-        }
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        base.OnMouseMove(e);
-        if (_dragging && e.Button == MouseButtons.Left)
-        {
-            Point cur = Cursor.Position;
-            Location = new Point(cur.X - _dragStartOffset.X, cur.Y - _dragStartOffset.Y);
-        }
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e)
-    {
-        base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Left)
-        {
-            _dragging = false;
-            Capture = false;
-        }
-    }
-
-    protected override void OnLocationChanged(EventArgs e)
-    {
-        base.OnLocationChanged(e);
-        _renderSignal.Set();
-    }
-
     private void RenderLoop()
     {
         while (_running)
         {
-            // 8ms interval (~120 FPS) or immediate wake-up upon mouse movement
+            // 8ms interval (~120 FPS)
             _renderSignal.WaitOne(8);
             if (!_running) break;
 
@@ -293,17 +281,69 @@ internal sealed class OverlayForm : Form
             if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
                 continue;
 
-            ProcessAndPresent(new Point(rect.Left, rect.Top));
+            double elapsed = _animStopwatch.Elapsed.TotalSeconds;
+            double progress = Math.Clamp(elapsed / AnimationDuration, 0.0, 1.0);
+
+            PillGeometry geom = ComputeGeometry(progress);
+            _currentGeometry = geom;
+
+            ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
         }
     }
 
-    private unsafe void ProcessAndPresent(Point screenPos)
+    private static PillGeometry ComputeGeometry(double p)
+    {
+        double targetCenterX = SurfaceWidth * 0.5;
+        double targetCenterY = TopPadding + (TargetPillHeight * 0.5);
+        double targetHalfWidth = TargetPillWidth * 0.5;
+        double targetHalfHeight = TargetPillHeight * 0.5;
+
+        double spawnRadius = 14.0;
+        double spawnCenterY = -spawnRadius;
+
+        if (p <= 0.0)
+        {
+            return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius);
+        }
+
+        double dropProgress = Math.Clamp(p / 0.32, 0.0, 1.0);
+        double dropEase = EaseOutBack(dropProgress);
+        double currentCenterY = spawnCenterY + (targetCenterY - spawnCenterY) * dropEase;
+
+        double morphProgress = Math.Clamp((p - 0.20) / 0.80, 0.0, 1.0);
+        double morphEase = EaseOutElastic(morphProgress);
+
+        double currentHalfWidth = spawnRadius + (targetHalfWidth - spawnRadius) * morphEase;
+        double currentHalfHeight = spawnRadius + (targetHalfHeight - spawnRadius) * Math.Clamp(morphEase * 1.05, 0.0, 1.0);
+
+        currentHalfWidth = Math.Max(spawnRadius, currentHalfWidth);
+        currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
+        double currentRadius = Math.Min(currentHalfWidth, currentHalfHeight);
+
+        return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
+    }
+
+    private static double EaseOutBack(double x)
+    {
+        const double c1 = 1.4;
+        const double c3 = c1 + 1.0;
+        return 1.0 + c3 * Math.Pow(x - 1.0, 3.0) + c1 * Math.Pow(x - 1.0, 2.0);
+    }
+
+    private static double EaseOutElastic(double x)
+    {
+        if (x <= 0.0) return 0.0;
+        if (x >= 1.0) return 1.0;
+        return 1.0 - Math.Exp(-6.0 * x) * Math.Cos(6.28 * x * 0.9);
+    }
+
+    private unsafe void ProcessAndPresent(Point screenPos, PillGeometry geom)
     {
         var capturer = _screenCapturer;
         var surface = _renderSurface;
         if (capturer == null || surface == null || IsDisposed) return;
 
-        if (!capturer.Capture(screenPos.X, screenPos.Y, CircleSize, CircleSize))
+        if (!capturer.Capture(screenPos.X, screenPos.Y, SurfaceWidth, SurfaceHeight))
             return;
 
         byte* pRaw = (byte*)capturer.BitsPtr;
@@ -313,17 +353,15 @@ internal sealed class OverlayForm : Form
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
         {
-            // 1. Frosted Liquid Glass Multi-Pass Separable Gaussian Blur (2 passes of [1, 4, 6, 4, 1] / 16)
-            // Pass 1: Horizontal (pRaw -> pBlurH)
-            for (int y = 0; y < CircleSize; y++)
+            for (int y = 0; y < SurfaceHeight; y++)
             {
-                int rowOffset = y * CircleSize * 4;
-                for (int x = 0; x < CircleSize; x++)
+                int rowOffset = y * SurfaceWidth * 4;
+                for (int x = 0; x < SurfaceWidth; x++)
                 {
                     int xm2 = Math.Max(0, x - 2);
                     int xm1 = Math.Max(0, x - 1);
-                    int xp1 = Math.Min(CircleSize - 1, x + 1);
-                    int xp2 = Math.Min(CircleSize - 1, x + 2);
+                    int xp1 = Math.Min(SurfaceWidth - 1, x + 1);
+                    int xp2 = Math.Min(SurfaceWidth - 1, x + 2);
 
                     int offM2 = rowOffset + xm2 * 4;
                     int offM1 = rowOffset + xm1 * 4;
@@ -344,16 +382,15 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Pass 1: Vertical (pBlurH -> pBlurred)
-            for (int y = 0; y < CircleSize; y++)
+            for (int y = 0; y < SurfaceHeight; y++)
             {
-                int ym2 = Math.Max(0, y - 2) * CircleSize * 4;
-                int ym1 = Math.Max(0, y - 1) * CircleSize * 4;
-                int y0 = y * CircleSize * 4;
-                int yp1 = Math.Min(CircleSize - 1, y + 1) * CircleSize * 4;
-                int yp2 = Math.Min(CircleSize - 1, y + 2) * CircleSize * 4;
+                int ym2 = Math.Max(0, y - 2) * SurfaceWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * SurfaceWidth * 4;
+                int y0 = y * SurfaceWidth * 4;
+                int yp1 = Math.Min(SurfaceHeight - 1, y + 1) * SurfaceWidth * 4;
+                int yp2 = Math.Min(SurfaceHeight - 1, y + 2) * SurfaceWidth * 4;
 
-                for (int x = 0; x < CircleSize; x++)
+                for (int x = 0; x < SurfaceWidth; x++)
                 {
                     int colOffset = x * 4;
                     int offM2 = ym2 + colOffset;
@@ -375,16 +412,15 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Pass 2: Horizontal (pBlurred -> pBlurH)
-            for (int y = 0; y < CircleSize; y++)
+            for (int y = 0; y < SurfaceHeight; y++)
             {
-                int rowOffset = y * CircleSize * 4;
-                for (int x = 0; x < CircleSize; x++)
+                int rowOffset = y * SurfaceWidth * 4;
+                for (int x = 0; x < SurfaceWidth; x++)
                 {
                     int xm2 = Math.Max(0, x - 2);
                     int xm1 = Math.Max(0, x - 1);
-                    int xp1 = Math.Min(CircleSize - 1, x + 1);
-                    int xp2 = Math.Min(CircleSize - 1, x + 2);
+                    int xp1 = Math.Min(SurfaceWidth - 1, x + 1);
+                    int xp2 = Math.Min(SurfaceWidth - 1, x + 2);
 
                     int offM2 = rowOffset + xm2 * 4;
                     int offM1 = rowOffset + xm1 * 4;
@@ -405,16 +441,15 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Pass 2: Vertical (pBlurH -> pBlurred)
-            for (int y = 0; y < CircleSize; y++)
+            for (int y = 0; y < SurfaceHeight; y++)
             {
-                int ym2 = Math.Max(0, y - 2) * CircleSize * 4;
-                int ym1 = Math.Max(0, y - 1) * CircleSize * 4;
-                int y0 = y * CircleSize * 4;
-                int yp1 = Math.Min(CircleSize - 1, y + 1) * CircleSize * 4;
-                int yp2 = Math.Min(CircleSize - 1, y + 2) * CircleSize * 4;
+                int ym2 = Math.Max(0, y - 2) * SurfaceWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * SurfaceWidth * 4;
+                int y0 = y * SurfaceWidth * 4;
+                int yp1 = Math.Min(SurfaceHeight - 1, y + 1) * SurfaceWidth * 4;
+                int yp2 = Math.Min(SurfaceHeight - 1, y + 2) * SurfaceWidth * 4;
 
-                for (int x = 0; x < CircleSize; x++)
+                for (int x = 0; x < SurfaceWidth; x++)
                 {
                     int colOffset = x * 4;
                     int offM2 = ym2 + colOffset;
@@ -436,39 +471,100 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2. High-Clarity Liquid Lens Refraction & Specular Lighting
-            for (int y = 0; y < CircleSize; y++)
-            {
-                int rowIdx = y * CircleSize;
+            double straightW = geom.HalfWidth - geom.Radius;
+            double straightH = geom.HalfHeight - geom.Radius;
 
-                for (int x = 0; x < CircleSize; x++)
+            for (int y = 0; y < SurfaceHeight; y++)
+            {
+                int rowIdx = y * SurfaceWidth;
+                double py = y - geom.CenterY;
+                double absPy = Math.Abs(py);
+                double qy = absPy - straightH;
+
+                for (int x = 0; x < SurfaceWidth; x++)
                 {
                     int idx = rowIdx + x;
-                    ref readonly var pixel = ref RefractionMap[idx];
-                    int a = pixel.Alpha;
+                    double px = x - geom.CenterX;
+                    double absPx = Math.Abs(px);
+                    double qx = absPx - straightW;
+
+                    double outsideX = Math.Max(0.0, qx);
+                    double outsideY = Math.Max(0.0, qy);
+                    double outsideDist = Math.Sqrt(outsideX * outsideX + outsideY * outsideY);
+                    double insideDist = Math.Min(0.0, Math.Max(qx, qy));
+                    double sdf = outsideDist + insideDist - geom.Radius;
+
+                    double alphaVal = Math.Clamp(-sdf + 0.5, 0.0, 1.0);
+                    byte a = (byte)Math.Round(alphaVal * 255.0);
+
                     if (a == 0)
                     {
                         pDst[idx] = 0;
                         continue;
                     }
 
-                    // Bilinear sample with strictly verified non-negative weights
-                    int b = (pBlurred[pixel.Off00 + 0] * pixel.W00 + pBlurred[pixel.Off10 + 0] * pixel.W10 + pBlurred[pixel.Off01 + 0] * pixel.W01 + pBlurred[pixel.Off11 + 0] * pixel.W11) >> 8;
-                    int g = (pBlurred[pixel.Off00 + 1] * pixel.W00 + pBlurred[pixel.Off10 + 1] * pixel.W10 + pBlurred[pixel.Off01 + 1] * pixel.W01 + pBlurred[pixel.Off11 + 1] * pixel.W11) >> 8;
-                    int r = (pBlurred[pixel.Off00 + 2] * pixel.W00 + pBlurred[pixel.Off10 + 2] * pixel.W10 + pBlurred[pixel.Off01 + 2] * pixel.W01 + pBlurred[pixel.Off11 + 2] * pixel.W11) >> 8;
+                    double nx = 0.0, ny = 0.0;
+                    if (outsideDist > 1e-4)
+                    {
+                        nx = (outsideX / outsideDist) * Math.Sign(px);
+                        ny = (outsideY / outsideDist) * Math.Sign(py);
+                    }
+                    else if (insideDist > -1e-4)
+                    {
+                        if (qx > qy) nx = Math.Sign(px);
+                        else ny = Math.Sign(py);
+                    }
+                    else
+                    {
+                        if (qx > qy) nx = Math.Sign(px) * Math.Clamp(1.0 + qx / geom.Radius, 0.0, 1.0);
+                        else ny = Math.Sign(py) * Math.Clamp(1.0 + qy / geom.Radius, 0.0, 1.0);
+                    }
 
-                    // Ensure clean bounds
+                    double edgeDistance = Math.Max(0.0, -sdf);
+                    double u = Math.Clamp(1.0 - (edgeDistance / 14.0), 0.0, 1.0);
+                    double bend = Math.Pow(u, 2.5) * 6.5;
+
+                    double sx = Math.Clamp(x - nx * bend, 0.0, SurfaceWidth - 2.0);
+                    double sy = Math.Clamp(y - ny * bend, 0.0, SurfaceHeight - 2.0);
+
+                    int ix = (int)Math.Floor(sx);
+                    int iy = (int)Math.Floor(sy);
+                    double fx = sx - ix;
+                    double fy = sy - iy;
+
+                    int w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
+                    int w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
+                    int w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
+                    int w11 = Math.Max(0, 256 - (w00 + w10 + w01));
+
+                    int off00 = (iy * SurfaceWidth + ix) * 4;
+                    int off10 = (iy * SurfaceWidth + ix + 1) * 4;
+                    int off01 = ((iy + 1) * SurfaceWidth + ix) * 4;
+                    int off11 = ((iy + 1) * SurfaceWidth + ix + 1) * 4;
+
+                    int b = (pBlurred[off00 + 0] * w00 + pBlurred[off10 + 0] * w10 + pBlurred[off01 + 0] * w01 + pBlurred[off11 + 0] * w11) >> 8;
+                    int g = (pBlurred[off00 + 1] * w00 + pBlurred[off10 + 1] * w10 + pBlurred[off01 + 1] * w01 + pBlurred[off11 + 1] * w11) >> 8;
+                    int r = (pBlurred[off00 + 2] * w00 + pBlurred[off10 + 2] * w10 + pBlurred[off01 + 2] * w01 + pBlurred[off11 + 2] * w11) >> 8;
+
                     b = Math.Clamp(b, 0, 255);
                     g = Math.Clamp(g, 0, 255);
                     r = Math.Clamp(r, 0, 255);
 
-                    // Apple Liquid Glass Crystal Tint (high 95% transmission + subtle cool glass tone)
                     r = (r * 242 + 200 * 14) >> 8;
                     g = (g * 242 + 225 * 14) >> 8;
                     b = (b * 242 + 255 * 14) >> 8;
 
-                    // Natural glass specular highlights (top ambient dome light + outer rim + inner bevel)
-                    int light = pixel.DomeLight + pixel.RimLight + pixel.InnerRim;
+                    double topLightFactor = Math.Max(0.0, -py / geom.HalfHeight);
+                    double domeArc = Math.Exp(-Math.Pow((sdf + 12.0) / 14.0, 2)) * topLightFactor;
+                    int domeLight = (int)(domeArc * 30.0 * alphaVal);
+
+                    double rimExp = Math.Exp(-Math.Pow((sdf + 1.2) / 1.3, 2));
+                    int rimLight = (int)(rimExp * 215.0 * alphaVal);
+
+                    double innerExp = Math.Exp(-Math.Pow((sdf + 4.5) / 1.8, 2));
+                    int innerRim = (int)(innerExp * 45.0 * alphaVal);
+
+                    int light = domeLight + rimLight + innerRim;
                     if (light > 0)
                     {
                         r = Math.Min(255, r + light);
@@ -476,7 +572,6 @@ internal sealed class OverlayForm : Form
                         b = Math.Min(255, b + light);
                     }
 
-                    // Premultiplied 32-bit ARGB for GPU compositor
                     uint pR = (uint)((r * a) / 255);
                     uint pG = (uint)((g * a) / 255);
                     uint pB = (uint)((b * a) / 255);
@@ -485,12 +580,11 @@ internal sealed class OverlayForm : Form
             }
         }
 
-        // Direct DWM GPU compositing update (passing IntPtr.Zero preserves current window location)
         if (!IsDisposed)
         {
             try
             {
-                var size = new SIZE(CircleSize, CircleSize);
+                var size = new SIZE(SurfaceWidth, SurfaceHeight);
                 var ptSrc = new POINT(0, 0);
                 var blend = new BLENDFUNCTION
                 {
@@ -513,95 +607,8 @@ internal sealed class OverlayForm : Form
                     }
                 }
             }
-            catch (Exception)
-            {
-                // Ignore any transient window state changes during shutdown
-            }
+            catch { }
         }
-    }
-
-    private static RefractionPixel[] PrecomputeRefractionMap()
-    {
-        var map = new RefractionPixel[CircleSize * CircleSize];
-        double center = (CircleSize - 1) * 0.5;
-
-        for (int y = 0; y < CircleSize; y++)
-        {
-            for (int x = 0; x < CircleSize; x++)
-            {
-                double dx = x - center;
-                double dy = y - center;
-                double distance = Math.Sqrt(dx * dx + dy * dy);
-                double normalized = Math.Min(distance / center, 1.0);
-
-                // Anti-aliased subpixel alpha falloff (138.5 to 140.0)
-                double edgeDist = center - distance;
-                double alphaFactor = Math.Clamp(edgeDist + 0.5, 0.0, 1.0);
-                byte alpha = (byte)Math.Round(alphaFactor * 255.0);
-
-                if (alpha == 0)
-                {
-                    map[y * CircleSize + x] = default;
-                    continue;
-                }
-
-                // High-clarity liquid lens profile
-                double bendBase = Math.Pow(normalized, 3.0) * 7.5;
-                double wave = Math.Sin(normalized * 10.0 + y * 0.015) * normalized * 0.4;
-                double safeDist = Math.Max(distance, 0.001);
-
-                ComputeSample(center, dx, dy, safeDist, distance, bendBase, wave,
-                    out int off00, out int off10, out int off01, out int off11,
-                    out int w00, out int w10, out int w01, out int w11);
-
-                // 1. Natural top-curved specular dome reflection (ambient sky light hitting glass dome)
-                double topLightFactor = Math.Max(0.0, -dy / center); // 1.0 at top rim, 0.0 at center/bottom
-                double domeArc = Math.Exp(-Math.Pow((distance - 95.0) / 38.0, 2)) * topLightFactor;
-                byte domeLight = (byte)Math.Clamp(Math.Round(domeArc * 32.0 * alphaFactor), 0, 255);
-
-                // 2. Specular outer rim & inner reflection highlight
-                double rimExp = Math.Exp(-Math.Pow((distance - 137.2) / 1.5, 2));
-                byte rimLight = (byte)Math.Clamp(Math.Round(rimExp * 215.0 * alphaFactor), 0, 255);
-
-                double innerExp = Math.Exp(-Math.Pow((distance - 133.5) / 2.0, 2));
-                byte innerRim = (byte)Math.Clamp(Math.Round(innerExp * 45.0 * alphaFactor), 0, 255);
-
-                map[y * CircleSize + x] = new RefractionPixel(
-                    off00, off10, off01, off11, w00, w10, w01, w11,
-                    alpha, domeLight, rimLight, innerRim);
-            }
-        }
-
-        return map;
-    }
-
-    private static void ComputeSample(
-        double center, double dx, double dy, double safeDist, double distance, double bend, double wave,
-        out int off00, out int off10, out int off01, out int off11,
-        out int w00, out int w10, out int w01, out int w11)
-    {
-        double sx = center + (dx / safeDist) * (distance - bend) + wave;
-        double sy = center + (dy / safeDist) * (distance - bend) + (wave * 0.5);
-
-        // Strictly clamp continuous coordinates within valid sampling box [0, CircleSize - 2]
-        sx = Math.Clamp(sx, 0.0, CircleSize - 2.0);
-        sy = Math.Clamp(sy, 0.0, CircleSize - 2.0);
-
-        int ix = (int)Math.Floor(sx);
-        int iy = (int)Math.Floor(sy);
-        double fx = sx - ix;
-        double fy = sy - iy;
-
-        // fx and fy are now GUARANTEED in [0.0, 1.0]
-        w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
-        w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
-        w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
-        w11 = Math.Max(0, 256 - (w00 + w10 + w01));
-
-        off00 = (iy * CircleSize + ix) * 4;
-        off10 = (iy * CircleSize + ix + 1) * 4;
-        off01 = ((iy + 1) * CircleSize + ix) * 4;
-        off11 = ((iy + 1) * CircleSize + ix + 1) * 4;
     }
 
     protected override void Dispose(bool disposing)
@@ -637,10 +644,10 @@ internal sealed class OverlayForm : Form
             BITMAPINFO bmi = new BITMAPINFO();
             bmi.bmiHeader.biSize = Marshal.SizeOf<BITMAPINFOHEADER>();
             bmi.bmiHeader.biWidth = width;
-            bmi.bmiHeader.biHeight = -height; // Top-down DIB
+            bmi.bmiHeader.biHeight = -height;
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = 0; // BI_RGB
+            bmi.bmiHeader.biCompression = 0;
 
             _hBitmap = CreateDIBSection(screenDC, ref bmi, 0, out _pBits, IntPtr.Zero, 0);
             _oldBitmap = SelectObject(_memDC, _hBitmap);
@@ -653,7 +660,7 @@ internal sealed class OverlayForm : Form
             if (screenDC == IntPtr.Zero) return false;
             try
             {
-                return BitBlt(_memDC, 0, 0, width, height, screenDC, screenX, screenY, 0x00CC0020 /* SRCCOPY */);
+                return BitBlt(_memDC, 0, 0, width, height, screenDC, screenX, screenY, 0x00CC0020);
             }
             finally
             {
@@ -675,4 +682,3 @@ internal sealed class OverlayForm : Form
         }
     }
 }
-
