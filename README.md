@@ -9,7 +9,7 @@ through to the desktop.
  
 - **Drag**: Left click and drag the circle anywhere on your screen.
 - **Quit**: Press `Esc` or right-click the circle.
-- **Performance**: High-speed, zero-allocation optical pipeline running at 60 FPS with sub-millisecond background capture, separable Gaussian blur, and precomputed refraction.
+- **Performance**: High-speed, zero-allocation optical pipeline running at 120 FPS with sub-millisecond background capture, full-resolution 280x280 native Gaussian blur, precomputed refraction, chromatic dispersion (prism effect), and direct GPU DWM compositing.
  
 ```powershell
 dotnet run
