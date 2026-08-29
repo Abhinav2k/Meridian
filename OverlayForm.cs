@@ -295,8 +295,8 @@ internal sealed class OverlayForm : Form
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
         {
-            // 1. High-Clarity Separable 5-tap Gaussian Blur at full 280x280 resolution
-            // Horizontal pass [1, 4, 6, 4, 1] / 16
+            // 1. Frosted Liquid Glass Multi-Pass Separable Gaussian Blur (2 passes of [1, 4, 6, 4, 1] / 16)
+            // Pass 1: Horizontal (pRaw -> pBlurH)
             for (int y = 0; y < CircleSize; y++)
             {
                 int rowOffset = y * CircleSize * 4;
@@ -326,7 +326,68 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Vertical pass [1, 4, 6, 4, 1] / 16
+            // Pass 1: Vertical (pBlurH -> pBlurred)
+            for (int y = 0; y < CircleSize; y++)
+            {
+                int ym2 = Math.Max(0, y - 2) * CircleSize * 4;
+                int ym1 = Math.Max(0, y - 1) * CircleSize * 4;
+                int y0 = y * CircleSize * 4;
+                int yp1 = Math.Min(CircleSize - 1, y + 1) * CircleSize * 4;
+                int yp2 = Math.Min(CircleSize - 1, y + 2) * CircleSize * 4;
+
+                for (int x = 0; x < CircleSize; x++)
+                {
+                    int colOffset = x * 4;
+                    int offM2 = ym2 + colOffset;
+                    int offM1 = ym1 + colOffset;
+                    int off0 = y0 + colOffset;
+                    int offP1 = yp1 + colOffset;
+                    int offP2 = yp2 + colOffset;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurH[offM2 + c] +
+                                  (pBlurH[offM1 + c] << 2) +
+                                  pBlurH[off0 + c] * 6 +
+                                  (pBlurH[offP1 + c] << 2) +
+                                  pBlurH[offP2 + c];
+                        pBlurred[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurred[off0 + 3] = 255;
+                }
+            }
+
+            // Pass 2: Horizontal (pBlurred -> pBlurH)
+            for (int y = 0; y < CircleSize; y++)
+            {
+                int rowOffset = y * CircleSize * 4;
+                for (int x = 0; x < CircleSize; x++)
+                {
+                    int xm2 = Math.Max(0, x - 2);
+                    int xm1 = Math.Max(0, x - 1);
+                    int xp1 = Math.Min(CircleSize - 1, x + 1);
+                    int xp2 = Math.Min(CircleSize - 1, x + 2);
+
+                    int offM2 = rowOffset + xm2 * 4;
+                    int offM1 = rowOffset + xm1 * 4;
+                    int off0 = rowOffset + x * 4;
+                    int offP1 = rowOffset + xp1 * 4;
+                    int offP2 = rowOffset + xp2 * 4;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurred[offM2 + c] +
+                                  (pBlurred[offM1 + c] << 2) +
+                                  pBlurred[off0 + c] * 6 +
+                                  (pBlurred[offP1 + c] << 2) +
+                                  pBlurred[offP2 + c];
+                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurH[off0 + 3] = 255;
+                }
+            }
+
+            // Pass 2: Vertical (pBlurH -> pBlurred)
             for (int y = 0; y < CircleSize; y++)
             {
                 int ym2 = Math.Max(0, y - 2) * CircleSize * 4;
