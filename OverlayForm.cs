@@ -23,7 +23,7 @@ internal sealed class OverlayForm : Form
     private static extern bool UpdateLayeredWindow(
         IntPtr hwnd,
         IntPtr hdcDst,
-        ref POINT pptDst,
+        IntPtr pptDst,
         ref SIZE psize,
         IntPtr hdcSrc,
         ref POINT pptSrc,
@@ -154,8 +154,7 @@ internal sealed class OverlayForm : Form
     private IntPtr _hwnd;
 
     private bool _dragging;
-    private Point _dragStartCursor;
-    private Point _dragStartLocation;
+    private Point _dragStartOffset;
 
     public OverlayForm()
     {
@@ -251,8 +250,7 @@ internal sealed class OverlayForm : Form
         if (e.Button == MouseButtons.Left)
         {
             _dragging = true;
-            _dragStartCursor = Cursor.Position;
-            _dragStartLocation = Location;
+            _dragStartOffset = e.Location;
             Capture = true;
         }
     }
@@ -262,10 +260,8 @@ internal sealed class OverlayForm : Form
         base.OnMouseMove(e);
         if (_dragging && e.Button == MouseButtons.Left)
         {
-            var cur = Cursor.Position;
-            int newX = _dragStartLocation.X + (cur.X - _dragStartCursor.X);
-            int newY = _dragStartLocation.Y + (cur.Y - _dragStartCursor.Y);
-            Location = new Point(newX, newY);
+            Point cur = Cursor.Position;
+            Location = new Point(cur.X - _dragStartOffset.X, cur.Y - _dragStartOffset.Y);
         }
     }
 
@@ -489,12 +485,11 @@ internal sealed class OverlayForm : Form
             }
         }
 
-        // Direct DWM GPU compositing update
+        // Direct DWM GPU compositing update (passing IntPtr.Zero preserves current window location)
         if (!IsDisposed)
         {
             try
             {
-                var ptDst = new POINT(screenPos.X, screenPos.Y);
                 var size = new SIZE(CircleSize, CircleSize);
                 var ptSrc = new POINT(0, 0);
                 var blend = new BLENDFUNCTION
@@ -510,7 +505,7 @@ internal sealed class OverlayForm : Form
                 {
                     try
                     {
-                        UpdateLayeredWindow(Handle, screenDC, ref ptDst, ref size, surface.MemDC, ref ptSrc, 0, ref blend, UlwAlpha);
+                        UpdateLayeredWindow(_hwnd, screenDC, IntPtr.Zero, ref size, surface.MemDC, ref ptSrc, 0, ref blend, UlwAlpha);
                     }
                     finally
                     {
