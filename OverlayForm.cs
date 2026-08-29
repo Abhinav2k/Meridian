@@ -151,7 +151,9 @@ internal sealed class OverlayForm : Form
     private Thread? _renderThread;
     private volatile bool _running = true;
     private IntPtr _hwnd;
-    private readonly Stopwatch _animStopwatch = new();
+    private double _progress = 0.0;
+    private double _animDirection = 1.0; // +1.0 = forward (expand), -1.0 = backward (retract)
+    private readonly Stopwatch _frameStopwatch = new();
     private volatile PillGeometry _currentGeometry = new(SurfaceWidth * 0.5, -20.0, 14.0, 14.0, 14.0);
 
     public OverlayForm()
@@ -169,6 +171,7 @@ internal sealed class OverlayForm : Form
 
         Shown += (_, _) =>
         {
+            _frameStopwatch.Start();
             _renderThread = new Thread(RenderLoop)
             {
                 IsBackground = true,
@@ -182,14 +185,36 @@ internal sealed class OverlayForm : Form
         KeyPreview = true;
         KeyDown += (_, e) =>
         {
-            if (e.KeyCode == Keys.Escape) Close();
-            else if (e.KeyCode == Keys.Space) TriggerSpawnAnimation();
-            else if (e.KeyCode == Keys.S) SaveSnapshot();
+            if (e.KeyCode == Keys.Escape)
+            {
+                Close();
+            }
+            else if (e.KeyCode is Keys.Right or Keys.F or Keys.Down)
+            {
+                StepForward();
+            }
+            else if (e.KeyCode is Keys.Left or Keys.B or Keys.Up)
+            {
+                StepBackward();
+            }
+            else if (e.KeyCode == Keys.Space)
+            {
+                ToggleDirection();
+            }
+            else if (e.KeyCode == Keys.R)
+            {
+                ReplayFromStart();
+            }
+            else if (e.KeyCode == Keys.S)
+            {
+                SaveSnapshot();
+            }
         };
+
         MouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Right) Close();
-            else if (e.Button == MouseButtons.Left) TriggerSpawnAnimation();
+            else if (e.Button == MouseButtons.Left) ToggleDirection();
         };
     }
 
@@ -200,12 +225,34 @@ internal sealed class OverlayForm : Form
         _screenCapturer = new FastSurface(SurfaceWidth, SurfaceHeight);
         _renderSurface = new FastSurface(SurfaceWidth, SurfaceHeight);
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
-        _animStopwatch.Start();
     }
 
-    public void TriggerSpawnAnimation()
+    public void StepForward()
     {
-        _animStopwatch.Restart();
+        _animDirection = 1.0;
+        _renderSignal.Set();
+    }
+
+    public void StepBackward()
+    {
+        _animDirection = -1.0;
+        _renderSignal.Set();
+    }
+
+    public void ToggleDirection()
+    {
+        if (_animDirection > 0.0 || (_animDirection == 0.0 && _progress > 0.5))
+            _animDirection = -1.0;
+        else
+            _animDirection = 1.0;
+
+        _renderSignal.Set();
+    }
+
+    public void ReplayFromStart()
+    {
+        _progress = 0.0;
+        _animDirection = 1.0;
         _renderSignal.Set();
     }
 
@@ -281,10 +328,28 @@ internal sealed class OverlayForm : Form
             if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
                 continue;
 
-            double elapsed = _animStopwatch.Elapsed.TotalSeconds;
-            double progress = Math.Clamp(elapsed / AnimationDuration, 0.0, 1.0);
+            double dt = _frameStopwatch.Elapsed.TotalSeconds;
+            _frameStopwatch.Restart();
+            dt = Math.Clamp(dt, 0.0, 0.05);
 
-            PillGeometry geom = ComputeGeometry(progress);
+            if (_animDirection != 0.0)
+            {
+                const double speed = 1.0 / AnimationDuration;
+                _progress += _animDirection * speed * dt;
+
+                if (_progress >= 1.0)
+                {
+                    _progress = 1.0;
+                    _animDirection = 0.0;
+                }
+                else if (_progress <= 0.0)
+                {
+                    _progress = 0.0;
+                    _animDirection = 0.0;
+                }
+            }
+
+            PillGeometry geom = ComputeGeometry(_progress);
             _currentGeometry = geom;
 
             ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
@@ -306,15 +371,15 @@ internal sealed class OverlayForm : Form
             return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius);
         }
 
-        double dropProgress = Math.Clamp(p / 0.32, 0.0, 1.0);
-        double dropEase = EaseOutBack(dropProgress);
+        double dropProgress = Math.Clamp(p / 0.35, 0.0, 1.0);
+        double dropEase = EaseInOutCubic(dropProgress);
         double currentCenterY = spawnCenterY + (targetCenterY - spawnCenterY) * dropEase;
 
         double morphProgress = Math.Clamp((p - 0.20) / 0.80, 0.0, 1.0);
-        double morphEase = EaseOutElastic(morphProgress);
+        double morphEase = EaseInOutQuad(morphProgress);
 
         double currentHalfWidth = spawnRadius + (targetHalfWidth - spawnRadius) * morphEase;
-        double currentHalfHeight = spawnRadius + (targetHalfHeight - spawnRadius) * Math.Clamp(morphEase * 1.05, 0.0, 1.0);
+        double currentHalfHeight = spawnRadius + (targetHalfHeight - spawnRadius) * morphEase;
 
         currentHalfWidth = Math.Max(spawnRadius, currentHalfWidth);
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
@@ -323,18 +388,14 @@ internal sealed class OverlayForm : Form
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
     }
 
-    private static double EaseOutBack(double x)
+    private static double EaseInOutCubic(double x)
     {
-        const double c1 = 1.4;
-        const double c3 = c1 + 1.0;
-        return 1.0 + c3 * Math.Pow(x - 1.0, 3.0) + c1 * Math.Pow(x - 1.0, 2.0);
+        return x < 0.5 ? 4.0 * x * x * x : 1.0 - Math.Pow(-2.0 * x + 2.0, 3.0) / 2.0;
     }
 
-    private static double EaseOutElastic(double x)
+    private static double EaseInOutQuad(double x)
     {
-        if (x <= 0.0) return 0.0;
-        if (x >= 1.0) return 1.0;
-        return 1.0 - Math.Exp(-6.0 * x) * Math.Cos(6.28 * x * 0.9);
+        return x < 0.5 ? 2.0 * x * x : 1.0 - Math.Pow(-2.0 * x + 2.0, 2.0) / 2.0;
     }
 
     private unsafe void ProcessAndPresent(Point screenPos, PillGeometry geom)
