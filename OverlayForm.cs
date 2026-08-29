@@ -13,7 +13,7 @@ internal sealed class OverlayForm : Form
     private const int TargetPillWidth = 500;
     private const int TargetPillHeight = 64;
     private const int TopPadding = 18;
-    private const double AnimationDuration = 1.15; // seconds
+    private const double AnimationDuration = 0.85; // seconds
 
     private const uint WdaExcludeFromCapture = 0x11;
     private const int WmNcHitTest = 0x84;
@@ -376,9 +376,9 @@ internal sealed class OverlayForm : Form
         double dropEase = EaseOutCubic(dropProgress);
         double currentCenterY = spawnCenterY + (targetCenterY - spawnCenterY) * dropEase;
 
-        // 2. Morph & bloom phase: pill expands smoothly once in center
-        double morphProgress = Math.Clamp((p - 0.14) / 0.86, 0.0, 1.0);
-        double morphEase = EaseInOutQuad(morphProgress);
+        // 2. Sped-up expansion phase: blooms out quickly from center and settles smoothly
+        double morphProgress = Math.Clamp((p - 0.12) / 0.72, 0.0, 1.0);
+        double morphEase = EaseOutCubic(morphProgress);
 
         double currentHalfWidth = spawnRadius + (targetHalfWidth - spawnRadius) * morphEase;
         double currentHalfHeight = spawnRadius + (targetHalfHeight - spawnRadius) * morphEase;
@@ -393,11 +393,6 @@ internal sealed class OverlayForm : Form
     private static double EaseOutCubic(double x)
     {
         return 1.0 - Math.Pow(1.0 - x, 3.0);
-    }
-
-    private static double EaseInOutQuad(double x)
-    {
-        return x < 0.5 ? 2.0 * x * x : 1.0 - Math.Pow(-2.0 * x + 2.0, 2.0) / 2.0;
     }
 
     private unsafe void ProcessAndPresent(Point screenPos, PillGeometry geom)
