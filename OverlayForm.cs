@@ -9,48 +9,150 @@ namespace LiquidGlassCircle;
 internal sealed class OverlayForm : Form
 {
     private const int CircleSize = 280;
-    private const int WmNcHitTest = 0x84;
-    private const int HtTransparent = -1;
+    private const int WorkSize = CircleSize / 2; // 140
     private const uint WdaExcludeFromCapture = 0x11;
-    private const uint WdaNone = 0;
-    private const int SwpNoActivate = 0x0010;
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 33 };
-    private Bitmap? _texture;
-    private Point _circleLocation;
-    private Point _dragOffset;
-    private bool _dragging;
-    private bool _capturing;
-    private double _phase;
+    private const int WmNcLButtonDown = 0xA1;
+    private const int HtCaption = 0x2;
 
     [DllImport("user32.dll")]
-    private static extern bool SetWindowDisplayAffinity(IntPtr windowHandle, uint affinity);
+    private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO pbmi, uint iUsage, out IntPtr ppvBits, IntPtr hSection, uint dwOffset);
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr SelectObject(IntPtr hDC, IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteDC(IntPtr hDC);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool DeleteObject(IntPtr hObject);
+
+    [DllImport("gdi32.dll")]
+    private static extern bool BitBlt(IntPtr hdcDest, int nXDest, int nYDest, int nWidth, int nHeight, IntPtr hdcSrc, int nXSrc, int nYSrc, uint dwRop);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BITMAPINFOHEADER
+    {
+        public int biSize;
+        public int biWidth;
+        public int biHeight;
+        public short biPlanes;
+        public short biBitCount;
+        public int biCompression;
+        public int biSizeImage;
+        public int biXPelsPerMeter;
+        public int biYPelsPerMeter;
+        public int biClrUsed;
+        public int biClrImportant;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BITMAPINFO
+    {
+        public BITMAPINFOHEADER bmiHeader;
+        public uint bmiColors;
+    }
+
+    private readonly struct RefractionEntry
+    {
+        public readonly int Off00;
+        public readonly int Off10;
+        public readonly int Off01;
+        public readonly int Off11;
+        public readonly int W00;
+        public readonly int W10;
+        public readonly int W01;
+        public readonly int W11;
+
+        public RefractionEntry(int off00, int off10, int off01, int off11, int w00, int w10, int w01, int w11)
+        {
+            Off00 = off00;
+            Off10 = off10;
+            Off01 = off01;
+            Off11 = off11;
+            W00 = w00;
+            W10 = w10;
+            W01 = w01;
+            W11 = w11;
+        }
+    }
+
+    private static readonly RefractionEntry[] RefractionMap = PrecomputeRefractionMap();
+
+    private readonly System.Windows.Forms.Timer _renderTimer = new() { Interval = 16 };
+    private FastScreenCapturer? _screenCapturer;
+    private Bitmap? _frontTexture;
+    private Bitmap? _backTexture;
+    private readonly byte[] _downscaledBuffer = new byte[WorkSize * WorkSize * 4];
+    private readonly byte[] _blurHBuffer = new byte[WorkSize * WorkSize * 4];
+    private readonly byte[] _blurredBuffer = new byte[WorkSize * WorkSize * 4];
+    private readonly uint[] _refractedBuffer = new uint[WorkSize * WorkSize];
+    private readonly object _textureLock = new();
+
+    private volatile bool _isProcessing;
+    private volatile bool _updatePending;
+    private double _phase;
 
     public OverlayForm()
     {
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
-        BackColor = Color.Magenta;
-        TransparencyKey = Color.Magenta;
+        StartPosition = FormStartPosition.Manual;
+        ClientSize = new Size(CircleSize, CircleSize);
         DoubleBuffered = true;
-        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint |
-                 ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-        Bounds = SystemInformation.VirtualScreen;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                 ControlStyles.OptimizedDoubleBuffer | ControlStyles.Opaque, true);
 
-        _circleLocation = new Point(
-            SystemInformation.WorkingArea.Left - Bounds.Left + (SystemInformation.WorkingArea.Width - CircleSize) / 2,
-            SystemInformation.WorkingArea.Top - Bounds.Top + (SystemInformation.WorkingArea.Height - CircleSize) / 2);
-        _timer.Tick += (_, _) => UpdateGlass();
+        // Center initially on primary working area
+        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? SystemInformation.WorkingArea;
+        Location = new Point(
+            workingArea.Left + (workingArea.Width - CircleSize) / 2,
+            workingArea.Top + (workingArea.Height - CircleSize) / 2);
+
+        // Shape the window to a true circle; clicks outside pass through to the OS
+        using var path = new GraphicsPath();
+        path.AddEllipse(0, 0, CircleSize, CircleSize);
+        Region = new Region(path);
+
+        _frontTexture = new Bitmap(CircleSize, CircleSize, PixelFormat.Format32bppArgb);
+        _backTexture = new Bitmap(CircleSize, CircleSize, PixelFormat.Format32bppArgb);
+
+        _renderTimer.Tick += (_, _) =>
+        {
+            _phase = (_phase + 0.08) % (Math.PI * 2);
+            RequestCapture();
+            Invalidate();
+        };
+
         Shown += (_, _) =>
         {
-            // DWM excludes the overlay from desktop capture, so sampling never
-            // requires Hide/Show and the glass stays stable while it refreshes.
+            _screenCapturer = new FastScreenCapturer(CircleSize, CircleSize);
             SetWindowDisplayAffinity(Handle, WdaExcludeFromCapture);
-            _timer.Start();
-            UpdateGlass();
+            _renderTimer.Start();
+            RequestCapture();
         };
+
         KeyPreview = true;
         KeyDown += (_, e) => { if (e.KeyCode == Keys.Escape) Close(); };
+        MouseClick += (_, e) => { if (e.Button == MouseButtons.Right) Close(); };
     }
 
     protected override CreateParams CreateParams
@@ -58,53 +160,236 @@ internal sealed class OverlayForm : Form
         get
         {
             var parameters = base.CreateParams;
-            parameters.ExStyle |= 0x80; // WS_EX_TOOLWINDOW: no taskbar/Alt+Tab entry.
+            parameters.ExStyle |= 0x80; // WS_EX_TOOLWINDOW: hidden from taskbar/Alt+Tab
             return parameters;
         }
     }
 
-    protected override void WndProc(ref Message message)
+    protected override void OnMouseDown(MouseEventArgs e)
     {
-        if (message.Msg == WmNcHitTest)
+        base.OnMouseDown(e);
+        if (e.Button == MouseButtons.Left)
         {
-            var point = PointToClient(Cursor.Position);
-            var center = new Point(_circleLocation.X + CircleSize / 2, _circleLocation.Y + CircleSize / 2);
-            var dx = point.X - center.X;
-            var dy = point.Y - center.Y;
-            if ((dx * dx) + (dy * dy) > Math.Pow(CircleSize / 2, 2))
-            {
-                message.Result = new IntPtr(HtTransparent);
-                return;
-            }
+            ReleaseCapture();
+            SendMessage(Handle, WmNcLButtonDown, (IntPtr)HtCaption, IntPtr.Zero);
         }
-        base.WndProc(ref message);
     }
 
-    protected override void OnPaintBackground(PaintEventArgs e) => e.Graphics.Clear(Color.Magenta);
+    protected override void OnLocationChanged(EventArgs e)
+    {
+        base.OnLocationChanged(e);
+        RequestCapture();
+    }
+
+    private void RequestCapture()
+    {
+        if (_screenCapturer == null || IsDisposed) return;
+        _updatePending = true;
+        if (_isProcessing) return;
+
+        _isProcessing = true;
+        _updatePending = false;
+        var screenPos = Location;
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                do
+                {
+                    _updatePending = false;
+                    screenPos = Location;
+                    ProcessFrame(screenPos);
+                } while (_updatePending && !IsDisposed);
+            }
+            finally
+            {
+                _isProcessing = false;
+                if (!IsDisposed)
+                {
+                    try { BeginInvoke(new Action(Invalidate)); }
+                    catch (InvalidOperationException) { }
+                }
+            }
+        });
+    }
+
+    private unsafe void ProcessFrame(Point screenPos)
+    {
+        var capturer = _screenCapturer;
+        if (capturer == null || !capturer.Capture(screenPos.X, screenPos.Y, CircleSize, CircleSize))
+            return;
+
+        byte* pRaw = (byte*)capturer.BitsPtr;
+        if (pRaw == null) return;
+
+        // 1. Fast 2x2 box downscale from 280x280 to 140x140
+        fixed (byte* pDown = _downscaledBuffer)
+        fixed (byte* pBlurH = _blurHBuffer)
+        fixed (byte* pBlurred = _blurredBuffer)
+        fixed (uint* pRefracted32 = _refractedBuffer)
+        {
+            for (int y = 0; y < WorkSize; y++)
+            {
+                int srcY0 = (y * 2) * CircleSize * 4;
+                int srcY1 = (y * 2 + 1) * CircleSize * 4;
+                int dstY = y * WorkSize * 4;
+
+                for (int x = 0; x < WorkSize; x++)
+                {
+                    int srcX0 = x * 8;
+                    int srcX1 = srcX0 + 4;
+                    int dstX = dstY + x * 4;
+
+                    pDown[dstX + 0] = (byte)((pRaw[srcY0 + srcX0 + 0] + pRaw[srcY0 + srcX1 + 0] + pRaw[srcY1 + srcX0 + 0] + pRaw[srcY1 + srcX1 + 0]) >> 2);
+                    pDown[dstX + 1] = (byte)((pRaw[srcY0 + srcX0 + 1] + pRaw[srcY0 + srcX1 + 1] + pRaw[srcY1 + srcX0 + 1] + pRaw[srcY1 + srcX1 + 1]) >> 2);
+                    pDown[dstX + 2] = (byte)((pRaw[srcY0 + srcX0 + 2] + pRaw[srcY0 + srcX1 + 2] + pRaw[srcY1 + srcX0 + 2] + pRaw[srcY1 + srcX1 + 2]) >> 2);
+                    pDown[dstX + 3] = 255;
+                }
+            }
+
+            // 2. Separable 5-tap Gaussian Blur (Horizontal) [1, 4, 6, 4, 1] / 16
+            for (int y = 0; y < WorkSize; y++)
+            {
+                int rowOffset = y * WorkSize * 4;
+                for (int x = 0; x < WorkSize; x++)
+                {
+                    int xm2 = Math.Max(0, x - 2);
+                    int xm1 = Math.Max(0, x - 1);
+                    int xp1 = Math.Min(WorkSize - 1, x + 1);
+                    int xp2 = Math.Min(WorkSize - 1, x + 2);
+
+                    int offM2 = rowOffset + xm2 * 4;
+                    int offM1 = rowOffset + xm1 * 4;
+                    int off0 = rowOffset + x * 4;
+                    int offP1 = rowOffset + xp1 * 4;
+                    int offP2 = rowOffset + xp2 * 4;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pDown[offM2 + c] +
+                                  (pDown[offM1 + c] << 2) +
+                                  pDown[off0 + c] * 6 +
+                                  (pDown[offP1 + c] << 2) +
+                                  pDown[offP2 + c];
+                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurH[off0 + 3] = 255;
+                }
+            }
+
+            // 3. Separable 5-tap Gaussian Blur (Vertical) [1, 4, 6, 4, 1] / 16
+            for (int y = 0; y < WorkSize; y++)
+            {
+                int ym2 = Math.Max(0, y - 2) * WorkSize * 4;
+                int ym1 = Math.Max(0, y - 1) * WorkSize * 4;
+                int y0 = y * WorkSize * 4;
+                int yp1 = Math.Min(WorkSize - 1, y + 1) * WorkSize * 4;
+                int yp2 = Math.Min(WorkSize - 1, y + 2) * WorkSize * 4;
+
+                for (int x = 0; x < WorkSize; x++)
+                {
+                    int colOffset = x * 4;
+                    int offM2 = ym2 + colOffset;
+                    int offM1 = ym1 + colOffset;
+                    int off0 = y0 + colOffset;
+                    int offP1 = yp1 + colOffset;
+                    int offP2 = yp2 + colOffset;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurH[offM2 + c] +
+                                  (pBlurH[offM1 + c] << 2) +
+                                  pBlurH[off0 + c] * 6 +
+                                  (pBlurH[offP1 + c] << 2) +
+                                  pBlurH[offP2 + c];
+                        pBlurred[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurred[off0 + 3] = 255;
+                }
+            }
+
+            // 4. Precomputed Liquid Lens Refraction (zero floating point runtime cost)
+            for (int i = 0; i < RefractionMap.Length; i++)
+            {
+                ref readonly var entry = ref RefractionMap[i];
+                uint b = (uint)((pBlurred[entry.Off00 + 0] * entry.W00 + pBlurred[entry.Off10 + 0] * entry.W10 + pBlurred[entry.Off01 + 0] * entry.W01 + pBlurred[entry.Off11 + 0] * entry.W11) >> 8);
+                uint g = (uint)((pBlurred[entry.Off00 + 1] * entry.W00 + pBlurred[entry.Off10 + 1] * entry.W10 + pBlurred[entry.Off01 + 1] * entry.W01 + pBlurred[entry.Off11 + 1] * entry.W11) >> 8);
+                uint r = (uint)((pBlurred[entry.Off00 + 2] * entry.W00 + pBlurred[entry.Off10 + 2] * entry.W10 + pBlurred[entry.Off01 + 2] * entry.W01 + pBlurred[entry.Off11 + 2] * entry.W11) >> 8);
+                pRefracted32[i] = (0xFFu << 24) | (r << 16) | (g << 8) | b;
+            }
+
+            // 5. Upscale 140x140 into the 280x280 back buffer bitmap
+            if (_backTexture != null)
+            {
+                var bmpData = _backTexture.LockBits(new Rectangle(0, 0, CircleSize, CircleSize),
+                    ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                uint* pDst32 = (uint*)bmpData.Scan0;
+
+                for (int y = 0; y < WorkSize; y++)
+                {
+                    int srcRow = y * WorkSize;
+                    int dstRow0 = (y * 2) * CircleSize;
+                    int dstRow1 = (y * 2 + 1) * CircleSize;
+
+                    for (int x = 0; x < WorkSize; x++)
+                    {
+                        uint pixel = pRefracted32[srcRow + x];
+                        int dstX = x * 2;
+                        pDst32[dstRow0 + dstX] = pixel;
+                        pDst32[dstRow0 + dstX + 1] = pixel;
+                        pDst32[dstRow1 + dstX] = pixel;
+                        pDst32[dstRow1 + dstX + 1] = pixel;
+                    }
+                }
+                _backTexture.UnlockBits(bmpData);
+
+                // Ping-pong swap back texture to front texture
+                lock (_textureLock)
+                {
+                    (_frontTexture, _backTexture) = (_backTexture, _frontTexture);
+                }
+            }
+        }
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         var graphics = e.Graphics;
         graphics.SmoothingMode = SmoothingMode.HighQuality;
         graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        var circle = new Rectangle(_circleLocation, new Size(CircleSize, CircleSize));
+        var circle = new Rectangle(0, 0, CircleSize, CircleSize);
+
         using var path = new GraphicsPath();
         path.AddEllipse(circle);
         graphics.SetClip(path);
-        if (_texture != null) graphics.DrawImage(_texture, circle);
-        else
-        {
-            using var fallback = new PathGradientBrush(path)
-            {
-                CenterColor = Color.FromArgb(180, 192, 224, 255),
-                SurroundColors = new[] { Color.FromArgb(85, 86, 122, 210) }
-            };
-            graphics.FillPath(fallback, path);
-        }
-        using (var tint = new SolidBrush(Color.FromArgb(34, 185, 212, 255))) graphics.FillEllipse(tint, circle);
 
-        var glintX = circle.Left + 80 + (int)(Math.Sin(_phase * 0.18) * 18);
-        using (var glint = new LinearGradientBrush(new Rectangle(glintX - 66, circle.Top + 30, 132, CircleSize - 60),
+        lock (_textureLock)
+        {
+            if (_frontTexture != null)
+            {
+                graphics.DrawImageUnscaled(_frontTexture, 0, 0);
+            }
+            else
+            {
+                using var fallback = new PathGradientBrush(path)
+                {
+                    CenterColor = Color.FromArgb(180, 192, 224, 255),
+                    SurroundColors = new[] { Color.FromArgb(85, 86, 122, 210) }
+                };
+                graphics.FillPath(fallback, path);
+            }
+        }
+
+        // Apple-style soft liquid blue tint
+        using (var tint = new SolidBrush(Color.FromArgb(34, 185, 212, 255)))
+        {
+            graphics.FillEllipse(tint, circle);
+        }
+
+        // Soft animating glint sheen
+        var glintX = 80 + (int)(Math.Sin(_phase * 0.18) * 18);
+        using (var glint = new LinearGradientBrush(new Rectangle(glintX - 66, 30, 132, CircleSize - 60),
                    Color.Transparent, Color.Transparent, LinearGradientMode.Horizontal))
         {
             glint.InterpolationColors = new ColorBlend
@@ -117,188 +402,126 @@ internal sealed class OverlayForm : Form
                 },
                 Positions = new[] { 0f, .27f, .5f, .73f, 1f }
             };
-            graphics.FillEllipse(glint, new Rectangle(glintX - 66, circle.Top + 30, 132, CircleSize - 60));
+            graphics.FillEllipse(glint, new Rectangle(glintX - 66, 30, 132, CircleSize - 60));
         }
+
         graphics.ResetClip();
 
-        using var outer = new Pen(Color.FromArgb(190, Color.White), 2.2f);
-        graphics.DrawEllipse(outer, circle);
-        // One clean rim keeps the glass shape crisp without turning it into a
-        // stack of visible concentric rings.
+        // Crisp white outer rim & subtle inner specular rim
+        using var outer = new Pen(Color.FromArgb(195, Color.White), 2.2f);
+        graphics.DrawEllipse(outer, 1.1f, 1.1f, CircleSize - 2.2f, CircleSize - 2.2f);
+
+        using var inner = new Pen(Color.FromArgb(40, 255, 255, 255), 1.2f);
+        graphics.DrawEllipse(inner, 3.2f, 3.2f, CircleSize - 6.4f, CircleSize - 6.4f);
     }
 
-    private void UpdateGlass()
+    private static RefractionEntry[] PrecomputeRefractionMap()
     {
-        _phase = (_phase + 0.08) % (Math.PI * 2);
-        var screen = new Point(Bounds.Left + _circleLocation.X, Bounds.Top + _circleLocation.Y);
-        if (_capturing) return;
-        _capturing = true;
-        _ = Task.Run(() => CaptureAndProcess(screen)).ContinueWith(completed =>
+        var map = new RefractionEntry[WorkSize * WorkSize];
+        double center = (WorkSize - 1) * 0.5;
+
+        for (int y = 0; y < WorkSize; y++)
         {
-            Bitmap? texture = completed is { IsCompletedSuccessfully: true } ? completed.Result : null;
-            if (IsDisposed) { texture?.Dispose(); return; }
+            for (int x = 0; x < WorkSize; x++)
+            {
+                double dx = x - center;
+                double dy = y - center;
+                double distance = Math.Sqrt(dx * dx + dy * dy);
+                double normalized = Math.Min(distance / center, 1.0);
+                double bend = Math.Pow(normalized, 3.1) * 4.0;
+                double wave = Math.Sin(normalized * 18.0 + y * 0.018) * normalized;
+
+                double safeDist = Math.Max(distance, 0.001);
+                double sx = center + (dx / safeDist) * (distance - bend) + wave;
+                double sy = center + (dy / safeDist) * (distance - bend) + (wave * 0.5);
+
+                int ix = Math.Clamp((int)Math.Floor(sx), 0, WorkSize - 2);
+                int iy = Math.Clamp((int)Math.Floor(sy), 0, WorkSize - 2);
+                double fx = sx - ix;
+                double fy = sy - iy;
+
+                int w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
+                int w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
+                int w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
+                int w11 = 256 - (w00 + w10 + w01);
+
+                int off00 = (iy * WorkSize + ix) * 4;
+                int off10 = (iy * WorkSize + ix + 1) * 4;
+                int off01 = ((iy + 1) * WorkSize + ix) * 4;
+                int off11 = ((iy + 1) * WorkSize + ix + 1) * 4;
+
+                map[y * WorkSize + x] = new RefractionEntry(off00, off10, off01, off11, w00, w10, w01, w11);
+            }
+        }
+
+        return map;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _renderTimer.Dispose();
+            _screenCapturer?.Dispose();
+            _frontTexture?.Dispose();
+            _backTexture?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private sealed class FastScreenCapturer : IDisposable
+    {
+        private readonly IntPtr _memDC;
+        private readonly IntPtr _hBitmap;
+        private readonly IntPtr _oldBitmap;
+        private readonly IntPtr _pBits;
+
+        public IntPtr BitsPtr => _pBits;
+
+        public FastScreenCapturer(int width, int height)
+        {
+            IntPtr screenDC = GetDC(IntPtr.Zero);
+            _memDC = CreateCompatibleDC(screenDC);
+
+            BITMAPINFO bmi = new BITMAPINFO();
+            bmi.bmiHeader.biSize = Marshal.SizeOf<BITMAPINFOHEADER>();
+            bmi.bmiHeader.biWidth = width;
+            bmi.bmiHeader.biHeight = -height; // Top-down DIB
+            bmi.bmiHeader.biPlanes = 1;
+            bmi.bmiHeader.biBitCount = 32;
+            bmi.bmiHeader.biCompression = 0; // BI_RGB
+
+            _hBitmap = CreateDIBSection(screenDC, ref bmi, 0, out _pBits, IntPtr.Zero, 0);
+            _oldBitmap = SelectObject(_memDC, _hBitmap);
+            ReleaseDC(IntPtr.Zero, screenDC);
+        }
+
+        public bool Capture(int screenX, int screenY, int width, int height)
+        {
+            IntPtr screenDC = GetDC(IntPtr.Zero);
+            if (screenDC == IntPtr.Zero) return false;
             try
             {
-                BeginInvoke(new Action(() =>
-                {
-                    try
-                    {
-                        if (texture == null) return;
-                        _texture?.Dispose();
-                        _texture = texture;
-                        texture = null;
-                        Invalidate();
-                    }
-                    finally
-                    {
-                        texture?.Dispose();
-                        _capturing = false;
-                    }
-                }));
+                return BitBlt(_memDC, 0, 0, width, height, screenDC, screenX, screenY, 0x00CC0020 /* SRCCOPY */);
             }
-            catch (InvalidOperationException)
+            finally
             {
-                texture?.Dispose();
-                _capturing = false;
+                ReleaseDC(IntPtr.Zero, screenDC);
             }
-        }, TaskScheduler.Default);
-    }
-
-    private static Bitmap? CaptureAndProcess(Point screen)
-    {
-        try
-        {
-            using var captured = new Bitmap(CircleSize, CircleSize, PixelFormat.Format32bppArgb);
-            using var graphics = Graphics.FromImage(captured);
-            graphics.CopyFromScreen(screen, Point.Empty, captured.Size, CopyPixelOperation.SourceCopy);
-            return RefractAndBlur(captured);
-        }
-        catch (Exception)
-        {
-            return null;
-        }
-    }
-
-    private static Bitmap RefractAndBlur(Bitmap source)
-    {
-        const int workSize = CircleSize / 2;
-        var result = new Bitmap(CircleSize, CircleSize, PixelFormat.Format32bppArgb);
-        var sourceData = source.LockBits(new Rectangle(0, 0, CircleSize, CircleSize), ImageLockMode.ReadOnly,
-                                          PixelFormat.Format32bppArgb);
-        var fullStride = Math.Abs(sourceData.Stride);
-        var fullInput = new byte[fullStride * CircleSize];
-        Marshal.Copy(sourceData.Scan0, fullInput, 0, fullInput.Length);
-        source.UnlockBits(sourceData);
-
-        // Work at half resolution. The final upscale is intentional: it gives
-        // the material a softer, more convincing frosted-glass diffusion while
-        // keeping drag-time rendering responsive.
-        var input = new byte[workSize * workSize * 4];
-        for (var y = 0; y < workSize; y++)
-        for (var x = 0; x < workSize; x++)
-        for (var channel = 0; channel < 4; channel++)
-        {
-            var sourceX = x * 2;
-            var sourceY = y * 2;
-            var sum = fullInput[(sourceY * fullStride) + (sourceX * 4) + channel]
-                    + fullInput[(sourceY * fullStride) + ((sourceX + 1) * 4) + channel]
-                    + fullInput[((sourceY + 1) * fullStride) + (sourceX * 4) + channel]
-                    + fullInput[((sourceY + 1) * fullStride) + ((sourceX + 1) * 4) + channel];
-            input[(y * workSize * 4) + (x * 4) + channel] = (byte)(sum / 4);
         }
 
-        // Separable 5-tap Gaussian blur: enough diffusion to read as glass,
-        // while keeping the work off the UI thread.
-        var horizontal = new byte[input.Length];
-        var kernel = new[] { 1, 4, 6, 4, 1 };
-        for (var y = 0; y < workSize; y++)
-        for (var x = 0; x < workSize; x++)
-        for (var channel = 0; channel < 3; channel++)
+        public void Dispose()
         {
-            var total = 0;
-            for (var offset = -2; offset <= 2; offset++)
+            if (_memDC != IntPtr.Zero)
             {
-                var sampleX = Math.Clamp(x + offset, 0, workSize - 1);
-                total += input[(y * workSize * 4) + (sampleX * 4) + channel] * kernel[offset + 2];
+                SelectObject(_memDC, _oldBitmap);
+                DeleteDC(_memDC);
             }
-            horizontal[(y * workSize * 4) + (x * 4) + channel] = (byte)(total / 16);
-        }
-        var blurred = new byte[input.Length];
-        for (var y = 0; y < workSize; y++)
-        for (var x = 0; x < workSize; x++)
-        for (var channel = 0; channel < 3; channel++)
-        {
-            var total = 0;
-            for (var offset = -2; offset <= 2; offset++)
+            if (_hBitmap != IntPtr.Zero)
             {
-                var sampleY = Math.Clamp(y + offset, 0, workSize - 1);
-                total += horizontal[(sampleY * workSize * 4) + (x * 4) + channel] * kernel[offset + 2];
+                DeleteObject(_hBitmap);
             }
-            blurred[(y * workSize * 4) + (x * 4) + channel] = (byte)(total / 16);
         }
-
-        var workOutput = new byte[workSize * workSize * 4];
-        for (var y = 0; y < workSize; y++)
-        for (var x = 0; x < workSize; x++)
-        {
-            var dx = x - (workSize - 1) * .5; var dy = y - (workSize - 1) * .5;
-            var distance = Math.Sqrt(dx * dx + dy * dy);
-            var normalized = Math.Min(distance / (workSize * .5), 1);
-            var bend = Math.Pow(normalized, 3.1) * 4;
-            var wave = Math.Sin(normalized * 18 + y * 0.018) * normalized;
-            var center = (workSize - 1) * .5;
-            var sx = center + dx / Math.Max(distance, .001) * (distance - bend) + wave;
-            var sy = center + dy / Math.Max(distance, .001) * (distance - bend) + wave * .5;
-            var ix = Math.Clamp((int)Math.Floor(sx), 0, workSize - 2);
-            var iy = Math.Clamp((int)Math.Floor(sy), 0, workSize - 2);
-            var fx = sx - ix;
-            var fy = sy - iy;
-            var outputIndex = (y * workSize + x) * 4;
-            for (var c = 0; c < 3; c++)
-            {
-                var a = blurred[(iy * workSize * 4) + (ix * 4) + c];
-                var b = blurred[(iy * workSize * 4) + ((ix + 1) * 4) + c];
-                var d = blurred[((iy + 1) * workSize * 4) + (ix * 4) + c];
-                var e = blurred[((iy + 1) * workSize * 4) + ((ix + 1) * 4) + c];
-                workOutput[outputIndex + c] = (byte)(a * (1 - fx) * (1 - fy) + b * fx * (1 - fy) + d * (1 - fx) * fy + e * fx * fy);
-            }
-            workOutput[outputIndex + 3] = 255;
-        }
-        var resultData = result.LockBits(new Rectangle(0, 0, CircleSize, CircleSize), ImageLockMode.WriteOnly,
-                                          PixelFormat.Format32bppArgb);
-        var output = new byte[CircleSize * CircleSize * 4];
-        for (var y = 0; y < CircleSize; y++)
-        for (var x = 0; x < CircleSize; x++)
-        {
-            var sourceIndex = ((y / 2) * workSize + (x / 2)) * 4;
-            var outputIndex = (y * CircleSize + x) * 4;
-            output[outputIndex] = workOutput[sourceIndex];
-            output[outputIndex + 1] = workOutput[sourceIndex + 1];
-            output[outputIndex + 2] = workOutput[sourceIndex + 2];
-            output[outputIndex + 3] = 255;
-        }
-        Marshal.Copy(output, 0, resultData.Scan0, output.Length);
-        result.UnlockBits(resultData);
-        return result;
     }
-
-    protected override void OnMouseDown(MouseEventArgs e)
-    {
-        if (e.Button != MouseButtons.Left) return;
-        var dx = e.X - _circleLocation.X - CircleSize / 2;
-        var dy = e.Y - _circleLocation.Y - CircleSize / 2;
-        if ((dx * dx) + (dy * dy) > Math.Pow(CircleSize / 2, 2)) return;
-        _dragging = true; _dragOffset = new Point(e.X - _circleLocation.X, e.Y - _circleLocation.Y);
-    }
-
-    protected override void OnMouseMove(MouseEventArgs e)
-    {
-        if (!_dragging || e.Button != MouseButtons.Left) return;
-        _circleLocation = new Point(Math.Clamp(e.X - _dragOffset.X, 0, Width - CircleSize),
-                                    Math.Clamp(e.Y - _dragOffset.Y, 0, Height - CircleSize));
-        Invalidate();
-    }
-
-    protected override void OnMouseUp(MouseEventArgs e) => _dragging = false;
-    protected override void Dispose(bool disposing) { if (disposing) { _timer.Dispose(); _texture?.Dispose(); } base.Dispose(disposing); }
 }
+
