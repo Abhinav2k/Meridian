@@ -555,7 +555,9 @@ internal sealed class OverlayForm : Form
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
                     double sdf = outsideDist + insideDist - geom.Radius;
 
-                    double alphaVal = Math.Clamp(-sdf + 0.5, 0.0, 1.0);
+                    // 1. Ultra-smooth Hermite cubic anti-aliased alpha falloff (smoothstep across 1.6px boundary)
+                    double edgeFactor = Math.Clamp((-sdf + 0.8) / 1.6, 0.0, 1.0);
+                    double alphaVal = edgeFactor * edgeFactor * (3.0 - 2.0 * edgeFactor);
                     byte a = (byte)Math.Round(alphaVal * 255.0);
 
                     if (a == 0)
@@ -564,6 +566,7 @@ internal sealed class OverlayForm : Form
                         continue;
                     }
 
+                    // Compute continuous normal vector for smooth border refraction and specular lighting
                     double nx = 0.0, ny = 0.0;
                     if (outsideDist > 1e-4)
                     {
@@ -581,6 +584,7 @@ internal sealed class OverlayForm : Form
                         else ny = Math.Sign(py) * Math.Clamp(1.0 + qy / geom.Radius, 0.0, 1.0);
                     }
 
+                    // Meniscus lens refraction
                     double edgeDistance = Math.Max(0.0, -sdf);
                     double u = Math.Clamp(1.0 - (edgeDistance / 14.0), 0.0, 1.0);
                     double bend = Math.Pow(u, 2.5) * 6.5;
@@ -611,28 +615,34 @@ internal sealed class OverlayForm : Form
                     g = Math.Clamp(g, 0, 255);
                     r = Math.Clamp(r, 0, 255);
 
-                    r = (r * 242 + 200 * 14) >> 8;
-                    g = (g * 242 + 225 * 14) >> 8;
+                    // Apple Liquid Glass Crystal Tint
+                    r = (r * 242 + 205 * 14) >> 8;
+                    g = (g * 242 + 228 * 14) >> 8;
                     b = (b * 242 + 255 * 14) >> 8;
 
-                    double topLightFactor = Math.Max(0.0, -py / geom.HalfHeight);
-                    double domeArc = Math.Exp(-Math.Pow((sdf + 12.0) / 14.0, 2)) * topLightFactor;
-                    int domeLight = (int)(domeArc * 30.0 * alphaVal);
+                    // 2. Smooth Continuous Glass Border Lighting (Visible & Silky on All Backgrounds)
+                    // A. Outer Specular White Rim (1.5px Gaussian highlight centered at sdf = -1.0)
+                    double outerRimGauss = Math.Exp(-Math.Pow((sdf + 1.0) / 1.25, 2.0));
+                    int outerRimLight = (int)(outerRimGauss * 225.0 * alphaVal);
 
-                    double rimExp = Math.Exp(-Math.Pow((sdf + 1.2) / 1.3, 2));
-                    int rimLight = (int)(rimExp * 215.0 * alphaVal);
+                    // B. Inner Bevel Sheen (2.0px soft inner reflection centered at sdf = -3.2)
+                    double innerRimGauss = Math.Exp(-Math.Pow((sdf + 3.2) / 1.6, 2.0));
+                    int innerRimLight = (int)(innerRimGauss * 50.0 * alphaVal);
 
-                    double innerExp = Math.Exp(-Math.Pow((sdf + 4.5) / 1.8, 2));
-                    int innerRim = (int)(innerExp * 45.0 * alphaVal);
+                    // C. Top Ambient Sky Highlight (smooth crest light on upper curve py < 0)
+                    double topNorm = Math.Clamp(-py / Math.Max(geom.HalfHeight, 1.0), 0.0, 1.0);
+                    double topDomeGauss = Math.Exp(-Math.Pow((sdf + 8.0) / 9.0, 2.0)) * topNorm;
+                    int topDomeLight = (int)(topDomeGauss * 35.0 * alphaVal);
 
-                    int light = domeLight + rimLight + innerRim;
-                    if (light > 0)
+                    int totalLight = outerRimLight + innerRimLight + topDomeLight;
+                    if (totalLight > 0)
                     {
-                        r = Math.Min(255, r + light);
-                        g = Math.Min(255, g + light);
-                        b = Math.Min(255, b + light);
+                        r = Math.Min(255, r + totalLight);
+                        g = Math.Min(255, g + totalLight);
+                        b = Math.Min(255, b + totalLight);
                     }
 
+                    // Premultiplied 32-bit ARGB for GPU compositor
                     uint pR = (uint)((r * a) / 255);
                     uint pG = (uint)((g * a) / 255);
                     uint pB = (uint)((b * a) / 255);
