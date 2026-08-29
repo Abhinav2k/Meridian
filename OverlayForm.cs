@@ -1,5 +1,4 @@
 using System.Drawing;
-using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -10,8 +9,6 @@ internal sealed class OverlayForm : Form
 {
     private const int CircleSize = 280;
     private const uint WdaExcludeFromCapture = 0x11;
-    private const int WmNcLButtonDown = 0xA1;
-    private const int HtCaption = 0x2;
     private const int WmNcHitTest = 0x84;
     private const int HtTransparent = -1;
     private const int HtClient = 1;
@@ -36,12 +33,6 @@ internal sealed class OverlayForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool SetWindowDisplayAffinity(IntPtr hWnd, uint dwAffinity);
-
-    [DllImport("user32.dll")]
-    private static extern bool ReleaseCapture();
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetDC(IntPtr hWnd);
@@ -120,34 +111,51 @@ internal sealed class OverlayForm : Form
         public readonly int Off00, Off10, Off01, Off11;
         public readonly int W00, W10, W01, W11;
         public readonly byte Alpha;
+        public readonly byte DomeLight;
         public readonly byte RimLight;
         public readonly byte InnerRim;
 
         public RefractionPixel(
             int off00, int off10, int off01, int off11,
             int w00, int w10, int w01, int w11,
-            byte alpha, byte rimLight, byte innerRim)
+            byte alpha, byte domeLight, byte rimLight, byte innerRim)
         {
             Off00 = off00; Off10 = off10; Off01 = off01; Off11 = off11;
             W00 = w00; W10 = w10; W01 = w01; W11 = w11;
             Alpha = alpha;
+            DomeLight = domeLight;
             RimLight = rimLight;
             InnerRim = innerRim;
         }
     }
 
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
     private static readonly RefractionPixel[] RefractionMap = PrecomputeRefractionMap();
 
-    // 8ms interval target for ~120 FPS high-refresh rate fluidity
-    private readonly System.Windows.Forms.Timer _renderTimer = new() { Interval = 8 };
     private FastSurface? _screenCapturer;
     private FastSurface? _renderSurface;
     private readonly byte[] _blurHBuffer = new byte[CircleSize * CircleSize * 4];
     private readonly byte[] _blurredBuffer = new byte[CircleSize * CircleSize * 4];
 
-    private volatile bool _isProcessing;
-    private volatile bool _updatePending;
-    private double _phase;
+    private readonly AutoResetEvent _renderSignal = new(false);
+    private Thread? _renderThread;
+    private volatile bool _running = true;
+    private IntPtr _hwnd;
+
+    private bool _dragging;
+    private Point _dragStartCursor;
+    private Point _dragStartLocation;
 
     public OverlayForm()
     {
@@ -163,19 +171,21 @@ internal sealed class OverlayForm : Form
             workingArea.Left + (workingArea.Width - CircleSize) / 2,
             workingArea.Top + (workingArea.Height - CircleSize) / 2);
 
-        _renderTimer.Tick += (_, _) =>
-        {
-            _phase = (_phase + 0.06) % (Math.PI * 2);
-            RequestCapture();
-        };
-
         Shown += (_, _) =>
         {
+            _hwnd = Handle;
             _screenCapturer = new FastSurface(CircleSize, CircleSize);
             _renderSurface = new FastSurface(CircleSize, CircleSize);
-            SetWindowDisplayAffinity(Handle, WdaExcludeFromCapture);
-            _renderTimer.Start();
-            RequestCapture();
+            SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
+
+            _renderThread = new Thread(RenderLoop)
+            {
+                IsBackground = true,
+                Priority = ThreadPriority.AboveNormal,
+                Name = "LiquidGlassRenderLoop"
+            };
+            _renderThread.Start();
+            _renderSignal.Set();
         };
 
         KeyPreview = true;
@@ -240,43 +250,55 @@ internal sealed class OverlayForm : Form
         base.OnMouseDown(e);
         if (e.Button == MouseButtons.Left)
         {
-            ReleaseCapture();
-            SendMessage(Handle, WmNcLButtonDown, (IntPtr)HtCaption, IntPtr.Zero);
+            _dragging = true;
+            _dragStartCursor = Cursor.Position;
+            _dragStartLocation = Location;
+            Capture = true;
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (_dragging && e.Button == MouseButtons.Left)
+        {
+            var cur = Cursor.Position;
+            int newX = _dragStartLocation.X + (cur.X - _dragStartCursor.X);
+            int newY = _dragStartLocation.Y + (cur.Y - _dragStartCursor.Y);
+            Location = new Point(newX, newY);
+        }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Left)
+        {
+            _dragging = false;
+            Capture = false;
         }
     }
 
     protected override void OnLocationChanged(EventArgs e)
     {
         base.OnLocationChanged(e);
-        RequestCapture();
+        _renderSignal.Set();
     }
 
-    private void RequestCapture()
+    private void RenderLoop()
     {
-        if (_screenCapturer == null || _renderSurface == null || IsDisposed) return;
-        _updatePending = true;
-        if (_isProcessing) return;
-
-        _isProcessing = true;
-        _updatePending = false;
-        var screenPos = Location;
-
-        ThreadPool.QueueUserWorkItem(_ =>
+        while (_running)
         {
-            try
-            {
-                do
-                {
-                    _updatePending = false;
-                    screenPos = Location;
-                    ProcessAndPresent(screenPos);
-                } while (_updatePending && !IsDisposed);
-            }
-            finally
-            {
-                _isProcessing = false;
-            }
-        });
+            // 8ms interval (~120 FPS) or immediate wake-up upon mouse movement
+            _renderSignal.WaitOne(8);
+            if (!_running) break;
+
+            IntPtr hwnd = _hwnd;
+            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
+                continue;
+
+            ProcessAndPresent(new Point(rect.Left, rect.Top));
+        }
     }
 
     private unsafe void ProcessAndPresent(Point screenPos)
@@ -419,13 +441,9 @@ internal sealed class OverlayForm : Form
             }
 
             // 2. High-Clarity Liquid Lens Refraction & Specular Lighting
-            int glintCenterX = 90 + (int)(Math.Sin(_phase * 0.18) * 22);
-
             for (int y = 0; y < CircleSize; y++)
             {
                 int rowIdx = y * CircleSize;
-                double gdy = (y - 140.0) / 100.0;
-                double gdy2 = gdy * gdy;
 
                 for (int x = 0; x < CircleSize; x++)
                 {
@@ -453,24 +471,13 @@ internal sealed class OverlayForm : Form
                     g = (g * 242 + 225 * 14) >> 8;
                     b = (b * 242 + 255 * 14) >> 8;
 
-                    // Smooth animated glint sheen
-                    double gdx = (x - glintCenterX) / 48.0;
-                    double gdist2 = gdx * gdx + gdy2;
-                    if (gdist2 < 1.0)
+                    // Natural glass specular highlights (top ambient dome light + outer rim + inner bevel)
+                    int light = pixel.DomeLight + pixel.RimLight + pixel.InnerRim;
+                    if (light > 0)
                     {
-                        int glint = (int)((1.0 - gdist2) * 50.0);
-                        r = Math.Min(255, r + glint);
-                        g = Math.Min(255, g + glint);
-                        b = Math.Min(255, b + glint);
-                    }
-
-                    // Specular outer rim & inner highlight
-                    int rim = pixel.RimLight + pixel.InnerRim;
-                    if (rim > 0)
-                    {
-                        r = Math.Min(255, r + rim);
-                        g = Math.Min(255, g + rim);
-                        b = Math.Min(255, b + rim);
+                        r = Math.Min(255, r + light);
+                        g = Math.Min(255, g + light);
+                        b = Math.Min(255, b + light);
                     }
 
                     // Premultiplied 32-bit ARGB for GPU compositor
@@ -543,17 +550,21 @@ internal sealed class OverlayForm : Form
                     continue;
                 }
 
-                // High-clarity liquid lens profile:
-                // Inner 65% is crystal clear, outer 35% forms smooth liquid meniscus bend
-                double bendBase = Math.Pow(normalized, 3.2) * 8.5;
-                double wave = Math.Sin(normalized * 12.0 + y * 0.015) * normalized * 0.5;
+                // High-clarity liquid lens profile
+                double bendBase = Math.Pow(normalized, 3.0) * 7.5;
+                double wave = Math.Sin(normalized * 10.0 + y * 0.015) * normalized * 0.4;
                 double safeDist = Math.Max(distance, 0.001);
 
                 ComputeSample(center, dx, dy, safeDist, distance, bendBase, wave,
                     out int off00, out int off10, out int off01, out int off11,
                     out int w00, out int w10, out int w01, out int w11);
 
-                // Specular outer rim & inner reflection highlight
+                // 1. Natural top-curved specular dome reflection (ambient sky light hitting glass dome)
+                double topLightFactor = Math.Max(0.0, -dy / center); // 1.0 at top rim, 0.0 at center/bottom
+                double domeArc = Math.Exp(-Math.Pow((distance - 95.0) / 38.0, 2)) * topLightFactor;
+                byte domeLight = (byte)Math.Clamp(Math.Round(domeArc * 32.0 * alphaFactor), 0, 255);
+
+                // 2. Specular outer rim & inner reflection highlight
                 double rimExp = Math.Exp(-Math.Pow((distance - 137.2) / 1.5, 2));
                 byte rimLight = (byte)Math.Clamp(Math.Round(rimExp * 215.0 * alphaFactor), 0, 255);
 
@@ -562,7 +573,7 @@ internal sealed class OverlayForm : Form
 
                 map[y * CircleSize + x] = new RefractionPixel(
                     off00, off10, off01, off11, w00, w10, w01, w11,
-                    alpha, rimLight, innerRim);
+                    alpha, domeLight, rimLight, innerRim);
             }
         }
 
@@ -602,7 +613,11 @@ internal sealed class OverlayForm : Form
     {
         if (disposing)
         {
-            _renderTimer.Dispose();
+            _running = false;
+            _renderSignal.Set();
+            _renderThread?.Join(100);
+            _renderSignal.Dispose();
+
             _screenCapturer?.Dispose();
             _renderSurface?.Dispose();
         }
