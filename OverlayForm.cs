@@ -12,8 +12,15 @@ internal sealed class OverlayForm : Form
     private const int SurfaceHeight = 110;
     private const int HalfWidth = SurfaceWidth / 2;   // 270
     private const int HalfHeight = SurfaceHeight / 2; // 55
-    private const int TargetPillWidth = 500;
-    private const int TargetPillHeight = 64;
+
+    // Default expanded size on hover
+    private const int DefaultPillWidth = 500;
+    private const int DefaultPillHeight = 64;
+
+    // Compact resting size with clock
+    private const int CompactPillWidth = 190;
+    private const int CompactPillHeight = 44;
+
     private const int TopPadding = 18;
     private const double AnimationDuration = 0.85; // seconds
 
@@ -68,6 +75,9 @@ internal sealed class OverlayForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT
@@ -150,15 +160,18 @@ internal sealed class OverlayForm : Form
     private readonly byte[] _blurHBuffer = new byte[HalfWidth * HalfHeight * 4];
     private readonly byte[] _blurredBuffer = new byte[HalfWidth * HalfHeight * 4];
 
-    private byte[]? _textMask;
-    private int _textWidth;
-    private int _textHeight;
+    private string _lastTimeString = "";
+    private byte[]? _timeMask;
+    private int _timeWidth;
+    private int _timeHeight;
+    private readonly object _timeLock = new();
 
     private readonly AutoResetEvent _renderSignal = new(false);
     private Thread? _renderThread;
     private volatile bool _running = true;
     private IntPtr _hwnd;
     private double _progress = 0.0;
+    private double _hoverProgress = 0.0;
     private double _animDirection = 1.0; // +1.0 = forward (expand), -1.0 = backward (retract)
     private readonly Stopwatch _frameStopwatch = new();
     private volatile PillGeometry _currentGeometry = new(SurfaceWidth * 0.5, -20.0, 14.0, 14.0, 14.0);
@@ -233,10 +246,23 @@ internal sealed class OverlayForm : Form
         _renderSurface = new FastSurface(SurfaceWidth, SurfaceHeight);
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
 
-        var (mask, w, h) = PrecomputeTextMask("Hello", 20f);
-        _textMask = mask;
-        _textWidth = w;
-        _textHeight = h;
+        UpdateTimeMaskIfNeeded();
+    }
+
+    private void UpdateTimeMaskIfNeeded()
+    {
+        string current = DateTime.Now.ToString("h:mm:ss tt");
+        if (current != _lastTimeString)
+        {
+            _lastTimeString = current;
+            var (mask, w, h) = PrecomputeTextMask(current, 13.5f);
+            lock (_timeLock)
+            {
+                _timeMask = mask;
+                _timeWidth = w;
+                _timeHeight = h;
+            }
+        }
     }
 
     private static (byte[] mask, int width, int height) PrecomputeTextMask(string text, float fontSize)
@@ -416,6 +442,7 @@ internal sealed class OverlayForm : Form
             _frameStopwatch.Restart();
             dt = Math.Clamp(dt, 0.0, 0.05);
 
+            // Update spawn/retract progress
             if (_animDirection != 0.0)
             {
                 const double speed = 1.0 / AnimationDuration;
@@ -433,45 +460,89 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            PillGeometry geom = ComputeGeometry(_progress);
+            // Real-time hover detection
+            bool isHovered = false;
+            if (_progress > 0.10 && GetCursorPos(out var cursorPos))
+            {
+                double px = (cursorPos.x - rect.Left) - _currentGeometry.CenterX;
+                double py = (cursorPos.y - rect.Top) - _currentGeometry.CenterY;
+                double straightW = _currentGeometry.HalfWidth - _currentGeometry.Radius;
+                double straightH = _currentGeometry.HalfHeight - _currentGeometry.Radius;
+                double qx = Math.Abs(px) - straightW;
+                double qy = Math.Abs(py) - straightH;
+                double outX = Math.Max(0.0, qx);
+                double outY = Math.Max(0.0, qy);
+                double outDist = Math.Sqrt(outX * outX + outY * outY);
+                double inDist = Math.Min(0.0, Math.Max(qx, qy));
+                double mouseSdf = outDist + inDist - _currentGeometry.Radius;
+
+                if (mouseSdf <= 1.5)
+                {
+                    isHovered = true;
+                }
+            }
+
+            // Smooth hover transition (~0.28s duration)
+            double hoverTarget = isHovered ? 1.0 : 0.0;
+            double hoverSpeed = 1.0 / 0.28;
+            if (_hoverProgress < hoverTarget)
+            {
+                _hoverProgress = Math.Min(hoverTarget, _hoverProgress + hoverSpeed * dt);
+            }
+            else if (_hoverProgress > hoverTarget)
+            {
+                _hoverProgress = Math.Max(hoverTarget, _hoverProgress - hoverSpeed * dt);
+            }
+
+            UpdateTimeMaskIfNeeded();
+
+            PillGeometry geom = ComputeGeometry(_progress, _hoverProgress);
             _currentGeometry = geom;
 
             ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
         }
     }
 
-    private static PillGeometry ComputeGeometry(double p)
+    private static PillGeometry ComputeGeometry(double spawnP, double hoverP)
     {
         double targetCenterX = SurfaceWidth * 0.5;
-        double targetCenterY = TopPadding + (TargetPillHeight * 0.5);
-        double targetHalfWidth = TargetPillWidth * 0.5;
-        double targetHalfHeight = TargetPillHeight * 0.5;
+
+        // Interpolate resting target between Compact (unhovered) and Default Expanded (hovered)
+        double hoverEase = EaseInOutCubic(hoverP);
+        double restingHalfWidth = (CompactPillWidth * 0.5) + ((DefaultPillWidth * 0.5) - (CompactPillWidth * 0.5)) * hoverEase;
+        double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverEase;
+        double restingCenterY = TopPadding + restingHalfHeight;
 
         double spawnRadius = 14.0;
         double spawnCenterY = -spawnRadius;
 
-        if (p <= 0.0)
+        if (spawnP <= 0.0)
         {
             return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius);
         }
 
-        // 1. Drop descent: moves from top edge into vertical resting position
-        double dropProgress = Math.Clamp(p / 0.45, 0.0, 1.0);
+        // 1. Drop descent: moves from top edge into resting vertical position
+        double dropProgress = Math.Clamp(spawnP / 0.45, 0.0, 1.0);
         double dropEase = EaseOutCubic(dropProgress);
-        double currentCenterY = spawnCenterY + (targetCenterY - spawnCenterY) * dropEase;
+        double currentCenterY = spawnCenterY + (restingCenterY - spawnCenterY) * dropEase;
 
-        // 2. Simultaneous expansion: begins expanding horizontally and vertically right as the circle enters
-        double morphProgress = Math.Clamp(p / 0.82, 0.0, 1.0);
+        // 2. Spawn expansion
+        double morphProgress = Math.Clamp(spawnP / 0.82, 0.0, 1.0);
         double morphEase = EaseOutCubic(morphProgress);
 
-        double currentHalfWidth = spawnRadius + (targetHalfWidth - spawnRadius) * morphEase;
-        double currentHalfHeight = spawnRadius + (targetHalfHeight - spawnRadius) * morphEase;
+        double currentHalfWidth = spawnRadius + (restingHalfWidth - spawnRadius) * morphEase;
+        double currentHalfHeight = spawnRadius + (restingHalfHeight - spawnRadius) * morphEase;
 
         currentHalfWidth = Math.Max(spawnRadius, currentHalfWidth);
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
         double currentRadius = Math.Min(currentHalfWidth, currentHalfHeight);
 
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
+    }
+
+    private static double EaseInOutCubic(double x)
+    {
+        return x < 0.5 ? 4.0 * x * x * x : 1.0 - Math.Pow(-2.0 * x + 2.0, 3.0) / 2.0;
     }
 
     private static double EaseOutCubic(double x)
@@ -706,43 +777,42 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 4. Option 1 Typography: Liquid Bloom & Scale-In for "Hello" text
-            if (_progress >= 0.55 && _textMask != null && _textWidth > 0 && _textHeight > 0)
+            // 4. Real-time Live Clock Typography with Hover Fade-Out
+            byte[]? timeMask;
+            int timeW, timeH;
+            lock (_timeLock)
             {
-                double textT = Math.Clamp((_progress - 0.55) / 0.45, 0.0, 1.0);
-                double textEase = EaseOutCubic(textT);
-                double textAlpha = textEase;
-                double textScale = 0.94 + 0.06 * textEase;
+                timeMask = _timeMask;
+                timeW = _timeWidth;
+                timeH = _timeHeight;
+            }
 
-                int tw = _textWidth;
-                int th = _textHeight;
-                int sw = Math.Max(1, (int)Math.Round(tw * textScale));
-                int sh = Math.Max(1, (int)Math.Round(th * textScale));
+            // Time opacity: fades out on mouse hover as the pill expands
+            double spawnTextAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
+            double hoverFadeOut = Math.Clamp(1.0 - (_hoverProgress / 0.35), 0.0, 1.0);
+            double textAlpha = EaseOutCubic(spawnTextAlpha) * hoverFadeOut;
 
-                int startX = (int)Math.Round(geom.CenterX - sw * 0.5);
-                int startY = (int)Math.Round(geom.CenterY - sh * 0.5);
+            if (textAlpha > 0.005 && timeMask != null && timeW > 0 && timeH > 0)
+            {
+                int startX = (int)Math.Round(geom.CenterX - timeW * 0.5);
+                int startY = (int)Math.Round(geom.CenterY - timeH * 0.5);
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
-                double shadowAlpha = textAlpha * 0.50;
-                for (int ty = 0; ty < sh; ty++)
+                double shadowAlpha = textAlpha * 0.45;
+                for (int ty = 0; ty < timeH; ty++)
                 {
                     int dstY = startY + ty + 1;
                     if (dstY < 0 || dstY >= SurfaceHeight) continue;
 
-                    int srcY = (int)Math.Floor((ty / (double)sh) * th);
-                    srcY = Math.Clamp(srcY, 0, th - 1);
-                    int srcRow = srcY * tw;
+                    int srcRow = ty * timeW;
                     int dstRow = dstY * SurfaceWidth;
 
-                    for (int tx = 0; tx < sw; tx++)
+                    for (int tx = 0; tx < timeW; tx++)
                     {
                         int dstX = startX + tx;
                         if (dstX < 0 || dstX >= SurfaceWidth) continue;
 
-                        int srcX = (int)Math.Floor((tx / (double)sw) * tw);
-                        srcX = Math.Clamp(srcX, 0, tw - 1);
-
-                        byte maskA = _textMask[srcRow + srcX];
+                        byte maskA = timeMask[srcRow + tx];
                         if (maskA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
@@ -765,25 +835,20 @@ internal sealed class OverlayForm : Form
                 }
 
                 // Pass 2: Razor-Sharp Pure Luminous White Text
-                for (int ty = 0; ty < sh; ty++)
+                for (int ty = 0; ty < timeH; ty++)
                 {
                     int dstY = startY + ty;
                     if (dstY < 0 || dstY >= SurfaceHeight) continue;
 
-                    int srcY = (int)Math.Floor((ty / (double)sh) * th);
-                    srcY = Math.Clamp(srcY, 0, th - 1);
-                    int srcRow = srcY * tw;
+                    int srcRow = ty * timeW;
                     int dstRow = dstY * SurfaceWidth;
 
-                    for (int tx = 0; tx < sw; tx++)
+                    for (int tx = 0; tx < timeW; tx++)
                     {
                         int dstX = startX + tx;
                         if (dstX < 0 || dstX >= SurfaceWidth) continue;
 
-                        int srcX = (int)Math.Floor((tx / (double)sw) * tw);
-                        srcX = Math.Clamp(srcX, 0, tw - 1);
-
-                        byte maskA = _textMask[srcRow + srcX];
+                        byte maskA = timeMask[srcRow + tx];
                         if (maskA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
