@@ -11,16 +11,16 @@ namespace LiquidGlassCircle;
 
 internal sealed class OverlayForm : Form
 {
-    private const int SurfaceWidth = 600;
-    private const int SurfaceHeight = 250;
-    private const int HalfWidth = SurfaceWidth / 2;   // 300
-    private const int HalfHeight = SurfaceHeight / 2; // 125
+    private const int SurfaceWidth = 480;
+    private const int SurfaceHeight = 110;
+    private const int HalfWidth = SurfaceWidth / 2;   // 240
+    private const int HalfHeight = SurfaceHeight / 2; // 55
 
-    // Default expanded size on hover (500x180 - doubled height)
-    private const int DefaultPillWidth = 500;
-    private const int DefaultPillHeight = 180;
+    // Sleek compact dynamic island music bar on hover (390x56)
+    private const int DefaultPillWidth = 390;
+    private const int DefaultPillHeight = 56;
 
-    // Compact resting size with clock
+    // Compact resting size with clock (190x44)
     private const int CompactPillWidth = 190;
     private const int CompactPillHeight = 44;
 
@@ -372,21 +372,21 @@ internal sealed class OverlayForm : Form
     private bool HandleMusicClick(Point pt)
     {
         // Content area offset within Surface:
-        // CenterX = 300, TargetW = 440 -> startX = 300 - 220 = 80
-        // CenterY = 108, TargetH = 145 -> startY = 108 - 72.5 = 35.5
-        float mx = pt.X - 80f;
-        float my = pt.Y - 35.5f;
+        // CenterX = 240, TargetW = 360 -> startX = 240 - 180 = 60
+        // CenterY = 46, TargetH = 46 -> startY = 46 - 23 = 23
+        float mx = pt.X - 60f;
+        float my = pt.Y - 23f;
 
-        // 1. Play / Pause Central Button: cx = 296, cy = 104, radius = 20
-        if (Math.Sqrt(Math.Pow(mx - 296, 2) + Math.Pow(my - 104, 2)) <= 24)
+        // 1. Play / Pause Central Button: cx = 298, cy = 23, radius = 15
+        if (Math.Sqrt(Math.Pow(mx - 298, 2) + Math.Pow(my - 23, 2)) <= 18)
         {
             _isPlaying = !_isPlaying;
             UpdateMusicMask();
             return true;
         }
 
-        // 2. Next Track: cx = 348, cy = 104, radius = 18
-        if (Math.Sqrt(Math.Pow(mx - 348, 2) + Math.Pow(my - 104, 2)) <= 22)
+        // 2. Next Track: cx = 330, cy = 23, radius = 14
+        if (Math.Sqrt(Math.Pow(mx - 330, 2) + Math.Pow(my - 23, 2)) <= 16)
         {
             _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
             _trackProgressSeconds = 0.0;
@@ -394,8 +394,8 @@ internal sealed class OverlayForm : Form
             return true;
         }
 
-        // 3. Prev Track: cx = 244, cy = 104, radius = 18
-        if (Math.Sqrt(Math.Pow(mx - 244, 2) + Math.Pow(my - 104, 2)) <= 22)
+        // 3. Prev Track: cx = 266, cy = 23, radius = 14
+        if (Math.Sqrt(Math.Pow(mx - 266, 2) + Math.Pow(my - 23, 2)) <= 16)
         {
             _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
             _trackProgressSeconds = 0.0;
@@ -403,18 +403,18 @@ internal sealed class OverlayForm : Form
             return true;
         }
 
-        // 4. Heart Favorite: cx = 166, cy = 104, radius = 16
-        if (Math.Sqrt(Math.Pow(mx - 166, 2) + Math.Pow(my - 104, 2)) <= 20)
+        // 4. Heart Favorite: cx = 234, cy = 23, radius = 13
+        if (Math.Sqrt(Math.Pow(mx - 234, 2) + Math.Pow(my - 23, 2)) <= 15)
         {
             _isHearted = !_isHearted;
             UpdateMusicMask();
             return true;
         }
 
-        // 5. Timeline Scrubbing: my in [50, 68], mx in [152, 426]
-        if (my >= 48 && my <= 70 && mx >= 150 && mx <= 428)
+        // 5. Timeline Scrubbing: my in [26, 44], mx in [48, 210]
+        if (my >= 26 && my <= 44 && mx >= 48 && mx <= 210)
         {
-            double ratio = Math.Clamp((mx - 152) / (426.0 - 152.0), 0.0, 1.0);
+            double ratio = Math.Clamp((mx - 48) / (208.0 - 48.0), 0.0, 1.0);
             var track = Playlist[_currentTrackIndex];
             _trackProgressSeconds = ratio * track.DurationSeconds;
             UpdateMusicMask();
@@ -672,8 +672,8 @@ internal sealed class OverlayForm : Form
         double visualizerTime)
     {
         const float superScale = 4.0f;
-        int targetW = 440;
-        int targetH = 145;
+        int targetW = 360;
+        int targetH = 46;
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
 
@@ -684,154 +684,81 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            using var fontTitle = new Font("Segoe UI Variable Display", 15.0f * superScale, FontStyle.Bold);
-            using var fontArtist = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
-            using var fontBadge = new Font("Segoe UI Variable Display", 7.5f * superScale, FontStyle.Bold);
-            using var fontTime = new Font("Segoe UI Variable Display", 9.0f * superScale, FontStyle.Bold);
+            using var fontTitle = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Bold);
+            using var fontArtist = new Font("Segoe UI Variable Display", 8.0f * superScale, FontStyle.Regular);
 
-            // 1. Left Section: Frosted Album Artwork Card + Procedural Vinyl Disc
-            float cardX = 14f * superScale;
-            float cardY = 12f * superScale;
-            float cardW = 120f * superScale;
-            float cardH = 120f * superScale;
-            float cardR = 18f * superScale;
-
-            // Frosted album card background
-            using (var cardPath = new GraphicsPath())
-            {
-                cardPath.AddArc(cardX, cardY, cardR * 2, cardR * 2, 180, 90);
-                cardPath.AddArc(cardX + cardW - cardR * 2, cardY, cardR * 2, cardR * 2, 270, 90);
-                cardPath.AddArc(cardX + cardW - cardR * 2, cardY + cardH - cardR * 2, cardR * 2, cardR * 2, 0, 90);
-                cardPath.AddArc(cardX, cardY + cardH - cardR * 2, cardR * 2, cardR * 2, 90, 90);
-                cardPath.CloseFigure();
-
-                using var brushCard = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
-                g.FillPath(brushCard, cardPath);
-                using var penCard = new Pen(Color.FromArgb(90, 255, 255, 255), 1.2f * superScale);
-                g.DrawPath(penCard, cardPath);
-            }
-
-            // Procedural Vinyl Disc inside Album Card
-            float vinylCx = cardX + cardW * 0.5f;
-            float vinylCy = cardY + cardH * 0.5f;
-            float vinylRadius = 48f * superScale;
+            // 1. Left Section: Rotating Vinyl Record Disc
+            float vinylCx = 22f * superScale;
+            float vinylCy = 23f * superScale;
+            float vinylRadius = 17f * superScale;
             DrawVinylRecord(g, vinylCx, vinylCy, vinylRadius, rotationAngle, track.CoverAccentColor);
 
-            // Equalizer Bars mini-badge overlay (Bottom right corner of album card)
+            // Equalizer Bars mini-overlay on vinyl center
             if (isPlaying)
             {
-                float eqCx = cardX + cardW - 20f * superScale;
-                float eqCy = cardY + cardH - 18f * superScale;
-                DrawEqualizerBars(g, eqCx, eqCy, 3.2f * superScale, 16f * superScale, visualizerTime);
+                float eqCx = vinylCx;
+                float eqCy = vinylCy;
+                DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, visualizerTime);
             }
 
-            // 2. Right Section: Track Details & Spatial Audio Pill
-            float textStartX = cardX + cardW + 18f * superScale;
-            float rightEdge = (targetW - 14f) * superScale;
-            float barW = rightEdge - textStartX;
+            // 2. Middle Section: Track Title, Subtitle & Slim Live Progress Line
+            float textStartX = 48f * superScale;
+            float trackBarW = 160f * superScale;
 
-            // Track Title (Pure Luminous White)
+            int elMin = (int)(progressSeconds / 60);
+            int elSec = (int)(progressSeconds % 60);
+            string elStr = $"{elMin}:{elSec:D2}";
+            string metaStr = $"{track.Artist} · {elStr}";
+
+            // Track Title
             using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 10f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 4f * superScale, StringFormat.GenericDefault);
             }
 
-            // Artist & Album
-            using (var brushArtist = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+            // Artist & Time
+            using (var brushArtist = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
             {
-                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 32f * superScale, StringFormat.GenericDefault);
+                g.DrawString(metaStr, fontArtist, brushArtist, textStartX, 19f * superScale, StringFormat.GenericDefault);
             }
 
-            // Luxury Audio Badge (e.g. LOSSLESS • 24-BIT/96kHz)
-            var badgeSize = g.MeasureString(track.Badge, fontBadge, PointF.Empty, StringFormat.GenericDefault);
-            float badgeX = rightEdge - badgeSize.Width - 14f * superScale;
-            float badgeY = 12f * superScale;
-            float badgePadH = 6f * superScale;
-            float badgePadV = 3f * superScale;
-            float badgeBoxW = badgeSize.Width + badgePadH * 2;
-            float badgeBoxH = badgeSize.Height + badgePadV * 2;
-            float badgeR = 4f * superScale;
-
-            using (var badgePath = new GraphicsPath())
-            {
-                badgePath.AddArc(badgeX, badgeY, badgeR * 2, badgeR * 2, 180, 90);
-                badgePath.AddArc(badgeX + badgeBoxW - badgeR * 2, badgeY, badgeR * 2, badgeR * 2, 270, 90);
-                badgePath.AddArc(badgeX + badgeBoxW - badgeR * 2, badgeY + badgeBoxH - badgeR * 2, badgeR * 2, badgeR * 2, 0, 90);
-                badgePath.AddArc(badgeX, badgeY + badgeBoxH - badgeR * 2, badgeR * 2, badgeR * 2, 90, 90);
-                badgePath.CloseFigure();
-
-                using var brushBadgeBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
-                g.FillPath(brushBadgeBg, badgePath);
-                using var penBadge = new Pen(Color.FromArgb(120, 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penBadge, badgePath);
-            }
-            using (var brushBadgeText = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
-            {
-                g.DrawString(track.Badge, fontBadge, brushBadgeText, badgeX + badgePadH, badgeY + badgePadV, StringFormat.GenericDefault);
-            }
-
-            // 3. Interactive Scrubbing Timeline
-            float barY = 58f * superScale;
-            float barH = 3.0f * superScale;
+            // Slim Live Progress Line
+            float barY = 35f * superScale;
+            float barH = 2.0f * superScale;
             double progressRatio = Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0);
 
-            // Background Rail (Subtle Translucent Gray)
-            using (var penRail = new Pen(Color.FromArgb(60, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var penRail = new Pen(Color.FromArgb(50, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
             {
-                g.DrawLine(penRail, textStartX + barH * 0.5f, barY, rightEdge - barH * 0.5f, barY);
+                g.DrawLine(penRail, textStartX + barH * 0.5f, barY, textStartX + trackBarW - barH * 0.5f, barY);
             }
 
-            // Filled Active Track (Glowing Luminous White)
-            float fillEnd = textStartX + (float)(progressRatio * barW);
+            float fillEnd = textStartX + (float)(progressRatio * trackBarW);
             if (fillEnd > textStartX + barH)
             {
-                using var penFill = new Pen(Color.FromArgb(250, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                using var penFill = new Pen(Color.FromArgb(245, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
                 g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
             }
 
-            // Playhead Scrubber Bead
-            float beadR = 4.5f * superScale;
+            float beadR = 3.0f * superScale;
             using (var brushBead = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
                 g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
             }
 
-            // Time Labels (Elapsed on Left, Remaining on Right)
-            int elMin = (int)(progressSeconds / 60);
-            int elSec = (int)(progressSeconds % 60);
-            string elStr = $"{elMin}:{elSec:D2}";
+            // 3. Right Section: Inline Media Controls
+            float ctrlY = 23f * superScale;
 
-            double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
-            int remMin = (int)(remSeconds / 60);
-            int remSec = (int)(remSeconds % 60);
-            string remStr = $"-{remMin}:{remSec:D2}";
-
-            float timeLabelY = 66f * superScale;
-            using (var brushTime = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
-            {
-                g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
-                var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
-                g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
-            }
-
-            // 4. Media Playback Controls
-            float ctrlCenterY = 104f * superScale;
-            float ctrlCenterX = textStartX + barW * 0.5f;
-
-            // Heart / Favorite Icon (Left)
-            DrawHeartIcon(g, textStartX + 14f * superScale, ctrlCenterY, 15f * superScale, isHearted);
+            // Heart / Favorite Icon
+            DrawHeartIcon(g, 234f * superScale, ctrlY, 11f * superScale, isHearted);
 
             // Previous Track Button
-            DrawTrackSkipButton(g, ctrlCenterX - 52f * superScale, ctrlCenterY, 18f * superScale, isNext: false);
+            DrawTrackSkipButton(g, 266f * superScale, ctrlY, 12f * superScale, isNext: false);
 
             // Center Play / Pause Hero Glass Button
-            DrawPlayPauseButton(g, ctrlCenterX, ctrlCenterY, 20f * superScale, isPlaying);
+            DrawPlayPauseButton(g, 298f * superScale, ctrlY, 13f * superScale, isPlaying);
 
             // Next Track Button
-            DrawTrackSkipButton(g, ctrlCenterX + 52f * superScale, ctrlCenterY, 18f * superScale, isNext: true);
-
-            // AirPlay / Output Streaming Icon (Right)
-            DrawAirPlayIcon(g, rightEdge - 14f * superScale, ctrlCenterY, 15f * superScale);
+            DrawTrackSkipButton(g, 330f * superScale, ctrlY, 12f * superScale, isNext: true);
         }
 
         // Downsample 4x to target resolution with area-averaging
@@ -1206,7 +1133,7 @@ internal sealed class OverlayForm : Form
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
         
         double clampedHover = Math.Clamp(hoverP, 0.0, 1.0);
-        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * clampedHover;
+        double targetRadius = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * clampedHover;
         double currentRadius = Math.Min(targetRadius, Math.Min(currentHalfWidth, currentHalfHeight));
 
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
@@ -1239,7 +1166,7 @@ internal sealed class OverlayForm : Form
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
         {
-            // 1. Box downsample (600x250 -> 300x125): 4x fewer pixels, anti-aliased pre-filter
+            // 1. Box downsample (480x110 -> 240x55): 4x fewer pixels, anti-aliased pre-filter
             for (int y = 0; y < HalfHeight; y++)
             {
                 int srcRow0 = (y * 2) * SurfaceWidth * 4;
