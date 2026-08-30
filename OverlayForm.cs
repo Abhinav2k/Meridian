@@ -157,30 +157,64 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private enum WeatherIconType
+    private sealed class TrackInfo
     {
-        ClearSky,
-        PartlyCloudy,
-        Overcast,
-        Fog,
-        Drizzle,
-        Rain,
-        Snow,
-        Thunderstorm
+        public string Title { get; set; } = "Starboy";
+        public string Artist { get; set; } = "The Weeknd (feat. Daft Punk)";
+        public string Album { get; set; } = "Starboy";
+        public string Badge { get; set; } = "LOSSLESS • 24-BIT/96kHz";
+        public double DurationSeconds { get; set; } = 230.0;
+        public Color CoverAccentColor { get; set; } = Color.FromArgb(255, 235, 45, 75);
     }
 
-    private sealed class WeatherData
+    private static readonly TrackInfo[] Playlist = new[]
     {
-        public string City { get; set; } = "Kochi";
-        public int Temperature { get; set; } = 27;
-        public string Condition { get; set; } = "Light Drizzle";
-        public WeatherIconType IconType { get; set; } = WeatherIconType.Drizzle;
-        public int HighTemp { get; set; } = 28;
-        public int LowTemp { get; set; } = 25;
-        public int Humidity { get; set; } = 80;
-        public int WindSpeed { get; set; } = 7;
-        public int RainProb { get; set; } = 85;
-    }
+        new TrackInfo
+        {
+            Title = "Starboy",
+            Artist = "The Weeknd • Daft Punk",
+            Album = "Starboy",
+            Badge = "LOSSLESS • 24-BIT/96kHz",
+            DurationSeconds = 230.0,
+            CoverAccentColor = Color.FromArgb(255, 235, 40, 80)
+        },
+        new TrackInfo
+        {
+            Title = "Midnight City",
+            Artist = "M83 • Anthony Gonzalez",
+            Album = "Hurry Up, We're Dreaming",
+            Badge = "DOLBY ATMOS • SPATIAL",
+            DurationSeconds = 243.0,
+            CoverAccentColor = Color.FromArgb(255, 120, 60, 240)
+        },
+        new TrackInfo
+        {
+            Title = "Blinding Lights",
+            Artist = "The Weeknd • Max Martin",
+            Album = "After Hours",
+            Badge = "HI-RES AUDIO • 96kHz",
+            DurationSeconds = 200.0,
+            CoverAccentColor = Color.FromArgb(255, 245, 140, 30)
+        },
+        new TrackInfo
+        {
+            Title = "Get Lucky",
+            Artist = "Daft Punk • Pharrell Williams",
+            Album = "Random Access Memories",
+            Badge = "STUDIO MASTER • LOSSLESS",
+            DurationSeconds = 248.0,
+            CoverAccentColor = Color.FromArgb(255, 240, 200, 50)
+        },
+        new TrackInfo
+        {
+            Title = "Nightcall",
+            Artist = "Kavinsky • Lovefoxxx",
+            Album = "OutRun",
+            Badge = "LOSSLESS • SPATIAL AUDIO",
+            DurationSeconds = 258.0,
+            CoverAccentColor = Color.FromArgb(255, 20, 180, 240)
+        }
+    };
 
     private FastSurface? _screenCapturer;
     private FastSurface? _renderSurface;
@@ -194,10 +228,18 @@ internal sealed class OverlayForm : Form
     private int _timeHeight;
     private readonly object _timeLock = new();
 
-    private byte[]? _weatherMask;
-    private int _weatherWidth;
-    private int _weatherHeight;
-    private readonly object _weatherLock = new();
+    private int _currentTrackIndex = 0;
+    private bool _isPlaying = true;
+    private double _trackProgressSeconds = 88.0; // 1:28
+    private bool _isHearted = true;
+    private double _vinylRotationAngle = 0.0;
+    private double _visualizerTime = 0.0;
+    private double _lastMusicMaskUpdateTime = 0.0;
+
+    private byte[]? _musicMask;
+    private int _musicWidth;
+    private int _musicHeight;
+    private readonly object _musicLock = new();
 
     private readonly AutoResetEvent _renderSignal = new(false);
     private Thread? _renderThread;
@@ -243,17 +285,56 @@ internal sealed class OverlayForm : Form
             {
                 Close();
             }
-            else if (e.KeyCode is Keys.Right or Keys.F or Keys.Down)
+            else if (e.KeyCode == Keys.Space)
+            {
+                if (_hoverPos > 0.4)
+                {
+                    _isPlaying = !_isPlaying;
+                    UpdateMusicMask();
+                }
+                else
+                {
+                    ToggleDirection();
+                }
+            }
+            else if (e.KeyCode is Keys.Right or Keys.N)
+            {
+                if (_hoverPos > 0.4)
+                {
+                    _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    _trackProgressSeconds = 0.0;
+                    UpdateMusicMask();
+                }
+                else
+                {
+                    StepForward();
+                }
+            }
+            else if (e.KeyCode is Keys.Left or Keys.P)
+            {
+                if (_hoverPos > 0.4)
+                {
+                    _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
+                    _trackProgressSeconds = 0.0;
+                    UpdateMusicMask();
+                }
+                else
+                {
+                    StepBackward();
+                }
+            }
+            else if (e.KeyCode == Keys.H)
+            {
+                _isHearted = !_isHearted;
+                UpdateMusicMask();
+            }
+            else if (e.KeyCode is Keys.F or Keys.Down)
             {
                 StepForward();
             }
-            else if (e.KeyCode is Keys.Left or Keys.B or Keys.Up)
+            else if (e.KeyCode is Keys.B or Keys.Up)
             {
                 StepBackward();
-            }
-            else if (e.KeyCode == Keys.Space)
-            {
-                ToggleDirection();
             }
             else if (e.KeyCode == Keys.R)
             {
@@ -267,9 +348,80 @@ internal sealed class OverlayForm : Form
 
         MouseClick += (_, e) =>
         {
-            if (e.Button == MouseButtons.Right) Close();
-            else if (e.Button == MouseButtons.Left) ToggleDirection();
+            if (e.Button == MouseButtons.Right)
+            {
+                Close();
+            }
+            else if (e.Button == MouseButtons.Left)
+            {
+                if (_hoverPos > 0.6)
+                {
+                    if (!HandleMusicClick(e.Location))
+                    {
+                        ToggleDirection();
+                    }
+                }
+                else
+                {
+                    ToggleDirection();
+                }
+            }
         };
+    }
+
+    private bool HandleMusicClick(Point pt)
+    {
+        // Content area offset within Surface:
+        // CenterX = 300, TargetW = 440 -> startX = 300 - 220 = 80
+        // CenterY = 108, TargetH = 145 -> startY = 108 - 72.5 = 35.5
+        float mx = pt.X - 80f;
+        float my = pt.Y - 35.5f;
+
+        // 1. Play / Pause Central Button: cx = 296, cy = 104, radius = 20
+        if (Math.Sqrt(Math.Pow(mx - 296, 2) + Math.Pow(my - 104, 2)) <= 24)
+        {
+            _isPlaying = !_isPlaying;
+            UpdateMusicMask();
+            return true;
+        }
+
+        // 2. Next Track: cx = 348, cy = 104, radius = 18
+        if (Math.Sqrt(Math.Pow(mx - 348, 2) + Math.Pow(my - 104, 2)) <= 22)
+        {
+            _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+            _trackProgressSeconds = 0.0;
+            UpdateMusicMask();
+            return true;
+        }
+
+        // 3. Prev Track: cx = 244, cy = 104, radius = 18
+        if (Math.Sqrt(Math.Pow(mx - 244, 2) + Math.Pow(my - 104, 2)) <= 22)
+        {
+            _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
+            _trackProgressSeconds = 0.0;
+            UpdateMusicMask();
+            return true;
+        }
+
+        // 4. Heart Favorite: cx = 166, cy = 104, radius = 16
+        if (Math.Sqrt(Math.Pow(mx - 166, 2) + Math.Pow(my - 104, 2)) <= 20)
+        {
+            _isHearted = !_isHearted;
+            UpdateMusicMask();
+            return true;
+        }
+
+        // 5. Timeline Scrubbing: my in [50, 68], mx in [152, 426]
+        if (my >= 48 && my <= 70 && mx >= 150 && mx <= 428)
+        {
+            double ratio = Math.Clamp((mx - 152) / (426.0 - 152.0), 0.0, 1.0);
+            var track = Playlist[_currentTrackIndex];
+            _trackProgressSeconds = ratio * track.DurationSeconds;
+            UpdateMusicMask();
+            return true;
+        }
+
+        return false;
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -281,259 +433,243 @@ internal sealed class OverlayForm : Form
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
 
         UpdateTimeMaskIfNeeded();
+        UpdateMusicMask();
+    }
 
-        // Initialize instant fallback weather mask
-        var (wMask, wW, wH) = PrecomputeWeatherMask(new WeatherData());
-        lock (_weatherLock)
+    private void UpdateMusicMask()
+    {
+        var track = Playlist[_currentTrackIndex];
+        var (mask, w, h) = PrecomputeMusicMask(track, _trackProgressSeconds, _isPlaying, _isHearted, _vinylRotationAngle, _visualizerTime);
+        lock (_musicLock)
         {
-            _weatherMask = wMask;
-            _weatherWidth = wW;
-            _weatherHeight = wH;
+            _musicMask = mask;
+            _musicWidth = w;
+            _musicHeight = h;
+        }
+    }
+
+    private static void DrawVinylRecord(Graphics g, float cx, float cy, float radius, double rotationAngle, Color labelColor)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        // 1. Vinyl Base Outer Disc (Dark Charcoal Gloss)
+        using (var brushVinyl = new SolidBrush(Color.FromArgb(240, 22, 22, 28)))
+        {
+            g.FillEllipse(brushVinyl, cx - radius, cy - radius, radius * 2f, radius * 2f);
         }
 
-        // Fetch live real-time local weather in background
-        FetchWeatherAsync();
-    }
-
-    private void FetchWeatherAsync()
-    {
-        Task.Run(async () =>
+        // 2. Vinyl Micro-groove Rings (Frosted concentric circular tracks)
+        for (int i = 1; i <= 6; i++)
         {
-            try
+            float r = radius * (0.45f + i * 0.085f);
+            using var penGroove = new Pen(Color.FromArgb(35, 255, 255, 255), 1.0f);
+            g.DrawEllipse(penGroove, cx - r, cy - r, r * 2f, r * 2f);
+        }
+
+        // 3. Ambient Vinyl Specular Sheen (Dual cone reflections)
+        using (var brushSheen = new SolidBrush(Color.FromArgb(28, 255, 255, 255)))
+        {
+            using var sheenPath = new GraphicsPath();
+            sheenPath.AddPie(cx - radius, cy - radius, radius * 2f, radius * 2f, (float)(rotationAngle + 35), 45f);
+            sheenPath.AddPie(cx - radius, cy - radius, radius * 2f, radius * 2f, (float)(rotationAngle + 215), 45f);
+            g.FillPath(brushSheen, sheenPath);
+        }
+
+        // 4. Center Colored Label Disc
+        float labelR = radius * 0.40f;
+        using (var brushLabel = new SolidBrush(labelColor))
+        {
+            g.FillEllipse(brushLabel, cx - labelR, cy - labelR, labelR * 2f, labelR * 2f);
+        }
+
+        // Inner label ring
+        float innerLabelR = labelR * 0.65f;
+        using (var penInnerLabel = new Pen(Color.FromArgb(80, 255, 255, 255), 1.5f))
+        {
+            g.DrawEllipse(penInnerLabel, cx - innerLabelR, cy - innerLabelR, innerLabelR * 2f, innerLabelR * 2f);
+        }
+
+        // 5. Center Spindle Hole (Hollow Transparent Core)
+        float holeR = radius * 0.12f;
+        g.CompositingMode = CompositingMode.SourceCopy;
+        using (var brushHole = new SolidBrush(Color.Transparent))
+        {
+            g.FillEllipse(brushHole, cx - holeR, cy - holeR, holeR * 2f, holeR * 2f);
+        }
+        g.CompositingMode = CompositingMode.SourceOver;
+
+        // Outer glass edge border on vinyl
+        using (var penOuter = new Pen(Color.FromArgb(90, 255, 255, 255), 1.2f))
+        {
+            g.DrawEllipse(penOuter, cx - radius, cy - radius, radius * 2f, radius * 2f);
+        }
+    }
+
+    private static void DrawEqualizerBars(Graphics g, float cx, float cy, float barWidth, float maxHeight, double time)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var brush = new SolidBrush(Color.FromArgb(245, 255, 255, 255));
+
+        const int barCount = 4;
+        float spacing = barWidth * 0.65f;
+        float totalW = barCount * barWidth + (barCount - 1) * spacing;
+        float startX = cx - totalW * 0.5f;
+
+        for (int i = 0; i < barCount; i++)
+        {
+            double wave = (Math.Sin(time * 8.0 + i * 1.6) * 0.5 + 0.5) * 0.65 +
+                          (Math.Cos(time * 13.0 + i * 2.4) * 0.5 + 0.5) * 0.35;
+            float h = (float)Math.Clamp(maxHeight * (0.25 + 0.75 * wave), barWidth, maxHeight);
+
+            float bx = startX + i * (barWidth + spacing);
+            float by = cy - h * 0.5f;
+
+            using var path = new GraphicsPath();
+            float r = barWidth * 0.5f;
+            path.AddArc(bx, by, barWidth, barWidth, 180, 180);
+            path.AddArc(bx, by + h - barWidth, barWidth, barWidth, 0, 180);
+            path.CloseFigure();
+            g.FillPath(brush, path);
+        }
+    }
+
+    private static void DrawPlayPauseButton(Graphics g, float cx, float cy, float radius, bool isPlaying)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        // Frosted glass circular pill button
+        using (var brushBtn = new SolidBrush(Color.FromArgb(40, 255, 255, 255)))
+        {
+            g.FillEllipse(brushBtn, cx - radius, cy - radius, radius * 2f, radius * 2f);
+        }
+        using (var penBtn = new Pen(Color.FromArgb(140, 255, 255, 255), 1.2f))
+        {
+            g.DrawEllipse(penBtn, cx - radius, cy - radius, radius * 2f, radius * 2f);
+        }
+
+        using var brushGlyph = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+        if (isPlaying)
+        {
+            // Pause symbol: 2 rounded pillars
+            float barW = radius * 0.22f;
+            float barH = radius * 0.72f;
+            float barGap = radius * 0.24f;
+
+            float b1X = cx - (barW + barGap * 0.5f);
+            float b2X = cx + (barGap * 0.5f);
+            float barY = cy - barH * 0.5f;
+
+            g.FillRectangle(brushGlyph, b1X, barY, barW, barH);
+            g.FillRectangle(brushGlyph, b2X, barY, barW, barH);
+        }
+        else
+        {
+            // Play symbol: Triangle pointing right
+            float triSize = radius * 0.70f;
+            float triH = triSize * 0.90f;
+            float triW = triSize * 0.85f;
+            float leftX = cx - triW * 0.40f;
+            float topY = cy - triH * 0.50f;
+
+            PointF[] tri = new[]
             {
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                string city = "Kochi";
-                double lat = 9.9406, lon = 76.2653;
-
-                try
-                {
-                    string ipJson = await client.GetStringAsync("http://ip-api.com/json/");
-                    using var ipDoc = JsonDocument.Parse(ipJson);
-                    if (ipDoc.RootElement.TryGetProperty("city", out var cityElem))
-                        city = cityElem.GetString() ?? city;
-                    if (ipDoc.RootElement.TryGetProperty("lat", out var latElem))
-                        lat = latElem.GetDouble();
-                    if (ipDoc.RootElement.TryGetProperty("lon", out var lonElem))
-                        lon = lonElem.GetDouble();
-                }
-                catch { }
-
-                string weatherUrl = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=auto";
-                string weatherJson = await client.GetStringAsync(weatherUrl);
-                using var wDoc = JsonDocument.Parse(weatherJson);
-
-                var current = wDoc.RootElement.GetProperty("current");
-                int temp = (int)Math.Round(current.GetProperty("temperature_2m").GetDouble());
-                int humidity = (int)Math.Round(current.GetProperty("relative_humidity_2m").GetDouble());
-                int wCode = current.GetProperty("weather_code").GetInt32();
-                int wind = (int)Math.Round(current.GetProperty("wind_speed_10m").GetDouble());
-
-                var daily = wDoc.RootElement.GetProperty("daily");
-                int hi = (int)Math.Round(daily.GetProperty("temperature_2m_max")[0].GetDouble());
-                int lo = (int)Math.Round(daily.GetProperty("temperature_2m_min")[0].GetDouble());
-
-                var (cond, iconType) = GetWeatherInfo(wCode);
-                var wData = new WeatherData
-                {
-                    City = city,
-                    Temperature = temp,
-                    Condition = cond,
-                    IconType = iconType,
-                    HighTemp = hi,
-                    LowTemp = lo,
-                    Humidity = humidity,
-                    WindSpeed = wind,
-                    RainProb = Math.Clamp(humidity + 10, 0, 100)
-                };
-
-                var (mask, w, h) = PrecomputeWeatherMask(wData);
-                lock (_weatherLock)
-                {
-                    _weatherMask = mask;
-                    _weatherWidth = w;
-                    _weatherHeight = h;
-                }
-            }
-            catch { }
-        });
+                new PointF(leftX, topY),
+                new PointF(leftX + triW, cy),
+                new PointF(leftX, topY + triH)
+            };
+            g.FillPolygon(brushGlyph, tri);
+        }
     }
 
-    private static (string condition, WeatherIconType icon) GetWeatherInfo(int code) => code switch
-    {
-        0 => ("Clear Sky", WeatherIconType.ClearSky),
-        1 or 2 => ("Partly Cloudy", WeatherIconType.PartlyCloudy),
-        3 => ("Overcast", WeatherIconType.Overcast),
-        45 or 48 => ("Foggy", WeatherIconType.Fog),
-        51 or 53 or 55 => ("Light Drizzle", WeatherIconType.Drizzle),
-        61 or 63 or 65 => ("Rain", WeatherIconType.Rain),
-        71 or 73 or 75 => ("Snow", WeatherIconType.Snow),
-        80 or 81 or 82 => ("Rain Showers", WeatherIconType.Rain),
-        95 or 96 or 99 => ("Thunderstorm", WeatherIconType.Thunderstorm),
-        _ => ("Pleasant", WeatherIconType.PartlyCloudy)
-    };
-
-    private static void DrawLocationPin(Graphics g, float cx, float cy, float size, Color color)
+    private static void DrawTrackSkipButton(Graphics g, float cx, float cy, float size, bool isNext)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(color);
+        using var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
 
-        float r = size * 0.36f;
-        float topY = cy - size * 0.40f;
+        float dir = isNext ? 1.0f : -1.0f;
+        float h = size * 0.65f;
+        float w = size * 0.38f;
+        float gap = size * 0.22f;
 
-        using var path = new GraphicsPath(FillMode.Alternate);
-        path.AddArc(cx - r, topY, r * 2f, r * 2f, -145, 290);
-        path.AddLine(cx + r * 0.82f, topY + r * 1.05f, cx, cy + size * 0.45f);
-        path.AddLine(cx, cy + size * 0.45f, cx - r * 0.82f, topY + r * 1.05f);
-        path.CloseFigure();
+        // Chevron 1
+        PointF[] tri1 = new[]
+        {
+            new PointF(cx - (w + gap * 0.5f) * dir, cy - h * 0.5f),
+            new PointF(cx - (gap * 0.5f) * dir, cy),
+            new PointF(cx - (w + gap * 0.5f) * dir, cy + h * 0.5f)
+        };
+        g.FillPolygon(brush, tri1);
 
-        float holeR = r * 0.38f;
-        path.AddEllipse(cx - holeR, topY + r - holeR, holeR * 2f, holeR * 2f);
-
-        g.FillPath(brush, path);
+        // Chevron 2
+        PointF[] tri2 = new[]
+        {
+            new PointF(cx + (gap * 0.5f) * dir, cy - h * 0.5f),
+            new PointF(cx + (w + gap * 0.5f) * dir, cy),
+            new PointF(cx + (gap * 0.5f) * dir, cy + h * 0.5f)
+        };
+        g.FillPolygon(brush, tri2);
     }
 
-    private static void DrawWaterDrop(Graphics g, float cx, float cy, float size, Color color)
+    private static void DrawHeartIcon(Graphics g, float cx, float cy, float size, bool isFilled)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(color);
-
-        float r = size * 0.36f;
-        float botY = cy + size * 0.12f;
-        g.FillEllipse(brush, cx - r, botY - r, r * 2f, r * 2f);
 
         using var path = new GraphicsPath();
-        path.AddLine(cx - r * 0.85f, botY - r * 0.20f, cx, cy - size * 0.45f);
-        path.AddLine(cx, cy - size * 0.45f, cx + r * 0.85f, botY - r * 0.20f);
+        float r = size * 0.28f;
+        float topY = cy - size * 0.35f;
+
+        path.AddArc(cx - r * 1.95f, topY, r * 1.95f, r * 1.95f, 135, 225);
+        path.AddArc(cx, topY, r * 1.95f, r * 1.95f, 180, 225);
+        path.AddLine(cx + r * 1.90f, topY + r * 1.4f, cx, cy + size * 0.45f);
+        path.AddLine(cx, cy + size * 0.45f, cx - r * 1.90f, topY + r * 1.4f);
         path.CloseFigure();
-        g.FillPath(brush, path);
-    }
 
-    private static void DrawWindBreeze(Graphics g, float cx, float cy, float size, Color color)
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var pen = new Pen(color, size * 0.16f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-
-        g.DrawLine(pen, cx - size * 0.40f, cy - size * 0.18f, cx + size * 0.15f, cy - size * 0.18f);
-        g.DrawArc(pen, cx - size * 0.05f, cy - size * 0.42f, size * 0.36f, size * 0.36f, 90, -220);
-
-        g.DrawLine(pen, cx - size * 0.30f, cy + size * 0.18f, cx + size * 0.25f, cy + size * 0.18f);
-        g.DrawArc(pen, cx + size * 0.10f, cy + size * 0.05f, size * 0.32f, size * 0.32f, 90, 220);
-    }
-
-    private static void DrawRainPrecip(Graphics g, float cx, float cy, float size, Color color)
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var pen = new Pen(color, size * 0.16f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-
-        g.DrawLine(pen, cx - size * 0.25f, cy - size * 0.32f, cx - size * 0.35f, cy + size * 0.32f);
-        g.DrawLine(pen, cx + size * 0.02f, cy - size * 0.32f, cx - size * 0.08f, cy + size * 0.32f);
-        g.DrawLine(pen, cx + size * 0.30f, cy - size * 0.32f, cx + size * 0.20f, cy + size * 0.32f);
-    }
-
-    private static void DrawWeatherHeroIcon(Graphics g, WeatherIconType type, float cx, float cy, float size)
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brushWhite = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
-        using var penWhite = new Pen(Color.FromArgb(255, 255, 255, 255), size * 0.10f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-
-        switch (type)
+        if (isFilled)
         {
-            case WeatherIconType.ClearSky:
-                float sunR = size * 0.28f;
-                g.FillEllipse(brushWhite, cx - sunR, cy - sunR, sunR * 2, sunR * 2);
-                float rayLen = size * 0.16f;
-                float rayDist = size * 0.38f;
-                for (int i = 0; i < 8; i++)
-                {
-                    double angle = i * Math.PI / 4.0;
-                    float rx1 = cx + (float)(Math.Cos(angle) * rayDist);
-                    float ry1 = cy + (float)(Math.Sin(angle) * rayDist);
-                    float rx2 = cx + (float)(Math.Cos(angle) * (rayDist + rayLen));
-                    float ry2 = cy + (float)(Math.Sin(angle) * (rayDist + rayLen));
-                    g.DrawLine(penWhite, rx1, ry1, rx2, ry2);
-                }
-                break;
-
-            case WeatherIconType.PartlyCloudy:
-                float sR = size * 0.22f;
-                float sCx = cx - size * 0.18f;
-                float sCy = cy - size * 0.18f;
-                g.FillEllipse(brushWhite, sCx - sR, sCy - sR, sR * 2, sR * 2);
-                for (int i = 0; i < 6; i++)
-                {
-                    double angle = (i * Math.PI / 3.0) - Math.PI * 0.2;
-                    float rx1 = sCx + (float)(Math.Cos(angle) * (sR + 2));
-                    float ry1 = sCy + (float)(Math.Sin(angle) * (sR + 2));
-                    float rx2 = sCx + (float)(Math.Cos(angle) * (sR + size * 0.12f));
-                    float ry2 = sCy + (float)(Math.Sin(angle) * (sR + size * 0.12f));
-                    g.DrawLine(penWhite, rx1, ry1, rx2, ry2);
-                }
-                DrawCloudShape(g, cx + size * 0.05f, cy + size * 0.10f, size * 0.75f, brushWhite);
-                break;
-
-            case WeatherIconType.Overcast:
-                DrawCloudShape(g, cx, cy, size * 0.90f, brushWhite);
-                break;
-
-            case WeatherIconType.Drizzle:
-            case WeatherIconType.Rain:
-                DrawCloudShape(g, cx, cy - size * 0.12f, size * 0.85f, brushWhite);
-                float rainY = cy + size * 0.22f;
-                using (var rainPen = new Pen(Color.FromArgb(220, 255, 255, 255), size * 0.08f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    g.DrawLine(rainPen, cx - size * 0.22f, rainY, cx - size * 0.28f, rainY + size * 0.22f);
-                    g.DrawLine(rainPen, cx, rainY, cx - size * 0.06f, rainY + size * 0.22f);
-                    g.DrawLine(rainPen, cx + size * 0.22f, rainY, cx + size * 0.16f, rainY + size * 0.22f);
-                }
-                break;
-
-            case WeatherIconType.Thunderstorm:
-                DrawCloudShape(g, cx, cy - size * 0.15f, size * 0.85f, brushWhite);
-                using (var boltPath = new GraphicsPath())
-                {
-                    boltPath.AddLine(cx + size * 0.04f, cy + size * 0.08f, cx - size * 0.12f, cy + size * 0.28f);
-                    boltPath.AddLine(cx - size * 0.12f, cy + size * 0.28f, cx + size * 0.02f, cy + size * 0.28f);
-                    boltPath.AddLine(cx + size * 0.02f, cy + size * 0.28f, cx - size * 0.08f, cy + size * 0.48f);
-                    using var boltPen = new Pen(Color.FromArgb(255, 255, 255, 255), size * 0.08f) { LineJoin = LineJoin.Miter };
-                    g.DrawPath(boltPen, boltPath);
-                }
-                break;
-
-            case WeatherIconType.Snow:
-                DrawCloudShape(g, cx, cy - size * 0.12f, size * 0.85f, brushWhite);
-                float snowY = cy + size * 0.26f;
-                float dotR = size * 0.06f;
-                g.FillEllipse(brushWhite, cx - size * 0.22f - dotR, snowY - dotR, dotR * 2, dotR * 2);
-                g.FillEllipse(brushWhite, cx - dotR, snowY - dotR, dotR * 2, dotR * 2);
-                g.FillEllipse(brushWhite, cx + size * 0.22f - dotR, snowY - dotR, dotR * 2, dotR * 2);
-                break;
-
-            case WeatherIconType.Fog:
-            default:
-                float fogW = size * 0.70f;
-                float lineSp = size * 0.18f;
-                using (var fogPen = new Pen(Color.FromArgb(230, 255, 255, 255), size * 0.10f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    g.DrawLine(fogPen, cx - fogW * 0.5f, cy - lineSp, cx + fogW * 0.5f, cy - lineSp);
-                    g.DrawLine(fogPen, cx - fogW * 0.4f, cy, cx + fogW * 0.4f, cy);
-                    g.DrawLine(fogPen, cx - fogW * 0.5f, cy + lineSp, cx + fogW * 0.5f, cy + lineSp);
-                }
-                break;
+            using var brush = new SolidBrush(Color.FromArgb(255, 255, 65, 105)); // Vibrant Apple Music Ruby
+            g.FillPath(brush, path);
+        }
+        else
+        {
+            using var pen = new Pen(Color.FromArgb(200, 255, 255, 255), 1.5f);
+            g.DrawPath(pen, path);
         }
     }
 
-    private static void DrawCloudShape(Graphics g, float cx, float cy, float size, Brush brush)
+    private static void DrawAirPlayIcon(Graphics g, float cx, float cy, float size)
     {
-        float w = size * 0.85f;
-        float h = size * 0.45f;
-        float botY = cy + h * 0.25f;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var pen = new Pen(Color.FromArgb(200, 255, 255, 255), size * 0.12f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
 
-        g.FillEllipse(brush, cx - w * 0.45f, botY - h * 0.40f, w * 0.90f, h * 0.80f);
-        g.FillEllipse(brush, cx - w * 0.35f, cy - h * 0.35f, w * 0.45f, w * 0.45f);
-        g.FillEllipse(brush, cx - w * 0.15f, cy - h * 0.70f, w * 0.55f, w * 0.55f);
+        float sw = size * 0.85f;
+        float sh = size * 0.55f;
+        float topY = cy - size * 0.45f;
+
+        g.DrawLine(pen, cx - sw * 0.5f, topY + sh, cx - sw * 0.5f, topY);
+        g.DrawLine(pen, cx - sw * 0.5f, topY, cx + sw * 0.5f, topY);
+        g.DrawLine(pen, cx + sw * 0.5f, topY, cx + sw * 0.5f, topY + sh);
+
+        using var brush = new SolidBrush(Color.FromArgb(220, 255, 255, 255));
+        float triW = size * 0.50f;
+        float triH = size * 0.38f;
+        float triBot = cy + size * 0.45f;
+
+        PointF[] tri = new[]
+        {
+            new PointF(cx, triBot - triH),
+            new PointF(cx + triW * 0.5f, triBot),
+            new PointF(cx - triW * 0.5f, triBot)
+        };
+        g.FillPolygon(brush, tri);
     }
 
-    private static (byte[] mask, int width, int height) PrecomputeWeatherMask(WeatherData wData)
+    private static (byte[] mask, int width, int height) PrecomputeMusicMask(
+        TrackInfo track,
+        double progressSeconds,
+        bool isPlaying,
+        bool isHearted,
+        double rotationAngle,
+        double visualizerTime)
     {
         const float superScale = 4.0f;
         int targetW = 440;
@@ -548,82 +684,154 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            using var fontCity = new Font("Segoe UI Variable Display", 13.5f * superScale, FontStyle.Bold);
-            using var fontDate = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
-            using var fontTemp = new Font("Segoe UI Variable Display", 36.0f * superScale, FontStyle.Bold);
-            using var fontCond = new Font("Segoe UI Variable Display", 13.0f * superScale, FontStyle.Bold);
-            using var fontSub = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
-            using var fontPill = new Font("Segoe UI Variable Display", 10.0f * superScale, FontStyle.Bold);
+            using var fontTitle = new Font("Segoe UI Variable Display", 15.0f * superScale, FontStyle.Bold);
+            using var fontArtist = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
+            using var fontBadge = new Font("Segoe UI Variable Display", 7.5f * superScale, FontStyle.Bold);
+            using var fontTime = new Font("Segoe UI Variable Display", 9.0f * superScale, FontStyle.Bold);
 
-            // 1. Header Row: Procedural Location Pin + City (Left) & Date (Right)
-            float pinX = 20f * superScale;
-            float pinY = 18f * superScale;
-            DrawLocationPin(g, pinX, pinY, 14f * superScale, Color.FromArgb(255, 255, 255, 255));
+            // 1. Left Section: Frosted Album Artwork Card + Procedural Vinyl Disc
+            float cardX = 14f * superScale;
+            float cardY = 12f * superScale;
+            float cardW = 120f * superScale;
+            float cardH = 120f * superScale;
+            float cardR = 18f * superScale;
 
-            string locStr = wData.City;
-            using (var brushWhite = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+            // Frosted album card background
+            using (var cardPath = new GraphicsPath())
             {
-                g.DrawString(locStr, fontCity, brushWhite, 32f * superScale, 10f * superScale, StringFormat.GenericDefault);
+                cardPath.AddArc(cardX, cardY, cardR * 2, cardR * 2, 180, 90);
+                cardPath.AddArc(cardX + cardW - cardR * 2, cardY, cardR * 2, cardR * 2, 270, 90);
+                cardPath.AddArc(cardX + cardW - cardR * 2, cardY + cardH - cardR * 2, cardR * 2, cardR * 2, 0, 90);
+                cardPath.AddArc(cardX, cardY + cardH - cardR * 2, cardR * 2, cardR * 2, 90, 90);
+                cardPath.CloseFigure();
+
+                using var brushCard = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+                g.FillPath(brushCard, cardPath);
+                using var penCard = new Pen(Color.FromArgb(90, 255, 255, 255), 1.2f * superScale);
+                g.DrawPath(penCard, cardPath);
             }
 
-            string dateStr = DateTime.Now.ToString("dddd, MMM d");
-            using (var brushSub = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
+            // Procedural Vinyl Disc inside Album Card
+            float vinylCx = cardX + cardW * 0.5f;
+            float vinylCy = cardY + cardH * 0.5f;
+            float vinylRadius = 48f * superScale;
+            DrawVinylRecord(g, vinylCx, vinylCy, vinylRadius, rotationAngle, track.CoverAccentColor);
+
+            // Equalizer Bars mini-badge overlay (Bottom right corner of album card)
+            if (isPlaying)
             {
-                var dateSize = g.MeasureString(dateStr, fontDate, PointF.Empty, StringFormat.GenericDefault);
-                g.DrawString(dateStr, fontDate, brushSub, (targetW - 20f) * superScale - dateSize.Width, 12f * superScale, StringFormat.GenericDefault);
+                float eqCx = cardX + cardW - 20f * superScale;
+                float eqCy = cardY + cardH - 18f * superScale;
+                DrawEqualizerBars(g, eqCx, eqCy, 3.2f * superScale, 16f * superScale, visualizerTime);
             }
 
-            // 2. Middle Row: Hero Temperature + Vector Weather Condition Glyph + Condition Summary
-            string tempStr = wData.Temperature + "°";
-            using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+            // 2. Right Section: Track Details & Spatial Audio Pill
+            float textStartX = cardX + cardW + 18f * superScale;
+            float rightEdge = (targetW - 14f) * superScale;
+            float barW = rightEdge - textStartX;
+
+            // Track Title (Pure Luminous White)
+            using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(tempStr, fontTemp, brushTemp, 16f * superScale, 40f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 10f * superScale, StringFormat.GenericDefault);
             }
 
-            var tempSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericDefault);
-            float iconCx = 16f * superScale + tempSize.Width + 24f * superScale;
-            float iconCy = 64f * superScale;
-            DrawWeatherHeroIcon(g, wData.IconType, iconCx, iconCy, 34f * superScale);
-
-            float condTextX = iconCx + 26f * superScale;
-            using (var brushCond = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
+            // Artist & Album
+            using (var brushArtist = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
             {
-                g.DrawString(wData.Condition, fontCond, brushCond, condTextX, 46f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 32f * superScale, StringFormat.GenericDefault);
             }
 
-            string hiLoStr = "H: " + wData.HighTemp + "°   L: " + wData.LowTemp + "°";
-            using (var brushHiLo = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
+            // Luxury Audio Badge (e.g. LOSSLESS • 24-BIT/96kHz)
+            var badgeSize = g.MeasureString(track.Badge, fontBadge, PointF.Empty, StringFormat.GenericDefault);
+            float badgeX = rightEdge - badgeSize.Width - 14f * superScale;
+            float badgeY = 12f * superScale;
+            float badgePadH = 6f * superScale;
+            float badgePadV = 3f * superScale;
+            float badgeBoxW = badgeSize.Width + badgePadH * 2;
+            float badgeBoxH = badgeSize.Height + badgePadV * 2;
+            float badgeR = 4f * superScale;
+
+            using (var badgePath = new GraphicsPath())
             {
-                g.DrawString(hiLoStr, fontSub, brushHiLo, condTextX, 68f * superScale, StringFormat.GenericDefault);
+                badgePath.AddArc(badgeX, badgeY, badgeR * 2, badgeR * 2, 180, 90);
+                badgePath.AddArc(badgeX + badgeBoxW - badgeR * 2, badgeY, badgeR * 2, badgeR * 2, 270, 90);
+                badgePath.AddArc(badgeX + badgeBoxW - badgeR * 2, badgeY + badgeBoxH - badgeR * 2, badgeR * 2, badgeR * 2, 0, 90);
+                badgePath.AddArc(badgeX, badgeY + badgeBoxH - badgeR * 2, badgeR * 2, badgeR * 2, 90, 90);
+                badgePath.CloseFigure();
+
+                using var brushBadgeBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
+                g.FillPath(brushBadgeBg, badgePath);
+                using var penBadge = new Pen(Color.FromArgb(120, 255, 255, 255), 1.0f * superScale);
+                g.DrawPath(penBadge, badgePath);
+            }
+            using (var brushBadgeText = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
+            {
+                g.DrawString(track.Badge, fontBadge, brushBadgeText, badgeX + badgePadH, badgeY + badgePadV, StringFormat.GenericDefault);
             }
 
-            // 3. Bottom Row: 3 Micro-metric Badges with Procedural Vector Icons
-            float badgeY = 110f * superScale;
-            float badgeSpacing = 142f * superScale;
+            // 3. Interactive Scrubbing Timeline
+            float barY = 58f * superScale;
+            float barH = 3.0f * superScale;
+            double progressRatio = Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0);
 
-            // Metric 1: Humidity
-            float b1X = 16f * superScale;
-            DrawWaterDrop(g, b1X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
-            using (var brushB1 = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
+            // Background Rail (Subtle Translucent Gray)
+            using (var penRail = new Pen(Color.FromArgb(60, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
             {
-                g.DrawString(wData.Humidity + "% Humidity", fontPill, brushB1, b1X + 18f * superScale, badgeY, StringFormat.GenericDefault);
+                g.DrawLine(penRail, textStartX + barH * 0.5f, barY, rightEdge - barH * 0.5f, barY);
             }
 
-            // Metric 2: Wind
-            float b2X = b1X + badgeSpacing;
-            DrawWindBreeze(g, b2X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
-            using (var brushB2 = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
+            // Filled Active Track (Glowing Luminous White)
+            float fillEnd = textStartX + (float)(progressRatio * barW);
+            if (fillEnd > textStartX + barH)
             {
-                g.DrawString(wData.WindSpeed + " km/h Wind", fontPill, brushB2, b2X + 18f * superScale, badgeY, StringFormat.GenericDefault);
+                using var penFill = new Pen(Color.FromArgb(250, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
             }
 
-            // Metric 3: Precip
-            float b3X = b2X + badgeSpacing;
-            DrawRainPrecip(g, b3X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
-            using (var brushB3 = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
+            // Playhead Scrubber Bead
+            float beadR = 4.5f * superScale;
+            using (var brushBead = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(wData.RainProb + "% Precip", fontPill, brushB3, b3X + 18f * superScale, badgeY, StringFormat.GenericDefault);
+                g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
             }
+
+            // Time Labels (Elapsed on Left, Remaining on Right)
+            int elMin = (int)(progressSeconds / 60);
+            int elSec = (int)(progressSeconds % 60);
+            string elStr = $"{elMin}:{elSec:D2}";
+
+            double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
+            int remMin = (int)(remSeconds / 60);
+            int remSec = (int)(remSeconds % 60);
+            string remStr = $"-{remMin}:{remSec:D2}";
+
+            float timeLabelY = 66f * superScale;
+            using (var brushTime = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            {
+                g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
+                var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
+                g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
+            }
+
+            // 4. Media Playback Controls
+            float ctrlCenterY = 104f * superScale;
+            float ctrlCenterX = textStartX + barW * 0.5f;
+
+            // Heart / Favorite Icon (Left)
+            DrawHeartIcon(g, textStartX + 14f * superScale, ctrlCenterY, 15f * superScale, isHearted);
+
+            // Previous Track Button
+            DrawTrackSkipButton(g, ctrlCenterX - 52f * superScale, ctrlCenterY, 18f * superScale, isNext: false);
+
+            // Center Play / Pause Hero Glass Button
+            DrawPlayPauseButton(g, ctrlCenterX, ctrlCenterY, 20f * superScale, isPlaying);
+
+            // Next Track Button
+            DrawTrackSkipButton(g, ctrlCenterX + 52f * superScale, ctrlCenterY, 18f * superScale, isNext: true);
+
+            // AirPlay / Output Streaming Icon (Right)
+            DrawAirPlayIcon(g, rightEdge - 14f * superScale, ctrlCenterY, 15f * superScale);
         }
 
         // Downsample 4x to target resolution with area-averaging
@@ -932,6 +1140,27 @@ internal sealed class OverlayForm : Form
                 _hoverVel = 0.0;
             }
 
+            // Update music playback timeline & visualizer animation
+            if (_isPlaying)
+            {
+                _trackProgressSeconds += dt;
+                var currTrack = Playlist[_currentTrackIndex];
+                if (_trackProgressSeconds >= currTrack.DurationSeconds)
+                {
+                    _trackProgressSeconds = 0.0;
+                    _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                }
+                _vinylRotationAngle = (_vinylRotationAngle + 45.0 * dt) % 360.0;
+                _visualizerTime += dt;
+            }
+
+            double nowSec = _frameStopwatch.Elapsed.TotalSeconds;
+            if (_hoverPos > 0.05 && (nowSec - _lastMusicMaskUpdateTime >= 0.035 || !_isPlaying))
+            {
+                _lastMusicMaskUpdateTime = nowSec;
+                UpdateMusicMask();
+            }
+
             UpdateTimeMaskIfNeeded();
 
             PillGeometry geom = ComputeGeometry(_progress, _hoverPos);
@@ -1010,7 +1239,7 @@ internal sealed class OverlayForm : Form
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
         {
-            // 1. Box downsample (540x230 -> 270x115): 4x fewer pixels, anti-aliased pre-filter
+            // 1. Box downsample (600x250 -> 300x125): 4x fewer pixels, anti-aliased pre-filter
             for (int y = 0; y < HalfHeight; y++)
             {
                 int srcRow0 = (y * 2) * SurfaceWidth * 4;
@@ -1035,7 +1264,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2. Single-pass 5-tap Gaussian Blur on 270x115 (Crisp, elegant frosted glass diffusion)
+            // 2. Single-pass 5-tap Gaussian Blur on 300x125 (Crisp, elegant frosted glass diffusion)
             // Horizontal (pHalfRaw -> pBlurH)
             for (int y = 0; y < HalfHeight; y++)
             {
@@ -1317,43 +1546,43 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 5. Real-time Weather Card on Hover Expansion (1:1 Native Resolution without text bumping)
-            byte[]? weatherMask;
-            int weatherW, weatherH;
-            lock (_weatherLock)
+            // 5. Real-time Luxury Music Player on Hover Expansion (1:1 Native Resolution without text bumping)
+            byte[]? musicMask;
+            int musicW, musicH;
+            lock (_musicLock)
             {
-                weatherMask = _weatherMask;
-                weatherW = _weatherWidth;
-                weatherH = _weatherHeight;
+                musicMask = _musicMask;
+                musicW = _musicWidth;
+                musicH = _musicHeight;
             }
 
-            // Weather opacity: fades in as hover expands to full modal
-            double spawnWeatherAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
-            double hoverWeatherAlpha = Math.Clamp((_hoverPos - 0.28) / 0.72, 0.0, 1.0);
-            double weatherAlpha = EaseOutCubic(spawnWeatherAlpha) * EaseOutCubic(hoverWeatherAlpha);
+            // Music player opacity: fades in smoothly as hover expands to full modal
+            double spawnMusicAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
+            double hoverMusicAlpha = Math.Clamp((_hoverPos - 0.28) / 0.72, 0.0, 1.0);
+            double musicAlpha = EaseOutCubic(spawnMusicAlpha) * EaseOutCubic(hoverMusicAlpha);
 
-            if (weatherAlpha > 0.005 && weatherMask != null && weatherW > 0 && weatherH > 0)
+            if (musicAlpha > 0.005 && musicMask != null && musicW > 0 && musicH > 0)
             {
-                // Stable weather card positioning: anchored to modal center (does not bump with glass spring oscillations)
-                int startX = (int)Math.Round((SurfaceWidth * 0.5) - weatherW * 0.5);
-                int startY = (int)Math.Round((TopPadding + DefaultPillHeight * 0.5) - weatherH * 0.5);
+                // Stable music player positioning: anchored to modal center
+                int startX = (int)Math.Round((SurfaceWidth * 0.5) - musicW * 0.5);
+                int startY = (int)Math.Round((TopPadding + DefaultPillHeight * 0.5) - musicH * 0.5);
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
-                double shadowAlpha = weatherAlpha * 0.45;
-                for (int ty = 0; ty < weatherH; ty++)
+                double shadowAlpha = musicAlpha * 0.45;
+                for (int ty = 0; ty < musicH; ty++)
                 {
                     int dstY = startY + ty + 1;
                     if (dstY < 0 || dstY >= SurfaceHeight) continue;
 
-                    int srcRow = ty * weatherW;
+                    int srcRow = ty * musicW;
                     int dstRow = dstY * SurfaceWidth;
 
-                    for (int tx = 0; tx < weatherW; tx++)
+                    for (int tx = 0; tx < musicW; tx++)
                     {
                         int dstX = startX + tx;
                         if (dstX < 0 || dstX >= SurfaceWidth) continue;
 
-                        byte maskA = weatherMask[srcRow + tx];
+                        byte maskA = musicMask[srcRow + tx];
                         if (maskA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
@@ -1375,21 +1604,21 @@ internal sealed class OverlayForm : Form
                     }
                 }
 
-                // Pass 2: Razor-Sharp Pure Luminous White Text & Weather Icons
-                for (int ty = 0; ty < weatherH; ty++)
+                // Pass 2: Razor-Sharp Pure Luminous White Text & Vector Music Controls
+                for (int ty = 0; ty < musicH; ty++)
                 {
                     int dstY = startY + ty;
                     if (dstY < 0 || dstY >= SurfaceHeight) continue;
 
-                    int srcRow = ty * weatherW;
+                    int srcRow = ty * musicW;
                     int dstRow = dstY * SurfaceWidth;
 
-                    for (int tx = 0; tx < weatherW; tx++)
+                    for (int tx = 0; tx < musicW; tx++)
                     {
                         int dstX = startX + tx;
                         if (dstX < 0 || dstX >= SurfaceWidth) continue;
 
-                        byte maskA = weatherMask[srcRow + tx];
+                        byte maskA = musicMask[srcRow + tx];
                         if (maskA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
@@ -1401,7 +1630,7 @@ internal sealed class OverlayForm : Form
                         byte bgG = (byte)(bg >> 8);
                         byte bgB = (byte)bg;
 
-                        double fgA = (maskA / 255.0) * weatherAlpha * 0.98;
+                        double fgA = (maskA / 255.0) * musicAlpha * 0.98;
                         double invA = 1.0 - fgA;
                         double whiteVal = 255.0 * fgA * (bgA / 255.0);
 
