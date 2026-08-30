@@ -908,11 +908,11 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Real physical damped harmonic spring oscillator
-            // Stiffness = 145.0 (snappy expansion), Damping = 9.8 (underdamped liquid wobble & spring oscillation)
+            // Refined physical damped harmonic spring oscillator
+            // Stiffness = 175.0, Damping = 15.0 (refined luxury fluid bounce with ~10% overshoot & smooth settle)
             double target = isHovered ? 1.0 : 0.0;
-            const double stiffness = 145.0;
-            const double damping = 9.8;
+            const double stiffness = 175.0;
+            const double damping = 15.0;
 
             int subSteps = 4;
             double subDt = dt / subSteps;
