@@ -373,21 +373,21 @@ internal sealed class OverlayForm : Form
     {
         // Content area offset within Surface:
         // CenterX = 300, TargetW = 430 -> startX = 300 - 215 = 85
-        // TopPadding = 18 + 46 -> startY = 64
+        // Moved down fully inside pill: startY = 90 (72px top padding vs 18px bottom padding)
         float mx = pt.X - 85f;
-        float my = pt.Y - 64f;
+        float my = pt.Y - 90f;
 
-        // Content layout: textStartX = 86, rightEdge = 416, barW = 330, ctrlCenterX = 86 + 165 = 251
-        // 1. Play / Pause Central Button: cx = 251, cy = 84, radius = 18
-        if (Math.Sqrt(Math.Pow(mx - 251, 2) + Math.Pow(my - 84, 2)) <= 20)
+        // Content layout: textStartX = 84, rightEdge = 414, barW = 330, ctrlCenterX = 84 + 165 = 249
+        // 1. Play / Pause Central Button: cx = 249, cy = 76, radius = 18
+        if (Math.Sqrt(Math.Pow(mx - 249, 2) + Math.Pow(my - 76, 2)) <= 20)
         {
             _isPlaying = !_isPlaying;
             UpdateMusicMask();
             return true;
         }
 
-        // 2. Next Track: cx = 299, cy = 84, radius = 16
-        if (Math.Sqrt(Math.Pow(mx - 299, 2) + Math.Pow(my - 84, 2)) <= 18)
+        // 2. Next Track: cx = 297, cy = 76, radius = 16
+        if (Math.Sqrt(Math.Pow(mx - 297, 2) + Math.Pow(my - 76, 2)) <= 18)
         {
             _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
             _trackProgressSeconds = 0.0;
@@ -395,8 +395,8 @@ internal sealed class OverlayForm : Form
             return true;
         }
 
-        // 3. Prev Track: cx = 203, cy = 84, radius = 16
-        if (Math.Sqrt(Math.Pow(mx - 203, 2) + Math.Pow(my - 84, 2)) <= 18)
+        // 3. Prev Track: cx = 201, cy = 76, radius = 16
+        if (Math.Sqrt(Math.Pow(mx - 201, 2) + Math.Pow(my - 76, 2)) <= 18)
         {
             _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
             _trackProgressSeconds = 0.0;
@@ -404,18 +404,18 @@ internal sealed class OverlayForm : Form
             return true;
         }
 
-        // 4. Heart Favorite: cx = 94, cy = 84, radius = 15
-        if (Math.Sqrt(Math.Pow(mx - 94, 2) + Math.Pow(my - 84, 2)) <= 16)
+        // 4. Heart Favorite: cx = 94, cy = 76, radius = 15
+        if (Math.Sqrt(Math.Pow(mx - 94, 2) + Math.Pow(my - 76, 2)) <= 16)
         {
             _isHearted = !_isHearted;
             UpdateMusicMask();
             return true;
         }
 
-        // 5. Timeline Scrubbing: my in [40, 58], mx in [86, 416]
-        if (my >= 38 && my <= 60 && mx >= 84 && mx <= 418)
+        // 5. Timeline Scrubbing: my in [36, 54], mx in [84, 414]
+        if (my >= 34 && my <= 56 && mx >= 82 && mx <= 416)
         {
-            double ratio = Math.Clamp((mx - 86) / (416.0 - 86.0), 0.0, 1.0);
+            double ratio = Math.Clamp((mx - 84) / (414.0 - 84.0), 0.0, 1.0);
             var track = Playlist[_currentTrackIndex];
             _trackProgressSeconds = ratio * track.DurationSeconds;
             UpdateMusicMask();
@@ -498,55 +498,56 @@ internal sealed class OverlayForm : Form
         path.AddArc(x, y + size - radius * 2, radius * 2, radius * 2, 90, 90);
         path.CloseFigure();
 
-        // 1. Dark Velvet Glass Base with Subtle Depth
-        using (var brushBg = new SolidBrush(Color.FromArgb(245, 18, 18, 24)))
+        // 1. Subtle Translucent Frosted Glass Album Card Fill
+        using (var brushBg = new SolidBrush(Color.FromArgb(32, 255, 255, 255)))
         {
             g.FillPath(brushBg, path);
         }
 
-        // 2. Rich Ambient Color Linear / Angle Gradient
-        using (var gradBrush = new LinearGradientBrush(
-            new RectangleF(x, y, size, size),
-            Color.FromArgb(160, accentColor),
-            Color.FromArgb(25, 12, 12, 18),
-            45f))
-        {
-            g.FillPath(gradBrush, path);
-        }
-
-        // 3. Stylized Concentric Artwork Rings
+        // 2. Concentric Vinyl Stylized Grooves
         float cx = x + size * 0.5f;
         float cy = y + size * 0.5f;
-        float maxR = size * 0.44f;
+        float maxR = size * 0.42f;
 
         for (int i = 1; i <= 3; i++)
         {
             float r = maxR * (0.35f + i * 0.22f);
-            using var penRing = new Pen(Color.FromArgb(32, 255, 255, 255), 1.0f);
+            using var penRing = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f);
             g.DrawEllipse(penRing, cx - r, cy - r, r * 2, r * 2);
         }
 
-        // Center Artwork Disc
+        // 3. Rotating Specular Light Sweep on Vinyl
+        using (var brushSheen = new SolidBrush(Color.FromArgb(40, 255, 255, 255)))
+        {
+            using var sheenPath = new GraphicsPath();
+            sheenPath.AddPie(cx - maxR, cy - maxR, maxR * 2, maxR * 2, (float)(rotationAngle + 30), 45f);
+            sheenPath.AddPie(cx - maxR, cy - maxR, maxR * 2, maxR * 2, (float)(rotationAngle + 210), 45f);
+            g.FillPath(brushSheen, sheenPath);
+        }
+
+        // 4. Center Luminous Disc
         float centerR = size * 0.16f;
-        using (var brushCenter = new SolidBrush(Color.FromArgb(235, accentColor)))
+        using (var brushCenter = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
         {
             g.FillEllipse(brushCenter, cx - centerR, cy - centerR, centerR * 2, centerR * 2);
         }
 
         // Inner Core Ring
-        using (var penCore = new Pen(Color.FromArgb(140, 255, 255, 255), 1.0f))
+        using (var penCore = new Pen(Color.FromArgb(200, 255, 255, 255), 1.0f))
         {
             g.DrawEllipse(penCore, cx - centerR * 0.55f, cy - centerR * 0.55f, centerR * 1.1f, centerR * 1.1f);
         }
 
-        // Center Spindle Core (Punched out)
-        float holeR = size * 0.055f;
-        using (var brushHole = new SolidBrush(Color.FromArgb(240, 14, 14, 18)))
+        // 5. Hollow Center Spindle Core
+        float holeR = size * 0.06f;
+        g.CompositingMode = CompositingMode.SourceCopy;
+        using (var brushHole = new SolidBrush(Color.Transparent))
         {
             g.FillEllipse(brushHole, cx - holeR, cy - holeR, holeR * 2, holeR * 2);
         }
+        g.CompositingMode = CompositingMode.SourceOver;
 
-        // 4. Equalizer Live Waveform Overlay in bottom right corner of album art
+        // 6. Equalizer Live Waveform Overlay
         if (isPlaying)
         {
             float eqCx = x + size - 14f;
@@ -554,10 +555,10 @@ internal sealed class OverlayForm : Form
             DrawEqualizerBars(g, eqCx, eqCy, 1.8f, 10f, visualizerTime);
         }
 
-        // 5. Crisp Rounded Square Glass Rim
-        using (var penRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.2f))
+        // 7. Crisp Rounded Square Glass Rim
+        using (var penOuterRim = new Pen(Color.FromArgb(140, 255, 255, 255), 1.2f))
         {
-            g.DrawPath(penRim, path);
+            g.DrawPath(penOuterRim, path);
         }
     }
 
@@ -729,7 +730,7 @@ internal sealed class OverlayForm : Form
     {
         const float superScale = 4.0f;
         int targetW = 430;
-        int targetH = 110;
+        int targetH = 92;
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
 
@@ -746,9 +747,9 @@ internal sealed class OverlayForm : Form
 
             // 1. Left Section: Rounded Square Album Artwork
             float artX = 14f * superScale;
-            float artY = 6f * superScale;
-            float artSize = 56f * superScale;
-            float artRadius = 13f * superScale;
+            float artY = 2f * superScale;
+            float artSize = 54f * superScale;
+            float artRadius = 12f * superScale;
             DrawRoundedSquareCover(g, artX, artY, artSize, artRadius, track.CoverAccentColor, rotationAngle, isPlaying, visualizerTime);
 
             // 2. Right Section: Track Details & Scrubbing Rail
@@ -759,17 +760,17 @@ internal sealed class OverlayForm : Form
             // Track Title (Pure Luminous White)
             using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 4f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 1f * superScale, StringFormat.GenericDefault);
             }
 
             // Artist & Album Subtitle
             using (var brushArtist = new SolidBrush(Color.FromArgb(195, 255, 255, 255)))
             {
-                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 24f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 20f * superScale, StringFormat.GenericDefault);
             }
 
             // Timeline Scrubbing Rail
-            float barY = 48f * superScale;
+            float barY = 44f * superScale;
             float barH = 2.5f * superScale;
             double progressRatio = Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0);
 
@@ -801,7 +802,7 @@ internal sealed class OverlayForm : Form
             int remSec = (int)(remSeconds % 60);
             string remStr = $"-{remMin}:{remSec:D2}";
 
-            float timeLabelY = 54f * superScale;
+            float timeLabelY = 50f * superScale;
             using (var brushTime = new SolidBrush(Color.FromArgb(165, 255, 255, 255)))
             {
                 g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
@@ -810,7 +811,7 @@ internal sealed class OverlayForm : Form
             }
 
             // 3. Bottom Row: Media Transport Controls
-            float ctrlY = 84f * superScale;
+            float ctrlY = 76f * superScale;
             float ctrlCenterX = textStartX + barW * 0.5f;
 
             // Heart / Favorite Icon (Left)
@@ -1558,9 +1559,9 @@ internal sealed class OverlayForm : Form
 
             if (musicAlpha > 0.005 && musicMask != null && musicW > 0 && musicH > 0)
             {
-                // Stable music player positioning: moved down with generous top padding (46px top vs 24px bottom)
+                // Stable music player positioning: moved down fully inside pill (72px top padding vs 16px bottom padding)
                 int startX = (int)Math.Round((SurfaceWidth * 0.5) - musicW * 0.5);
-                int startY = TopPadding + 46;
+                int startY = 90;
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
                 double shadowAlpha = musicAlpha * 0.45;
