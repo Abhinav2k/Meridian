@@ -8,13 +8,13 @@ namespace LiquidGlassCircle;
 
 internal sealed class OverlayForm : Form
 {
-    private const int SurfaceWidth = 540;
+    private const int SurfaceWidth = 720;
     private const int SurfaceHeight = 110;
-    private const int HalfWidth = SurfaceWidth / 2;   // 270
+    private const int HalfWidth = SurfaceWidth / 2;   // 360
     private const int HalfHeight = SurfaceHeight / 2; // 55
 
-    // Default expanded size on hover
-    private const int DefaultPillWidth = 500;
+    // Default expanded size on hover (wide dynamic bar)
+    private const int DefaultPillWidth = 680;
     private const int DefaultPillHeight = 64;
 
     // Compact resting size with clock
