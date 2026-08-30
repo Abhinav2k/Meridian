@@ -1237,8 +1237,9 @@ internal sealed class OverlayForm : Form
 
             if (textAlpha > 0.005 && timeMask != null && timeW > 0 && timeH > 0)
             {
-                int startX = (int)Math.Round(geom.CenterX - timeW * 0.5);
-                int startY = (int)Math.Round(geom.CenterY - timeH * 0.5);
+                // Stable text positioning: anchored to compact pill center (does not bump with glass spring oscillations)
+                int startX = (int)Math.Round((SurfaceWidth * 0.5) - timeW * 0.5);
+                int startY = (int)Math.Round((TopPadding + CompactPillHeight * 0.5) - timeH * 0.5);
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
                 double shadowAlpha = textAlpha * 0.45;
@@ -1316,7 +1317,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 5. Real-time Weather Card on Hover Expansion (1:1 Native Resolution with Y-glide)
+            // 5. Real-time Weather Card on Hover Expansion (1:1 Native Resolution without text bumping)
             byte[]? weatherMask;
             int weatherW, weatherH;
             lock (_weatherLock)
@@ -1333,10 +1334,9 @@ internal sealed class OverlayForm : Form
 
             if (weatherAlpha > 0.005 && weatherMask != null && weatherW > 0 && weatherH > 0)
             {
-                // Silky 4px Y-glide during bloom without pixel distortion
-                int glideY = (int)Math.Round((1.0 - weatherAlpha) * 4.0);
-                int startX = (int)Math.Round(geom.CenterX - weatherW * 0.5);
-                int startY = (int)Math.Round(geom.CenterY - weatherH * 0.5) + glideY;
+                // Stable weather card positioning: anchored to modal center (does not bump with glass spring oscillations)
+                int startX = (int)Math.Round((SurfaceWidth * 0.5) - weatherW * 0.5);
+                int startY = (int)Math.Round((TopPadding + DefaultPillHeight * 0.5) - weatherH * 0.5);
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
                 double shadowAlpha = weatherAlpha * 0.45;
