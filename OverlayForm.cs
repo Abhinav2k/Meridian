@@ -1598,7 +1598,7 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            // 1. Left Section: Rotating Circular Vinyl Album Disc (Equal 9px Padding)
+            // 1. Left Section: Rotating Circular Vinyl Album Disc (Equal 9px Padding, Full Album Art)
             if (playingExpandP > 0.05)
             {
                 float discAlpha = (float)Math.Clamp((playingExpandP - 0.05) / 0.95, 0.0, 1.0);
@@ -1608,68 +1608,59 @@ internal sealed class OverlayForm : Form
 
                 var state = g.Save();
 
-                // Vinyl Base
-                using (var brushDisc = new SolidBrush(Color.FromArgb((int)(40 * discAlpha), 255, 255, 255)))
+                using (var fullDiscPath = new GraphicsPath())
                 {
-                    g.FillEllipse(brushDisc, discCx - discR, discCy - discR, discR * 2, discR * 2);
-                }
-                using (var penDisc = new Pen(Color.FromArgb((int)(160 * discAlpha), 255, 255, 255), 1.0f * superScale))
-                {
-                    g.DrawEllipse(penDisc, discCx - discR, discCy - discR, discR * 2, discR * 2);
-                }
+                    fullDiscPath.AddEllipse(discCx - discR, discCy - discR, discR * 2, discR * 2);
+                    g.SetClip(fullDiscPath);
 
-                // Micro-ring Grooves
-                float ringR = discR * 0.65f;
-                using (var penRing = new Pen(Color.FromArgb((int)(70 * discAlpha), 255, 255, 255), 0.8f * superScale))
-                {
-                    g.DrawEllipse(penRing, discCx - ringR, discCy - ringR, ringR * 2, ringR * 2);
-                }
-
-                // Rotating Specular Sheen
-                using (var brushSheen = new SolidBrush(Color.FromArgb((int)(45 * discAlpha), 255, 255, 255)))
-                {
-                    using var sheenPath = new GraphicsPath();
-                    sheenPath.AddPie(discCx - discR, discCy - discR, discR * 2, discR * 2, (float)(vinylAngle + 30), 45f);
-                    sheenPath.AddPie(discCx - discR, discCy - discR, discR * 2, discR * 2, (float)(vinylAngle + 210), 45f);
-                    g.FillPath(brushSheen, sheenPath);
-                }
-
-                // Center Circular Cover Artwork / Label Hub (Rotates with music!)
-                float centerR = discR * 0.45f;
-                using (var centerPath = new GraphicsPath())
-                {
-                    centerPath.AddEllipse(discCx - centerR, discCy - centerR, centerR * 2, centerR * 2);
-                    g.SetClip(centerPath);
-
+                    // 1. FULL ROTATING ALBUM ART FILLING THE ENTIRE DISC
                     if (coverBmp != null)
                     {
                         g.TranslateTransform(discCx, discCy);
                         g.RotateTransform((float)vinylAngle);
                         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.DrawImage(coverBmp, -centerR, -centerR, centerR * 2, centerR * 2);
+                        g.DrawImage(coverBmp, -discR, -discR, discR * 2, discR * 2);
                         g.ResetTransform();
                     }
                     else
                     {
-                        using var brushCenter = new SolidBrush(Color.FromArgb((int)(200 * discAlpha), trackAccent));
-                        g.FillPath(brushCenter, centerPath);
+                        using var brushCenter = new SolidBrush(Color.FromArgb((int)(220 * discAlpha), trackAccent));
+                        g.FillPath(brushCenter, fullDiscPath);
                     }
+
+                    // 2. Subtle Concentric Vinyl Micro-Grooves over Album Art
+                    for (int i = 1; i <= 3; i++)
+                    {
+                        float r = discR * (0.35f + i * 0.18f);
+                        using var penGroove = new Pen(Color.FromArgb((int)(35 * discAlpha), 255, 255, 255), 0.8f * superScale);
+                        g.DrawEllipse(penGroove, discCx - r, discCy - r, r * 2, r * 2);
+                    }
+
+                    // 3. Rotating Specular Light Sheen sweep
+                    using (var brushSheen = new SolidBrush(Color.FromArgb((int)(35 * discAlpha), 255, 255, 255)))
+                    {
+                        using var sheenPath = new GraphicsPath();
+                        sheenPath.AddPie(discCx - discR, discCy - discR, discR * 2, discR * 2, (float)(vinylAngle + 30), 45f);
+                        sheenPath.AddPie(discCx - discR, discCy - discR, discR * 2, discR * 2, (float)(vinylAngle + 210), 45f);
+                        g.FillPath(brushSheen, sheenPath);
+                    }
+
+                    // 4. Center Hollow Spindle Hole (SourceCopy transparent core)
+                    float holeR = discR * 0.14f;
+                    g.CompositingMode = CompositingMode.SourceCopy;
+                    using (var brushHole = new SolidBrush(Color.Transparent))
+                    {
+                        g.FillEllipse(brushHole, discCx - holeR, discCy - holeR, holeR * 2, holeR * 2);
+                    }
+                    g.CompositingMode = CompositingMode.SourceOver;
                 }
                 g.ResetClip();
 
-                using (var penCore = new Pen(Color.FromArgb((int)(180 * discAlpha), 255, 255, 255), 0.9f * superScale))
+                // 5. Crisp Outer Glass Rim Pen
+                using (var penDisc = new Pen(Color.FromArgb((int)(160 * discAlpha), 255, 255, 255), 1.0f * superScale))
                 {
-                    g.DrawEllipse(penCore, discCx - centerR, discCy - centerR, centerR * 2, centerR * 2);
+                    g.DrawEllipse(penDisc, discCx - discR, discCy - discR, discR * 2, discR * 2);
                 }
-
-                // Center Hollow Spindle Hole
-                float holeR = discR * 0.12f;
-                g.CompositingMode = CompositingMode.SourceCopy;
-                using (var brushHole = new SolidBrush(Color.Transparent))
-                {
-                    g.FillEllipse(brushHole, discCx - holeR, discCy - holeR, holeR * 2, holeR * 2);
-                }
-                g.CompositingMode = CompositingMode.SourceOver;
 
                 g.Restore(state);
             }
@@ -2020,7 +2011,7 @@ internal sealed class OverlayForm : Form
             }
 
             double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
-            if (_hoverPos > 0.05 && (nowSec - _lastExpandedMaskUpdateTime >= 0.035 || !_isPlaying))
+            if (_hoverPos > 0.85 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.065))
             {
                 _lastExpandedMaskUpdateTime = nowSec;
                 UpdateExpandedMask();
@@ -2239,8 +2230,8 @@ internal sealed class OverlayForm : Form
                     }
 
                     double edgeDistance = Math.Max(0.0, -sdf);
-                    double u = Math.Clamp(1.0 - (edgeDistance / 14.0), 0.0, 1.0);
-                    double bend = Math.Pow(u, 2.5) * 6.5;
+                    double u = Math.Clamp(1.0 - (edgeDistance * (1.0 / 14.0)), 0.0, 1.0);
+                    double bend = (u * u * Math.Sqrt(u)) * 6.5;
 
                     double sx = Math.Clamp(x - nx * bend, 0.0, SurfaceWidth - 2.0);
                     double sy = Math.Clamp(y - ny * bend, 0.0, SurfaceHeight - 2.0);
@@ -2248,14 +2239,14 @@ internal sealed class OverlayForm : Form
                     double hx = Math.Clamp(sx * 0.5, 0.0, HalfWidth - 2.0);
                     double hy = Math.Clamp(sy * 0.5, 0.0, HalfHeight - 2.0);
 
-                    int ix = (int)Math.Floor(hx);
-                    int iy = (int)Math.Floor(hy);
+                    int ix = (int)hx;
+                    int iy = (int)hy;
                     double fx = hx - ix;
                     double fy = hy - iy;
 
-                    int w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
-                    int w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
-                    int w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
+                    int w00 = (int)((1.0 - fx) * (1.0 - fy) * 256.0);
+                    int w10 = (int)(fx * (1.0 - fy) * 256.0);
+                    int w01 = (int)((1.0 - fx) * fy * 256.0);
                     int w11 = Math.Max(0, 256 - (w00 + w10 + w01));
 
                     int off00 = (iy * HalfWidth + ix) * 4;
@@ -2275,15 +2266,19 @@ internal sealed class OverlayForm : Form
                     g = (g * 242 + 228 * 14) >> 8;
                     b = (b * 242 + 255 * 14) >> 8;
 
-                    double outerRimGauss = Math.Exp(-Math.Pow((sdf + 1.0) / 1.25, 2.0));
-                    int outerRimLight = (int)(outerRimGauss * 225.0 * alphaVal);
+                    // Ultra-fast Rational Gaussian Rim Lighting
+                    double t1 = (sdf + 1.0) * 0.80; // (sdf + 1.0) / 1.25
+                    double t1Sq = t1 * t1;
+                    int outerRimLight = (t1Sq < 9.0) ? (int)((225.0 * alphaVal) / (1.0 + t1Sq * (1.0 + 0.45 * t1Sq))) : 0;
 
-                    double innerRimGauss = Math.Exp(-Math.Pow((sdf + 3.2) / 1.6, 2.0));
-                    int innerRimLight = (int)(innerRimGauss * 50.0 * alphaVal);
+                    double t2 = (sdf + 3.2) * 0.625; // (sdf + 3.2) / 1.6
+                    double t2Sq = t2 * t2;
+                    int innerRimLight = (t2Sq < 9.0) ? (int)((50.0 * alphaVal) / (1.0 + t2Sq * (1.0 + 0.45 * t2Sq))) : 0;
 
+                    double t3 = (sdf + 8.0) * (1.0 / 9.0);
+                    double t3Sq = t3 * t3;
                     double topNorm = Math.Clamp(-py / Math.Max(geom.HalfHeight, 1.0), 0.0, 1.0);
-                    double topDomeGauss = Math.Exp(-Math.Pow((sdf + 8.0) / 9.0, 2.0)) * topNorm;
-                    int topDomeLight = (int)(topDomeGauss * 35.0 * alphaVal);
+                    int topDomeLight = (t3Sq < 9.0) ? (int)((35.0 * alphaVal * topNorm) / (1.0 + t3Sq * (1.0 + 0.45 * t3Sq))) : 0;
 
                     int totalLight = outerRimLight + innerRimLight + topDomeLight;
                     if (totalLight > 0)
