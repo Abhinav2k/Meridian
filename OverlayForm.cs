@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using Windows.Media.Control;
 
 namespace LiquidGlassCircle;
 
@@ -272,12 +273,187 @@ internal sealed class OverlayForm : Form
         }
     };
 
+    internal sealed class SystemMediaController
+    {
+        private GlobalSystemMediaTransportControlsSessionManager? _manager;
+        private GlobalSystemMediaTransportControlsSession? _currentSession;
+
+        public event Action? MediaUpdated;
+
+        public bool HasActiveSession => _currentSession != null;
+        public string Title { get; private set; } = "Starboy";
+        public string Artist { get; private set; } = "The Weeknd • Daft Punk";
+        public string Album { get; private set; } = "Starboy";
+        public bool IsPlaying { get; private set; } = false;
+        public double PositionSeconds { get; private set; } = 0.0;
+        public double DurationSeconds { get; private set; } = 230.0;
+        public bool IsShuffle { get; private set; } = false;
+
+        public async Task InitializeAsync()
+        {
+            try
+            {
+                _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
+                if (_manager != null)
+                {
+                    _manager.CurrentSessionChanged += (s, e) => UpdateCurrentSession();
+                    _manager.SessionsChanged += (s, e) => UpdateCurrentSession();
+                    UpdateCurrentSession();
+                }
+            }
+            catch { }
+        }
+
+        private void UpdateCurrentSession()
+        {
+            try
+            {
+                var session = _manager?.GetCurrentSession();
+                _currentSession = session;
+                if (session != null)
+                {
+                    session.MediaPropertiesChanged += (s, e) => RefreshMediaProperties();
+                    session.PlaybackInfoChanged += (s, e) => RefreshPlaybackInfo();
+                    session.TimelinePropertiesChanged += (s, e) => RefreshTimeline();
+                    RefreshMediaProperties();
+                    RefreshPlaybackInfo();
+                    RefreshTimeline();
+                }
+                else
+                {
+                    IsPlaying = false;
+                    MediaUpdated?.Invoke();
+                }
+            }
+            catch { }
+        }
+
+        public async void RefreshMediaProperties()
+        {
+            try
+            {
+                if (_currentSession == null) return;
+                var props = await _currentSession.TryGetMediaPropertiesAsync();
+                if (props != null && !string.IsNullOrWhiteSpace(props.Title))
+                {
+                    Title = props.Title;
+                    Artist = string.IsNullOrWhiteSpace(props.Artist) ? "Audio" : props.Artist;
+                    Album = props.AlbumTitle ?? "";
+                    MediaUpdated?.Invoke();
+                }
+            }
+            catch { }
+        }
+
+        public void RefreshPlaybackInfo()
+        {
+            try
+            {
+                if (_currentSession == null) return;
+                var info = _currentSession.GetPlaybackInfo();
+                if (info != null)
+                {
+                    IsPlaying = info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+                    if (info.IsShuffleActive.HasValue)
+                    {
+                        IsShuffle = info.IsShuffleActive.Value;
+                    }
+                    MediaUpdated?.Invoke();
+                }
+            }
+            catch { }
+        }
+
+        public void RefreshTimeline()
+        {
+            try
+            {
+                if (_currentSession == null) return;
+                var timeline = _currentSession.GetTimelineProperties();
+                if (timeline != null)
+                {
+                    PositionSeconds = timeline.Position.TotalSeconds;
+                    DurationSeconds = Math.Max(1.0, timeline.EndTime.TotalSeconds);
+                    MediaUpdated?.Invoke();
+                }
+            }
+            catch { }
+        }
+
+        public async Task<bool> TogglePlayPauseAsync()
+        {
+            try
+            {
+                if (_currentSession != null)
+                {
+                    return await _currentSession.TryTogglePlayPauseAsync();
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public async Task<bool> SkipNextAsync()
+        {
+            try
+            {
+                if (_currentSession != null)
+                {
+                    return await _currentSession.TrySkipNextAsync();
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public async Task<bool> SkipPreviousAsync()
+        {
+            try
+            {
+                if (_currentSession != null)
+                {
+                    return await _currentSession.TrySkipPreviousAsync();
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public async Task<bool> ChangeShuffleAsync(bool shuffle)
+        {
+            try
+            {
+                if (_currentSession != null)
+                {
+                    return await _currentSession.TryChangeShuffleActiveAsync(shuffle);
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        public async Task<bool> ChangePlaybackPositionAsync(double seconds)
+        {
+            try
+            {
+                if (_currentSession != null)
+                {
+                    long ticks = (long)(seconds * TimeSpan.TicksPerSecond);
+                    return await _currentSession.TryChangePlaybackPositionAsync(ticks);
+                }
+            }
+            catch { }
+            return false;
+        }
+    }
+
     private FastSurface? _screenCapturer;
     private FastSurface? _renderSurface;
     private readonly byte[] _halfRawBuffer = new byte[HalfWidth * HalfHeight * 4];
     private readonly byte[] _blurHBuffer = new byte[HalfWidth * HalfHeight * 4];
     private readonly byte[] _blurredBuffer = new byte[HalfWidth * HalfHeight * 4];
 
+    private readonly SystemMediaController _sysMedia = new();
     private string _lastTimeString = "";
     private double _lastTimeMaskUpdateTime = 0.0;
     private byte[]? _timeMask;
@@ -289,15 +465,15 @@ internal sealed class OverlayForm : Form
     private int _activeTab = 0;
 
     private int _currentTrackIndex = 0;
-    private bool _isPlaying = true;
-    private double _trackProgressSeconds = 88.0; // 1:28
+    private bool _isPlaying = false; // Only true when real music is playing!
+    private double _trackProgressSeconds = 0.0;
     private bool _isShuffle = false;
     private double _vinylRotationAngle = 0.0;
     private double _visualizerTime = 0.0;
     private double _lastExpandedMaskUpdateTime = 0.0;
 
     // Compact pill dynamic expansion when music plays (0.0 = paused/compact, 1.0 = playing/expanded)
-    private double _playingExpandP = 1.0;
+    private double _playingExpandP = 0.0;
 
     private byte[]? _expandedMask;
     private int _expandedWidth;
@@ -329,7 +505,9 @@ internal sealed class OverlayForm : Form
             workingArea.Left + (workingArea.Width - SurfaceWidth) / 2,
             Screen.PrimaryScreen?.Bounds.Top ?? 0);
 
-        Shown += (_, _) =>
+        _sysMedia.MediaUpdated += OnSystemMediaUpdated;
+
+        Shown += async (_, _) =>
         {
             _frameStopwatch.Start();
             _renderThread = new Thread(RenderLoop)
@@ -340,10 +518,12 @@ internal sealed class OverlayForm : Form
             };
             _renderThread.Start();
             _renderSignal.Set();
+
+            await _sysMedia.InitializeAsync();
         };
 
         KeyPreview = true;
-        KeyDown += (_, e) =>
+        KeyDown += async (_, e) =>
         {
             if (e.KeyCode == Keys.Escape)
             {
@@ -351,33 +531,61 @@ internal sealed class OverlayForm : Form
             }
             else if (e.KeyCode == Keys.Space)
             {
-                _isPlaying = !_isPlaying;
-                UpdateExpandedMask();
-                UpdateTimeMaskIfNeeded();
-            }
-            else if (e.KeyCode is Keys.Right or Keys.N)
-            {
-                if (_isShuffle)
+                if (_sysMedia.HasActiveSession)
                 {
-                    _currentTrackIndex = Random.Shared.Next(0, Playlist.Length);
+                    await _sysMedia.TogglePlayPauseAsync();
                 }
                 else
                 {
-                    _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    _isPlaying = !_isPlaying;
+                    UpdateExpandedMask();
+                    UpdateTimeMaskIfNeeded();
                 }
-                _trackProgressSeconds = 0.0;
-                UpdateExpandedMask();
+            }
+            else if (e.KeyCode is Keys.Right or Keys.N)
+            {
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.SkipNextAsync();
+                }
+                else
+                {
+                    if (_isShuffle)
+                    {
+                        _currentTrackIndex = Random.Shared.Next(0, Playlist.Length);
+                    }
+                    else
+                    {
+                        _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    }
+                    _trackProgressSeconds = 0.0;
+                    UpdateExpandedMask();
+                }
             }
             else if (e.KeyCode is Keys.Left or Keys.P)
             {
-                _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
-                _trackProgressSeconds = 0.0;
-                UpdateExpandedMask();
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.SkipPreviousAsync();
+                }
+                else
+                {
+                    _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
+                    _trackProgressSeconds = 0.0;
+                    UpdateExpandedMask();
+                }
             }
             else if (e.KeyCode is Keys.S or Keys.Z or Keys.U)
             {
-                _isShuffle = !_isShuffle;
-                UpdateExpandedMask();
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.ChangeShuffleAsync(!_isShuffle);
+                }
+                else
+                {
+                    _isShuffle = !_isShuffle;
+                    UpdateExpandedMask();
+                }
             }
             else if (e.KeyCode == Keys.D1)
             {
@@ -408,7 +616,7 @@ internal sealed class OverlayForm : Form
             }
         };
 
-        MouseClick += (_, e) =>
+        MouseClick += async (_, e) =>
         {
             if (e.Button == MouseButtons.Right)
             {
@@ -418,7 +626,7 @@ internal sealed class OverlayForm : Form
             {
                 if (_hoverPos > 0.6)
                 {
-                    if (!HandleExpandedClick(e.Location))
+                    if (!await HandleExpandedClickAsync(e.Location))
                     {
                         ToggleDirection();
                     }
@@ -431,7 +639,26 @@ internal sealed class OverlayForm : Form
         };
     }
 
-    private bool HandleExpandedClick(Point pt)
+    private void OnSystemMediaUpdated()
+    {
+        if (_sysMedia.HasActiveSession)
+        {
+            _isPlaying = _sysMedia.IsPlaying;
+            _isShuffle = _sysMedia.IsShuffle;
+            _trackProgressSeconds = _sysMedia.PositionSeconds;
+
+            var track = Playlist[_currentTrackIndex];
+            track.Title = _sysMedia.Title;
+            track.Artist = _sysMedia.Artist;
+            track.Album = _sysMedia.Album;
+            track.DurationSeconds = _sysMedia.DurationSeconds;
+
+            UpdateExpandedMask();
+            UpdateTimeMaskIfNeeded();
+        }
+    }
+
+    private async Task<bool> HandleExpandedClickAsync(Point pt)
     {
         // Check Top Tab Bar click: Y in [26, 60], X in [190, 410]
         if (pt.Y >= 26 && pt.Y <= 60)
@@ -467,42 +694,70 @@ internal sealed class OverlayForm : Form
             // 1. Play / Pause Central Button: cx = 249, cy = 120, radius = 18
             if (Math.Sqrt(Math.Pow(mx - 249, 2) + Math.Pow(my - 120, 2)) <= 20)
             {
-                _isPlaying = !_isPlaying;
-                UpdateExpandedMask();
-                UpdateTimeMaskIfNeeded();
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.TogglePlayPauseAsync();
+                }
+                else
+                {
+                    _isPlaying = !_isPlaying;
+                    UpdateExpandedMask();
+                    UpdateTimeMaskIfNeeded();
+                }
                 return true;
             }
 
             // 2. Next Track: cx = 297, cy = 120, radius = 16
             if (Math.Sqrt(Math.Pow(mx - 297, 2) + Math.Pow(my - 120, 2)) <= 18)
             {
-                if (_isShuffle)
+                if (_sysMedia.HasActiveSession)
                 {
-                    _currentTrackIndex = Random.Shared.Next(0, Playlist.Length);
+                    await _sysMedia.SkipNextAsync();
                 }
                 else
                 {
-                    _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    if (_isShuffle)
+                    {
+                        _currentTrackIndex = Random.Shared.Next(0, Playlist.Length);
+                    }
+                    else
+                    {
+                        _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    }
+                    _trackProgressSeconds = 0.0;
+                    UpdateExpandedMask();
                 }
-                _trackProgressSeconds = 0.0;
-                UpdateExpandedMask();
                 return true;
             }
 
             // 3. Prev Track: cx = 201, cy = 120, radius = 16
-            if (Math.Sqrt(Math.Pow(mx - 201, 2) + Math.Pow(my - 201, 2)) <= 18)
+            if (Math.Sqrt(Math.Pow(mx - 201, 2) + Math.Pow(my - 120, 2)) <= 18)
             {
-                _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
-                _trackProgressSeconds = 0.0;
-                UpdateExpandedMask();
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.SkipPreviousAsync();
+                }
+                else
+                {
+                    _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
+                    _trackProgressSeconds = 0.0;
+                    UpdateExpandedMask();
+                }
                 return true;
             }
 
             // 4. Shuffle Toggle Button: cx = 94, cy = 120, radius = 15
             if (Math.Sqrt(Math.Pow(mx - 94, 2) + Math.Pow(my - 120, 2)) <= 16)
             {
-                _isShuffle = !_isShuffle;
-                UpdateExpandedMask();
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.ChangeShuffleAsync(!_isShuffle);
+                }
+                else
+                {
+                    _isShuffle = !_isShuffle;
+                    UpdateExpandedMask();
+                }
                 return true;
             }
 
@@ -511,8 +766,17 @@ internal sealed class OverlayForm : Form
             {
                 double ratio = Math.Clamp((mx - 86) / (444.0 - 86.0), 0.0, 1.0);
                 var track = Playlist[_currentTrackIndex];
-                _trackProgressSeconds = ratio * track.DurationSeconds;
-                UpdateExpandedMask();
+                double targetSec = ratio * track.DurationSeconds;
+
+                if (_sysMedia.HasActiveSession)
+                {
+                    await _sysMedia.ChangePlaybackPositionAsync(targetSec);
+                }
+                else
+                {
+                    _trackProgressSeconds = targetSec;
+                    UpdateExpandedMask();
+                }
                 return true;
             }
         }
@@ -1270,9 +1534,9 @@ internal sealed class OverlayForm : Form
         float spacingAmPm = 4.5f * superScale;
         float totalTextWidth = sizeMain.Width + spacingSec + sizeSec.Width + spacingAmPm + sizeAmPm.Width;
 
-        // Dynamic compact width: 146px paused -> 204px playing
-        int targetW = (int)Math.Round(146.0 + (204.0 - 146.0) * playingExpandP);
-        int targetH = 34;
+        // Dynamic compact width: 150px paused -> 206px playing
+        int targetW = (int)Math.Round(150.0 + (206.0 - 150.0) * playingExpandP);
+        int targetH = CompactPillHeight; // 44px
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
 
@@ -1283,13 +1547,17 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            // 1. Left Section: Rotating Circular Vinyl Album Disc (Appears only when playing!)
+            // 1. Left Section: Rotating Circular Vinyl Album Disc
+            // ONLY APPEARS WHEN REAL MUSIC IS PLAYING (playingExpandP > 0.05)
+            // EQUAL PADDING: Pill height = 44px, Disc Diameter = 26px (Radius = 13px)
+            // Top Padding = 9px, Bottom Padding = 9px, Left Padding = 9px!
+            // Disc Center: X = 22px (9 + 13), Y = 22px (9 + 13)
             if (playingExpandP > 0.05)
             {
                 float discAlpha = (float)Math.Clamp((playingExpandP - 0.05) / 0.95, 0.0, 1.0);
-                float discCx = 14.5f * superScale;
-                float discCy = 17f * superScale;
-                float discR = 10.5f * superScale;
+                float discCx = 22.0f * superScale;
+                float discCy = 22.0f * superScale;
+                float discR = 13.0f * superScale;
 
                 // Vinyl Base
                 using (var brushDisc = new SolidBrush(Color.FromArgb((int)(40 * discAlpha), 255, 255, 255)))
@@ -1338,8 +1606,8 @@ internal sealed class OverlayForm : Form
             float textStartX;
             if (playingExpandP > 0.05)
             {
-                float leftBound = 27f * superScale;
-                float rightBound = (targetW - 25f) * superScale;
+                float leftBound = (22f + 13f + 8f) * superScale;
+                float rightBound = (targetW - 9f - 14f) * superScale;
                 textStartX = leftBound + Math.Max(0f, (rightBound - leftBound - totalTextWidth) * 0.5f);
             }
             else
@@ -1348,7 +1616,7 @@ internal sealed class OverlayForm : Form
             }
 
             float currX = textStartX;
-            float baseLineY = 7.0f * superScale;
+            float baseLineY = (superH - sizeMain.Height) * 0.5f;
 
             using (var brushMain = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
@@ -1367,11 +1635,11 @@ internal sealed class OverlayForm : Form
                 g.DrawString(timeAmPm, fontAmPm, brushAmPm, currX, baseLineY + 3.0f * superScale, StringFormat.GenericTypographic);
             }
 
-            // 3. Right Section: Live 3-Bar Audio Visualizer (Appears when playing)
+            // 3. Right Section: Live 3-Bar Audio Visualizer (Equal 9px padding from right edge)
             if (playingExpandP > 0.10)
             {
-                float eqCx = (targetW - 13f) * superScale;
-                float eqCy = 17f * superScale;
+                float eqCx = (targetW - 15f) * superScale;
+                float eqCy = 22f * superScale;
                 DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, isPlaying ? visualizerTime : 0.0);
             }
         }
@@ -1657,12 +1925,15 @@ internal sealed class OverlayForm : Form
             // Update music playback timeline & visualizer animation
             if (_isPlaying)
             {
-                _trackProgressSeconds += dt;
-                var currTrack = Playlist[_currentTrackIndex];
-                if (_trackProgressSeconds >= currTrack.DurationSeconds)
+                if (!_sysMedia.HasActiveSession)
                 {
-                    _trackProgressSeconds = 0.0;
-                    _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    _trackProgressSeconds += dt;
+                    var currTrack = Playlist[_currentTrackIndex];
+                    if (_trackProgressSeconds >= currTrack.DurationSeconds)
+                    {
+                        _trackProgressSeconds = 0.0;
+                        _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                    }
                 }
                 _vinylRotationAngle = (_vinylRotationAngle + 45.0 * dt) % 360.0;
                 _visualizerTime += dt;
@@ -1983,7 +2254,7 @@ internal sealed class OverlayForm : Form
             if (textAlpha > 0.005 && timeMask != null && timeW > 0 && timeH > 0)
             {
                 int startX = (int)Math.Round((SurfaceWidth * 0.5) - timeW * 0.5);
-                int startY = (int)Math.Round((TopPadding + CompactPillHeight * 0.5) - timeH * 0.5);
+                int startY = TopPadding; // exactly top of pill (18px)
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
                 double shadowAlpha = textAlpha * 0.45;
