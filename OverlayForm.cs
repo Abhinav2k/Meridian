@@ -251,11 +251,12 @@ internal sealed class OverlayForm : Form
 
     private void UpdateTimeMaskIfNeeded()
     {
-        string current = DateTime.Now.ToString("h:mm:ss tt");
-        if (current != _lastTimeString)
+        var now = DateTime.Now;
+        string currentKey = now.ToString("hh:mm:ss tt");
+        if (currentKey != _lastTimeString)
         {
-            _lastTimeString = current;
-            var (mask, w, h) = PrecomputeTextMask(current, 13.5f);
+            _lastTimeString = currentKey;
+            var (mask, w, h) = PrecomputeClockMask(now);
             lock (_timeLock)
             {
                 _timeMask = mask;
@@ -265,76 +266,95 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static (byte[] mask, int width, int height) PrecomputeTextMask(string text, float fontSize)
+    private static (byte[] mask, int width, int height) PrecomputeClockMask(DateTime now)
     {
-        // 4x Supersampling for razor-sharp vector-quality typography
         const float superScale = 4.0f;
-        float scaledFontSize = fontSize * superScale;
+        string timeMain = now.ToString("hh:mm");
+        string timeSec = ":" + now.ToString("ss");
+        string timeAmPm = now.ToString("tt");
 
-        Font? font = null;
-        string[] fontCandidates = { "Segoe UI Variable Display", "SF Pro Display", "Segoe UI", "Arial" };
-        foreach (var name in fontCandidates)
+        using var fontMain = new Font("Segoe UI Variable Display", 14.5f * superScale, FontStyle.Bold);
+        using var fontSec = new Font("Segoe UI Variable Display", 11.0f * superScale, FontStyle.Bold);
+        using var fontAmPm = new Font("Segoe UI Variable Display", 9.0f * superScale, FontStyle.Bold);
+
+        using var bmpMeasure = new Bitmap(1, 1);
+        using var gMeasure = Graphics.FromImage(bmpMeasure);
+
+        var sizeMain = gMeasure.MeasureString(timeMain, fontMain, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeSec = gMeasure.MeasureString(timeSec, fontSec, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeAmPm = gMeasure.MeasureString(timeAmPm, fontAmPm, PointF.Empty, StringFormat.GenericTypographic);
+
+        float spacingSec = 2.5f * superScale;
+        float spacingAmPm = 6.0f * superScale;
+
+        float totalW = sizeMain.Width + spacingSec + sizeSec.Width + spacingAmPm + sizeAmPm.Width;
+        float maxH = Math.Max(sizeMain.Height, Math.Max(sizeSec.Height, sizeAmPm.Height));
+
+        int superW = (int)Math.Ceiling(totalW) + 24;
+        int superH = (int)Math.Ceiling(maxH) + 24;
+
+        using var superBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(superBmp))
         {
-            try
+            g.Clear(Color.Transparent);
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+            float currX = 12f;
+            float baseLineY = 12f + (maxH - sizeMain.Height) * 0.5f;
+
+            // 1. Hours & Minutes (Crisp Luminous White)
+            using (var brushMain = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                using var testFont = new Font(name, scaledFontSize, FontStyle.Bold);
-                if (testFont.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    font = new Font(name, scaledFontSize, FontStyle.Bold);
-                    break;
-                }
+                g.DrawString(timeMain, fontMain, brushMain, currX, baseLineY, StringFormat.GenericTypographic);
             }
-            catch { }
+            currX += sizeMain.Width + spacingSec;
+
+            // 2. Seconds (Refined Ice Glow)
+            float secY = baseLineY + (sizeMain.Height - sizeSec.Height) * 0.70f;
+            using (var brushSec = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+            {
+                g.DrawString(timeSec, fontSec, brushSec, currX, secY, StringFormat.GenericTypographic);
+            }
+            currX += sizeSec.Width + spacingAmPm;
+
+            // 3. AM/PM Tag (Subtle Luxury Status Badge)
+            float ampmY = baseLineY + (sizeMain.Height - sizeAmPm.Height) * 0.72f;
+            using (var brushAmPm = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
+            {
+                g.DrawString(timeAmPm, fontAmPm, brushAmPm, currX, ampmY, StringFormat.GenericTypographic);
+            }
         }
-        font ??= new Font(FontFamily.GenericSansSerif, scaledFontSize, FontStyle.Bold);
 
-        using (font)
-        using (var bmpMeasure = new Bitmap(1, 1))
-        using (var gMeasure = Graphics.FromImage(bmpMeasure))
+        // Downsample 4x to target resolution with area-averaging
+        int targetW = superW / (int)superScale;
+        int targetH = superH / (int)superScale;
+        byte[] mask = new byte[targetW * targetH];
+
+        var data = superBmp.LockBits(new Rectangle(0, 0, superW, superH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        unsafe
         {
-            var size = gMeasure.MeasureString(text, font, PointF.Empty, StringFormat.GenericTypographic);
-            int superW = (int)Math.Ceiling(size.Width) + 16;
-            int superH = (int)Math.Ceiling(size.Height) + 16;
-
-            using var superBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
-            using (var g = Graphics.FromImage(superBmp))
+            byte* scan = (byte*)data.Scan0;
+            for (int y = 0; y < targetH; y++)
             {
-                g.Clear(Color.Transparent);
-                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                using var brush = new SolidBrush(Color.White);
-                g.DrawString(text, font, brush, 8f, 8f, StringFormat.GenericTypographic);
-            }
-
-            int targetW = superW / (int)superScale;
-            int targetH = superH / (int)superScale;
-            byte[] mask = new byte[targetW * targetH];
-
-            var data = superBmp.LockBits(new Rectangle(0, 0, superW, superH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-            unsafe
-            {
-                byte* scan = (byte*)data.Scan0;
-                for (int y = 0; y < targetH; y++)
+                for (int x = 0; x < targetW; x++)
                 {
-                    for (int x = 0; x < targetW; x++)
+                    int sum = 0;
+                    for (int dy = 0; dy < 4; dy++)
                     {
-                        int sum = 0;
-                        for (int dy = 0; dy < 4; dy++)
+                        int sy = y * 4 + dy;
+                        int rowOffset = sy * superW * 4;
+                        for (int dx = 0; dx < 4; dx++)
                         {
-                            int sy = y * 4 + dy;
-                            int rowOffset = sy * superW * 4;
-                            for (int dx = 0; dx < 4; dx++)
-                            {
-                                int sx = x * 4 + dx;
-                                sum += scan[rowOffset + sx * 4 + 3];
-                            }
+                            int sx = x * 4 + dx;
+                            sum += scan[rowOffset + sx * 4 + 3];
                         }
-                        mask[y * targetW + x] = (byte)(sum >> 4);
                     }
+                    mask[y * targetW + x] = (byte)(sum >> 4);
                 }
             }
-            superBmp.UnlockBits(data);
-            return (mask, targetW, targetH);
         }
+        superBmp.UnlockBits(data);
+        return (mask, targetW, targetH);
     }
 
     public void StepForward()
