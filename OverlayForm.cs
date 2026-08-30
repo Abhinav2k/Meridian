@@ -11,10 +11,10 @@ namespace LiquidGlassCircle;
 
 internal sealed class OverlayForm : Form
 {
-    private const int SurfaceWidth = 540;
-    private const int SurfaceHeight = 230;
-    private const int HalfWidth = SurfaceWidth / 2;   // 270
-    private const int HalfHeight = SurfaceHeight / 2; // 115
+    private const int SurfaceWidth = 600;
+    private const int SurfaceHeight = 250;
+    private const int HalfWidth = SurfaceWidth / 2;   // 300
+    private const int HalfHeight = SurfaceHeight / 2; // 125
 
     // Default expanded size on hover (500x180 - doubled height)
     private const int DefaultPillWidth = 500;
@@ -204,7 +204,8 @@ internal sealed class OverlayForm : Form
     private volatile bool _running = true;
     private IntPtr _hwnd;
     private double _progress = 0.0;
-    private double _hoverProgress = 0.0;
+    private double _hoverPos = 0.0; // Spring position (0.0 to 1.0+)
+    private double _hoverVel = 0.0; // Spring velocity
     private double _animDirection = 1.0; // +1.0 = forward (expand), -1.0 = backward (retract)
     private readonly Stopwatch _frameStopwatch = new();
     private volatile PillGeometry _currentGeometry = new(SurfaceWidth * 0.5, -20.0, 14.0, 14.0, 14.0);
@@ -891,8 +892,8 @@ internal sealed class OverlayForm : Form
             {
                 double px = (cursorPos.x - rect.Left) - _currentGeometry.CenterX;
                 double py = (cursorPos.y - rect.Top) - _currentGeometry.CenterY;
-                double straightW = _currentGeometry.HalfWidth - _currentGeometry.Radius;
-                double straightH = _currentGeometry.HalfHeight - _currentGeometry.Radius;
+                double straightW = Math.Max(0.0, _currentGeometry.HalfWidth - _currentGeometry.Radius);
+                double straightH = Math.Max(0.0, _currentGeometry.HalfHeight - _currentGeometry.Radius);
                 double qx = Math.Abs(px) - straightW;
                 double qy = Math.Abs(py) - straightH;
                 double outX = Math.Max(0.0, qx);
@@ -907,21 +908,33 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // Smooth hover transition (~0.28s duration)
-            double hoverTarget = isHovered ? 1.0 : 0.0;
-            double hoverSpeed = 1.0 / 0.28;
-            if (_hoverProgress < hoverTarget)
+            // Real physical damped harmonic spring oscillator
+            // Stiffness = 145.0 (snappy expansion), Damping = 9.8 (underdamped liquid wobble & spring oscillation)
+            double target = isHovered ? 1.0 : 0.0;
+            const double stiffness = 145.0;
+            const double damping = 9.8;
+
+            int subSteps = 4;
+            double subDt = dt / subSteps;
+            for (int s = 0; s < subSteps; s++)
             {
-                _hoverProgress = Math.Min(hoverTarget, _hoverProgress + hoverSpeed * dt);
+                double springForce = -stiffness * (_hoverPos - target);
+                double dampingForce = -damping * _hoverVel;
+                double totalAccel = springForce + dampingForce;
+
+                _hoverVel += totalAccel * subDt;
+                _hoverPos += _hoverVel * subDt;
             }
-            else if (_hoverProgress > hoverTarget)
+
+            if (Math.Abs(_hoverPos - target) < 0.0002 && Math.Abs(_hoverVel) < 0.0005)
             {
-                _hoverProgress = Math.Max(hoverTarget, _hoverProgress - hoverSpeed * dt);
+                _hoverPos = target;
+                _hoverVel = 0.0;
             }
 
             UpdateTimeMaskIfNeeded();
 
-            PillGeometry geom = ComputeGeometry(_progress, _hoverProgress);
+            PillGeometry geom = ComputeGeometry(_progress, _hoverPos);
             _currentGeometry = geom;
 
             ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
@@ -932,13 +945,12 @@ internal sealed class OverlayForm : Form
     {
         double targetCenterX = SurfaceWidth * 0.5;
 
-        // Interpolate resting target between Compact (unhovered) and Default Expanded (hovered)
-        double hoverBase = EaseInOutCubic(hoverP);
-        // Liquid spring bump that overshoots an extra ~2.5px - 3.0px in every direction when expanding and settles back
-        double springBump = Math.Sin(Math.Clamp(hoverP, 0.0, 1.0) * Math.PI) * Math.Pow(1.0 - Math.Clamp(hoverP, 0.0, 1.0), 0.75) * 3.0;
+        // Physical spring position (expands, overshoots, oscillates, and settles with real physics)
+        double restingHalfWidth = (CompactPillWidth * 0.5) + ((DefaultPillWidth * 0.5) - (CompactPillWidth * 0.5)) * hoverP;
+        double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverP;
 
-        double restingHalfWidth = (CompactPillWidth * 0.5) + ((DefaultPillWidth * 0.5) - (CompactPillWidth * 0.5)) * hoverBase + springBump;
-        double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverBase + springBump;
+        restingHalfWidth = Math.Max(20.0, restingHalfWidth);
+        restingHalfHeight = Math.Max(18.0, restingHalfHeight);
         double restingCenterY = TopPadding + restingHalfHeight;
 
         double spawnRadius = 14.0;
@@ -963,7 +975,9 @@ internal sealed class OverlayForm : Form
 
         currentHalfWidth = Math.Max(spawnRadius, currentHalfWidth);
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
-        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * hoverBase;
+        
+        double clampedHover = Math.Clamp(hoverP, 0.0, 1.0);
+        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * clampedHover;
         double currentRadius = Math.Min(targetRadius, Math.Min(currentHalfWidth, currentHalfHeight));
 
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
@@ -1218,7 +1232,7 @@ internal sealed class OverlayForm : Form
 
             // Time opacity: fades out on mouse hover as the pill expands
             double spawnTextAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
-            double hoverFadeOut = Math.Clamp(1.0 - (_hoverProgress / 0.35), 0.0, 1.0);
+            double hoverFadeOut = Math.Clamp(1.0 - (_hoverPos / 0.35), 0.0, 1.0);
             double textAlpha = EaseOutCubic(spawnTextAlpha) * hoverFadeOut;
 
             if (textAlpha > 0.005 && timeMask != null && timeW > 0 && timeH > 0)
@@ -1314,7 +1328,7 @@ internal sealed class OverlayForm : Form
 
             // Weather opacity: fades in as hover expands to full modal
             double spawnWeatherAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
-            double hoverWeatherAlpha = Math.Clamp((_hoverProgress - 0.28) / 0.72, 0.0, 1.0);
+            double hoverWeatherAlpha = Math.Clamp((_hoverPos - 0.28) / 0.72, 0.0, 1.0);
             double weatherAlpha = EaseOutCubic(spawnWeatherAlpha) * EaseOutCubic(hoverWeatherAlpha);
 
             if (weatherAlpha > 0.005 && weatherMask != null && weatherW > 0 && weatherH > 0)
