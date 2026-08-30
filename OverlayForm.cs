@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Net.Http;
 using System.Runtime.InteropServices;
@@ -156,12 +157,24 @@ internal sealed class OverlayForm : Form
         }
     }
 
+    private enum WeatherIconType
+    {
+        ClearSky,
+        PartlyCloudy,
+        Overcast,
+        Fog,
+        Drizzle,
+        Rain,
+        Snow,
+        Thunderstorm
+    }
+
     private sealed class WeatherData
     {
         public string City { get; set; } = "Kochi";
         public int Temperature { get; set; } = 27;
         public string Condition { get; set; } = "Light Drizzle";
-        public string IconEmoji { get; set; } = "🌦️";
+        public WeatherIconType IconType { get; set; } = WeatherIconType.Drizzle;
         public int HighTemp { get; set; } = 28;
         public int LowTemp { get; set; } = 25;
         public int Humidity { get; set; } = 80;
@@ -318,13 +331,13 @@ internal sealed class OverlayForm : Form
                 int hi = (int)Math.Round(daily.GetProperty("temperature_2m_max")[0].GetDouble());
                 int lo = (int)Math.Round(daily.GetProperty("temperature_2m_min")[0].GetDouble());
 
-                var (cond, icon) = GetWeatherInfo(wCode);
+                var (cond, iconType) = GetWeatherInfo(wCode);
                 var wData = new WeatherData
                 {
                     City = city,
                     Temperature = temp,
                     Condition = cond,
-                    IconEmoji = icon,
+                    IconType = iconType,
                     HighTemp = hi,
                     LowTemp = lo,
                     Humidity = humidity,
@@ -344,19 +357,179 @@ internal sealed class OverlayForm : Form
         });
     }
 
-    private static (string condition, string icon) GetWeatherInfo(int code) => code switch
+    private static (string condition, WeatherIconType icon) GetWeatherInfo(int code) => code switch
     {
-        0 => ("Clear Sky", "☀️"),
-        1 or 2 => ("Partly Cloudy", "⛅"),
-        3 => ("Overcast", "☁️"),
-        45 or 48 => ("Foggy", "🌫️"),
-        51 or 53 or 55 => ("Light Drizzle", "🌦️"),
-        61 or 63 or 65 => ("Rain", "🌧️"),
-        71 or 73 or 75 => ("Snow", "🌨️"),
-        80 or 81 or 82 => ("Rain Showers", "🌧️"),
-        95 or 96 or 99 => ("Thunderstorm", "⛈️"),
-        _ => ("Pleasant", "⛅")
+        0 => ("Clear Sky", WeatherIconType.ClearSky),
+        1 or 2 => ("Partly Cloudy", WeatherIconType.PartlyCloudy),
+        3 => ("Overcast", WeatherIconType.Overcast),
+        45 or 48 => ("Foggy", WeatherIconType.Fog),
+        51 or 53 or 55 => ("Light Drizzle", WeatherIconType.Drizzle),
+        61 or 63 or 65 => ("Rain", WeatherIconType.Rain),
+        71 or 73 or 75 => ("Snow", WeatherIconType.Snow),
+        80 or 81 or 82 => ("Rain Showers", WeatherIconType.Rain),
+        95 or 96 or 99 => ("Thunderstorm", WeatherIconType.Thunderstorm),
+        _ => ("Pleasant", WeatherIconType.PartlyCloudy)
     };
+
+    private static void DrawLocationPin(Graphics g, float cx, float cy, float size, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var brush = new SolidBrush(color);
+
+        float r = size * 0.36f;
+        float topY = cy - size * 0.40f;
+        g.FillEllipse(brush, cx - r, topY, r * 2f, r * 2f);
+
+        using var path = new GraphicsPath();
+        path.AddLine(cx - r * 0.90f, topY + r * 0.95f, cx, cy + size * 0.45f);
+        path.AddLine(cx, cy + size * 0.45f, cx + r * 0.90f, topY + r * 0.95f);
+        path.CloseFigure();
+        g.FillPath(brush, path);
+
+        using var brushHole = new SolidBrush(Color.FromArgb(0, 0, 0, 0));
+        g.FillEllipse(brushHole, cx - r * 0.42f, topY + r * 0.58f, r * 0.84f, r * 0.84f);
+    }
+
+    private static void DrawWaterDrop(Graphics g, float cx, float cy, float size, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var brush = new SolidBrush(color);
+
+        float r = size * 0.36f;
+        float botY = cy + size * 0.12f;
+        g.FillEllipse(brush, cx - r, botY - r, r * 2f, r * 2f);
+
+        using var path = new GraphicsPath();
+        path.AddLine(cx - r * 0.85f, botY - r * 0.20f, cx, cy - size * 0.45f);
+        path.AddLine(cx, cy - size * 0.45f, cx + r * 0.85f, botY - r * 0.20f);
+        path.CloseFigure();
+        g.FillPath(brush, path);
+    }
+
+    private static void DrawWindBreeze(Graphics g, float cx, float cy, float size, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var pen = new Pen(color, size * 0.16f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
+        g.DrawLine(pen, cx - size * 0.40f, cy - size * 0.18f, cx + size * 0.15f, cy - size * 0.18f);
+        g.DrawArc(pen, cx - size * 0.05f, cy - size * 0.42f, size * 0.36f, size * 0.36f, 90, -220);
+
+        g.DrawLine(pen, cx - size * 0.30f, cy + size * 0.18f, cx + size * 0.25f, cy + size * 0.18f);
+        g.DrawArc(pen, cx + size * 0.10f, cy + size * 0.05f, size * 0.32f, size * 0.32f, 90, 220);
+    }
+
+    private static void DrawRainPrecip(Graphics g, float cx, float cy, float size, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var pen = new Pen(color, size * 0.16f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
+        g.DrawLine(pen, cx - size * 0.25f, cy - size * 0.32f, cx - size * 0.35f, cy + size * 0.32f);
+        g.DrawLine(pen, cx + size * 0.02f, cy - size * 0.32f, cx - size * 0.08f, cy + size * 0.32f);
+        g.DrawLine(pen, cx + size * 0.30f, cy - size * 0.32f, cx + size * 0.20f, cy + size * 0.32f);
+    }
+
+    private static void DrawWeatherHeroIcon(Graphics g, WeatherIconType type, float cx, float cy, float size)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using var brushWhite = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+        using var penWhite = new Pen(Color.FromArgb(255, 255, 255, 255), size * 0.10f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
+        switch (type)
+        {
+            case WeatherIconType.ClearSky:
+                float sunR = size * 0.28f;
+                g.FillEllipse(brushWhite, cx - sunR, cy - sunR, sunR * 2, sunR * 2);
+                float rayLen = size * 0.16f;
+                float rayDist = size * 0.38f;
+                for (int i = 0; i < 8; i++)
+                {
+                    double angle = i * Math.PI / 4.0;
+                    float rx1 = cx + (float)(Math.Cos(angle) * rayDist);
+                    float ry1 = cy + (float)(Math.Sin(angle) * rayDist);
+                    float rx2 = cx + (float)(Math.Cos(angle) * (rayDist + rayLen));
+                    float ry2 = cy + (float)(Math.Sin(angle) * (rayDist + rayLen));
+                    g.DrawLine(penWhite, rx1, ry1, rx2, ry2);
+                }
+                break;
+
+            case WeatherIconType.PartlyCloudy:
+                float sR = size * 0.22f;
+                float sCx = cx - size * 0.18f;
+                float sCy = cy - size * 0.18f;
+                g.FillEllipse(brushWhite, sCx - sR, sCy - sR, sR * 2, sR * 2);
+                for (int i = 0; i < 6; i++)
+                {
+                    double angle = (i * Math.PI / 3.0) - Math.PI * 0.2;
+                    float rx1 = sCx + (float)(Math.Cos(angle) * (sR + 2));
+                    float ry1 = sCy + (float)(Math.Sin(angle) * (sR + 2));
+                    float rx2 = sCx + (float)(Math.Cos(angle) * (sR + size * 0.12f));
+                    float ry2 = sCy + (float)(Math.Sin(angle) * (sR + size * 0.12f));
+                    g.DrawLine(penWhite, rx1, ry1, rx2, ry2);
+                }
+                DrawCloudShape(g, cx + size * 0.05f, cy + size * 0.10f, size * 0.75f, brushWhite);
+                break;
+
+            case WeatherIconType.Overcast:
+                DrawCloudShape(g, cx, cy, size * 0.90f, brushWhite);
+                break;
+
+            case WeatherIconType.Drizzle:
+            case WeatherIconType.Rain:
+                DrawCloudShape(g, cx, cy - size * 0.12f, size * 0.85f, brushWhite);
+                float rainY = cy + size * 0.22f;
+                using (var rainPen = new Pen(Color.FromArgb(220, 255, 255, 255), size * 0.08f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    g.DrawLine(rainPen, cx - size * 0.22f, rainY, cx - size * 0.28f, rainY + size * 0.22f);
+                    g.DrawLine(rainPen, cx, rainY, cx - size * 0.06f, rainY + size * 0.22f);
+                    g.DrawLine(rainPen, cx + size * 0.22f, rainY, cx + size * 0.16f, rainY + size * 0.22f);
+                }
+                break;
+
+            case WeatherIconType.Thunderstorm:
+                DrawCloudShape(g, cx, cy - size * 0.15f, size * 0.85f, brushWhite);
+                using (var boltPath = new GraphicsPath())
+                {
+                    boltPath.AddLine(cx + size * 0.04f, cy + size * 0.08f, cx - size * 0.12f, cy + size * 0.28f);
+                    boltPath.AddLine(cx - size * 0.12f, cy + size * 0.28f, cx + size * 0.02f, cy + size * 0.28f);
+                    boltPath.AddLine(cx + size * 0.02f, cy + size * 0.28f, cx - size * 0.08f, cy + size * 0.48f);
+                    using var boltPen = new Pen(Color.FromArgb(255, 255, 255, 255), size * 0.08f) { LineJoin = LineJoin.Miter };
+                    g.DrawPath(boltPen, boltPath);
+                }
+                break;
+
+            case WeatherIconType.Snow:
+                DrawCloudShape(g, cx, cy - size * 0.12f, size * 0.85f, brushWhite);
+                float snowY = cy + size * 0.26f;
+                float dotR = size * 0.06f;
+                g.FillEllipse(brushWhite, cx - size * 0.22f - dotR, snowY - dotR, dotR * 2, dotR * 2);
+                g.FillEllipse(brushWhite, cx - dotR, snowY - dotR, dotR * 2, dotR * 2);
+                g.FillEllipse(brushWhite, cx + size * 0.22f - dotR, snowY - dotR, dotR * 2, dotR * 2);
+                break;
+
+            case WeatherIconType.Fog:
+            default:
+                float fogW = size * 0.70f;
+                float lineSp = size * 0.18f;
+                using (var fogPen = new Pen(Color.FromArgb(230, 255, 255, 255), size * 0.10f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    g.DrawLine(fogPen, cx - fogW * 0.5f, cy - lineSp, cx + fogW * 0.5f, cy - lineSp);
+                    g.DrawLine(fogPen, cx - fogW * 0.4f, cy, cx + fogW * 0.4f, cy);
+                    g.DrawLine(fogPen, cx - fogW * 0.5f, cy + lineSp, cx + fogW * 0.5f, cy + lineSp);
+                }
+                break;
+        }
+    }
+
+    private static void DrawCloudShape(Graphics g, float cx, float cy, float size, Brush brush)
+    {
+        float w = size * 0.85f;
+        float h = size * 0.45f;
+        float botY = cy + h * 0.25f;
+
+        g.FillEllipse(brush, cx - w * 0.45f, botY - h * 0.40f, w * 0.90f, h * 0.80f);
+        g.FillEllipse(brush, cx - w * 0.35f, cy - h * 0.35f, w * 0.45f, w * 0.45f);
+        g.FillEllipse(brush, cx - w * 0.15f, cy - h * 0.70f, w * 0.55f, w * 0.55f);
+    }
 
     private static (byte[] mask, int width, int height) PrecomputeWeatherMask(WeatherData wData)
     {
@@ -379,20 +552,25 @@ internal sealed class OverlayForm : Form
             using var fontSub = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
             using var fontPill = new Font("Segoe UI Variable Display", 10.0f * superScale, FontStyle.Bold);
 
-            // 1. Header: Location (Left) & Date (Right)
-            string locStr = "📍 " + wData.City;
-            string dateStr = DateTime.Now.ToString("dddd, MMM d");
+            // 1. Header Row: Procedural Location Pin + City (Left) & Date (Right)
+            float pinX = 22f * superScale;
+            float pinY = 18f * superScale;
+            DrawLocationPin(g, pinX, pinY, 14f * superScale, Color.FromArgb(255, 255, 255, 255));
+
+            string locStr = wData.City;
             using (var brushWhite = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(locStr, fontCity, brushWhite, 16f * superScale, 10f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(locStr, fontCity, brushWhite, 34f * superScale, 10f * superScale, StringFormat.GenericTypographic);
             }
+
+            string dateStr = DateTime.Now.ToString("dddd, MMM d");
             using (var brushSub = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
             {
                 var dateSize = g.MeasureString(dateStr, fontDate, PointF.Empty, StringFormat.GenericTypographic);
                 g.DrawString(dateStr, fontDate, brushSub, (targetW - 16f) * superScale - dateSize.Width, 12f * superScale, StringFormat.GenericTypographic);
             }
 
-            // 2. Middle Row: Hero Temperature & Condition
+            // 2. Middle Row: Hero Temperature + Vector Weather Condition Glyph + Condition Summary
             string tempStr = wData.Temperature + "°";
             using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
@@ -400,36 +578,48 @@ internal sealed class OverlayForm : Form
             }
 
             var tempSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericTypographic);
-            float condX = 16f * superScale + tempSize.Width + 16f * superScale;
+            float iconCx = 16f * superScale + tempSize.Width + 24f * superScale;
+            float iconCy = 64f * superScale;
+            DrawWeatherHeroIcon(g, wData.IconType, iconCx, iconCy, 34f * superScale);
 
-            string condStr = wData.IconEmoji + "  " + wData.Condition;
+            float condTextX = iconCx + 26f * superScale;
             using (var brushCond = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
             {
-                g.DrawString(condStr, fontCond, brushCond, condX, 46f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(wData.Condition, fontCond, brushCond, condTextX, 46f * superScale, StringFormat.GenericTypographic);
             }
 
             string hiLoStr = "H: " + wData.HighTemp + "°   L: " + wData.LowTemp + "°";
             using (var brushHiLo = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
             {
-                g.DrawString(hiLoStr, fontSub, brushHiLo, condX, 68f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(hiLoStr, fontSub, brushHiLo, condTextX, 68f * superScale, StringFormat.GenericTypographic);
             }
 
-            // 3. Bottom Row: 3 Micro-metric Badges
-            string[] badges = {
-                "💧 " + wData.Humidity + "% Humidity",
-                "💨 " + wData.WindSpeed + " km/h Wind",
-                "🌧️ " + wData.RainProb + "% Precip"
-            };
-
-            float badgeY = 104f * superScale;
-            float badgeStartX = 16f * superScale;
+            // 3. Bottom Row: 3 Micro-metric Badges with Procedural Vector Icons
+            float badgeY = 110f * superScale;
             float badgeSpacing = 148f * superScale;
 
-            for (int i = 0; i < badges.Length; i++)
+            // Metric 1: Humidity
+            float b1X = 16f * superScale;
+            DrawWaterDrop(g, b1X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
+            using (var brushB1 = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
             {
-                float bx = badgeStartX + i * badgeSpacing;
-                using var brushBadge = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
-                g.DrawString(badges[i], fontPill, brushBadge, bx, badgeY, StringFormat.GenericTypographic);
+                g.DrawString(wData.Humidity + "% Humidity", fontPill, brushB1, b1X + 18f * superScale, badgeY, StringFormat.GenericTypographic);
+            }
+
+            // Metric 2: Wind
+            float b2X = b1X + badgeSpacing;
+            DrawWindBreeze(g, b2X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
+            using (var brushB2 = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+            {
+                g.DrawString(wData.WindSpeed + " km/h Wind", fontPill, brushB2, b2X + 18f * superScale, badgeY, StringFormat.GenericTypographic);
+            }
+
+            // Metric 3: Precip
+            float b3X = b2X + badgeSpacing;
+            DrawRainPrecip(g, b3X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
+            using (var brushB3 = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+            {
+                g.DrawString(wData.RainProb + "% Precip", fontPill, brushB3, b3X + 18f * superScale, badgeY, StringFormat.GenericTypographic);
             }
         }
 
