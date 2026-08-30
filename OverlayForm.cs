@@ -378,16 +378,17 @@ internal sealed class OverlayForm : Form
 
         float r = size * 0.36f;
         float topY = cy - size * 0.40f;
-        g.FillEllipse(brush, cx - r, topY, r * 2f, r * 2f);
 
-        using var path = new GraphicsPath();
-        path.AddLine(cx - r * 0.90f, topY + r * 0.95f, cx, cy + size * 0.45f);
-        path.AddLine(cx, cy + size * 0.45f, cx + r * 0.90f, topY + r * 0.95f);
+        using var path = new GraphicsPath(FillMode.Alternate);
+        path.AddArc(cx - r, topY, r * 2f, r * 2f, -145, 290);
+        path.AddLine(cx + r * 0.82f, topY + r * 1.05f, cx, cy + size * 0.45f);
+        path.AddLine(cx, cy + size * 0.45f, cx - r * 0.82f, topY + r * 1.05f);
         path.CloseFigure();
-        g.FillPath(brush, path);
 
-        using var brushHole = new SolidBrush(Color.FromArgb(0, 0, 0, 0));
-        g.FillEllipse(brushHole, cx - r * 0.42f, topY + r * 0.58f, r * 0.84f, r * 0.84f);
+        float holeR = r * 0.38f;
+        path.AddEllipse(cx - holeR, topY + r - holeR, holeR * 2f, holeR * 2f);
+
+        g.FillPath(brush, path);
     }
 
     private static void DrawWaterDrop(Graphics g, float cx, float cy, float size, Color color)
@@ -534,7 +535,7 @@ internal sealed class OverlayForm : Form
     private static (byte[] mask, int width, int height) PrecomputeWeatherMask(WeatherData wData)
     {
         const float superScale = 4.0f;
-        int targetW = 450;
+        int targetW = 440;
         int targetH = 145;
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
@@ -543,6 +544,7 @@ internal sealed class OverlayForm : Form
         using (var g = Graphics.FromImage(superBmp))
         {
             g.Clear(Color.Transparent);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
             using var fontCity = new Font("Segoe UI Variable Display", 13.5f * superScale, FontStyle.Bold);
@@ -553,31 +555,31 @@ internal sealed class OverlayForm : Form
             using var fontPill = new Font("Segoe UI Variable Display", 10.0f * superScale, FontStyle.Bold);
 
             // 1. Header Row: Procedural Location Pin + City (Left) & Date (Right)
-            float pinX = 22f * superScale;
+            float pinX = 20f * superScale;
             float pinY = 18f * superScale;
             DrawLocationPin(g, pinX, pinY, 14f * superScale, Color.FromArgb(255, 255, 255, 255));
 
             string locStr = wData.City;
             using (var brushWhite = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(locStr, fontCity, brushWhite, 34f * superScale, 10f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(locStr, fontCity, brushWhite, 32f * superScale, 10f * superScale, StringFormat.GenericDefault);
             }
 
             string dateStr = DateTime.Now.ToString("dddd, MMM d");
-            using (var brushSub = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            using (var brushSub = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
             {
-                var dateSize = g.MeasureString(dateStr, fontDate, PointF.Empty, StringFormat.GenericTypographic);
-                g.DrawString(dateStr, fontDate, brushSub, (targetW - 16f) * superScale - dateSize.Width, 12f * superScale, StringFormat.GenericTypographic);
+                var dateSize = g.MeasureString(dateStr, fontDate, PointF.Empty, StringFormat.GenericDefault);
+                g.DrawString(dateStr, fontDate, brushSub, (targetW - 20f) * superScale - dateSize.Width, 12f * superScale, StringFormat.GenericDefault);
             }
 
             // 2. Middle Row: Hero Temperature + Vector Weather Condition Glyph + Condition Summary
             string tempStr = wData.Temperature + "°";
             using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(tempStr, fontTemp, brushTemp, 16f * superScale, 40f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(tempStr, fontTemp, brushTemp, 16f * superScale, 40f * superScale, StringFormat.GenericDefault);
             }
 
-            var tempSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericTypographic);
+            var tempSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericDefault);
             float iconCx = 16f * superScale + tempSize.Width + 24f * superScale;
             float iconCy = 64f * superScale;
             DrawWeatherHeroIcon(g, wData.IconType, iconCx, iconCy, 34f * superScale);
@@ -585,41 +587,41 @@ internal sealed class OverlayForm : Form
             float condTextX = iconCx + 26f * superScale;
             using (var brushCond = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
             {
-                g.DrawString(wData.Condition, fontCond, brushCond, condTextX, 46f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(wData.Condition, fontCond, brushCond, condTextX, 46f * superScale, StringFormat.GenericDefault);
             }
 
             string hiLoStr = "H: " + wData.HighTemp + "°   L: " + wData.LowTemp + "°";
-            using (var brushHiLo = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            using (var brushHiLo = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
             {
-                g.DrawString(hiLoStr, fontSub, brushHiLo, condTextX, 68f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(hiLoStr, fontSub, brushHiLo, condTextX, 68f * superScale, StringFormat.GenericDefault);
             }
 
             // 3. Bottom Row: 3 Micro-metric Badges with Procedural Vector Icons
             float badgeY = 110f * superScale;
-            float badgeSpacing = 148f * superScale;
+            float badgeSpacing = 142f * superScale;
 
             // Metric 1: Humidity
             float b1X = 16f * superScale;
             DrawWaterDrop(g, b1X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
-            using (var brushB1 = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+            using (var brushB1 = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
             {
-                g.DrawString(wData.Humidity + "% Humidity", fontPill, brushB1, b1X + 18f * superScale, badgeY, StringFormat.GenericTypographic);
+                g.DrawString(wData.Humidity + "% Humidity", fontPill, brushB1, b1X + 18f * superScale, badgeY, StringFormat.GenericDefault);
             }
 
             // Metric 2: Wind
             float b2X = b1X + badgeSpacing;
             DrawWindBreeze(g, b2X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
-            using (var brushB2 = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+            using (var brushB2 = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
             {
-                g.DrawString(wData.WindSpeed + " km/h Wind", fontPill, brushB2, b2X + 18f * superScale, badgeY, StringFormat.GenericTypographic);
+                g.DrawString(wData.WindSpeed + " km/h Wind", fontPill, brushB2, b2X + 18f * superScale, badgeY, StringFormat.GenericDefault);
             }
 
             // Metric 3: Precip
             float b3X = b2X + badgeSpacing;
             DrawRainPrecip(g, b3X + 6f * superScale, badgeY + 6f * superScale, 13f * superScale, Color.FromArgb(220, 255, 255, 255));
-            using (var brushB3 = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+            using (var brushB3 = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
             {
-                g.DrawString(wData.RainProb + "% Precip", fontPill, brushB3, b3X + 18f * superScale, badgeY, StringFormat.GenericTypographic);
+                g.DrawString(wData.RainProb + "% Precip", fontPill, brushB3, b3X + 18f * superScale, badgeY, StringFormat.GenericDefault);
             }
         }
 
@@ -931,9 +933,12 @@ internal sealed class OverlayForm : Form
         double targetCenterX = SurfaceWidth * 0.5;
 
         // Interpolate resting target between Compact (unhovered) and Default Expanded (hovered)
-        double hoverEase = EaseInOutCubic(hoverP);
-        double restingHalfWidth = (CompactPillWidth * 0.5) + ((DefaultPillWidth * 0.5) - (CompactPillWidth * 0.5)) * hoverEase;
-        double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverEase;
+        double hoverBase = EaseInOutCubic(hoverP);
+        // Liquid spring bump that overshoots an extra ~2.5px - 3.0px in every direction when expanding and settles back
+        double springBump = Math.Sin(Math.Clamp(hoverP, 0.0, 1.0) * Math.PI) * Math.Pow(1.0 - Math.Clamp(hoverP, 0.0, 1.0), 0.75) * 3.0;
+
+        double restingHalfWidth = (CompactPillWidth * 0.5) + ((DefaultPillWidth * 0.5) - (CompactPillWidth * 0.5)) * hoverBase + springBump;
+        double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverBase + springBump;
         double restingCenterY = TopPadding + restingHalfHeight;
 
         double spawnRadius = 14.0;
@@ -958,7 +963,7 @@ internal sealed class OverlayForm : Form
 
         currentHalfWidth = Math.Max(spawnRadius, currentHalfWidth);
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
-        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * hoverEase;
+        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * hoverBase;
         double currentRadius = Math.Min(targetRadius, Math.Min(currentHalfWidth, currentHalfHeight));
 
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
@@ -991,7 +996,7 @@ internal sealed class OverlayForm : Form
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
         {
-            // 1. Box downsample (540x110 -> 270x55): 4x fewer pixels, anti-aliased pre-filter
+            // 1. Box downsample (540x230 -> 270x115): 4x fewer pixels, anti-aliased pre-filter
             for (int y = 0; y < HalfHeight; y++)
             {
                 int srcRow0 = (y * 2) * SurfaceWidth * 4;
@@ -1016,7 +1021,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2. Single-pass 5-tap Gaussian Blur on 270x55 (Crisp, elegant frosted glass diffusion)
+            // 2. Single-pass 5-tap Gaussian Blur on 270x115 (Crisp, elegant frosted glass diffusion)
             // Horizontal (pHalfRaw -> pBlurH)
             for (int y = 0; y < HalfHeight; y++)
             {
@@ -1297,7 +1302,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 5. Real-time Weather Card on Hover Expansion
+            // 5. Real-time Weather Card on Hover Expansion (1:1 Native Resolution with Y-glide)
             byte[]? weatherMask;
             int weatherW, weatherH;
             lock (_weatherLock)
@@ -1314,34 +1319,27 @@ internal sealed class OverlayForm : Form
 
             if (weatherAlpha > 0.005 && weatherMask != null && weatherW > 0 && weatherH > 0)
             {
-                double weatherScale = 0.94 + 0.06 * EaseOutCubic(hoverWeatherAlpha);
-                int sw = Math.Max(1, (int)Math.Round(weatherW * weatherScale));
-                int sh = Math.Max(1, (int)Math.Round(weatherH * weatherScale));
-
-                int startX = (int)Math.Round(geom.CenterX - sw * 0.5);
-                int startY = (int)Math.Round(geom.CenterY - sh * 0.5);
+                // Silky 4px Y-glide during bloom without pixel distortion
+                int glideY = (int)Math.Round((1.0 - weatherAlpha) * 4.0);
+                int startX = (int)Math.Round(geom.CenterX - weatherW * 0.5);
+                int startY = (int)Math.Round(geom.CenterY - weatherH * 0.5) + glideY;
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
                 double shadowAlpha = weatherAlpha * 0.45;
-                for (int ty = 0; ty < sh; ty++)
+                for (int ty = 0; ty < weatherH; ty++)
                 {
                     int dstY = startY + ty + 1;
                     if (dstY < 0 || dstY >= SurfaceHeight) continue;
 
-                    int srcY = (int)Math.Floor((ty / (double)sh) * weatherH);
-                    srcY = Math.Clamp(srcY, 0, weatherH - 1);
-                    int srcRow = srcY * weatherW;
+                    int srcRow = ty * weatherW;
                     int dstRow = dstY * SurfaceWidth;
 
-                    for (int tx = 0; tx < sw; tx++)
+                    for (int tx = 0; tx < weatherW; tx++)
                     {
                         int dstX = startX + tx;
                         if (dstX < 0 || dstX >= SurfaceWidth) continue;
 
-                        int srcX = (int)Math.Floor((tx / (double)sw) * weatherW);
-                        srcX = Math.Clamp(srcX, 0, weatherW - 1);
-
-                        byte maskA = weatherMask[srcRow + srcX];
+                        byte maskA = weatherMask[srcRow + tx];
                         if (maskA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
@@ -1364,25 +1362,20 @@ internal sealed class OverlayForm : Form
                 }
 
                 // Pass 2: Razor-Sharp Pure Luminous White Text & Weather Icons
-                for (int ty = 0; ty < sh; ty++)
+                for (int ty = 0; ty < weatherH; ty++)
                 {
                     int dstY = startY + ty;
                     if (dstY < 0 || dstY >= SurfaceHeight) continue;
 
-                    int srcY = (int)Math.Floor((ty / (double)sh) * weatherH);
-                    srcY = Math.Clamp(srcY, 0, weatherH - 1);
-                    int srcRow = srcY * weatherW;
+                    int srcRow = ty * weatherW;
                     int dstRow = dstY * SurfaceWidth;
 
-                    for (int tx = 0; tx < sw; tx++)
+                    for (int tx = 0; tx < weatherW; tx++)
                     {
                         int dstX = startX + tx;
                         if (dstX < 0 || dstX >= SurfaceWidth) continue;
 
-                        int srcX = (int)Math.Floor((tx / (double)sw) * weatherW);
-                        srcX = Math.Clamp(srcX, 0, weatherW - 1);
-
-                        byte maskA = weatherMask[srcRow + srcX];
+                        byte maskA = weatherMask[srcRow + tx];
                         if (maskA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
