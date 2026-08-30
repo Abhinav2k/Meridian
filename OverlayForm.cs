@@ -288,10 +288,19 @@ internal sealed class OverlayForm : Form
         public string Artist { get; private set; } = "The Weeknd • Daft Punk";
         public string Album { get; private set; } = "Starboy";
         public bool IsPlaying { get; private set; } = false;
+        public DateTimeOffset LastUpdatedTime { get; private set; } = DateTimeOffset.UtcNow;
         public double PositionSeconds { get; private set; } = 0.0;
         public double DurationSeconds { get; private set; } = 230.0;
         public bool IsShuffle { get; private set; } = false;
         public Bitmap? CoverBitmap { get; private set; }
+
+        public double GetCurrentPositionSeconds()
+        {
+            if (!IsPlaying) return PositionSeconds;
+            double elapsed = (DateTimeOffset.UtcNow - LastUpdatedTime).TotalSeconds;
+            if (elapsed < 0) elapsed = 0;
+            return Math.Clamp(PositionSeconds + elapsed, 0.0, DurationSeconds);
+        }
 
         public async Task InitializeAsync()
         {
@@ -395,6 +404,7 @@ internal sealed class OverlayForm : Form
                     {
                         IsShuffle = info.IsShuffleActive.Value;
                     }
+                    RefreshTimeline();
                     MediaUpdated?.Invoke();
                 }
             }
@@ -411,6 +421,9 @@ internal sealed class OverlayForm : Form
                 {
                     PositionSeconds = timeline.Position.TotalSeconds;
                     DurationSeconds = Math.Max(1.0, timeline.EndTime.TotalSeconds);
+                    LastUpdatedTime = timeline.LastUpdatedTime > DateTimeOffset.MinValue
+                        ? timeline.LastUpdatedTime
+                        : DateTimeOffset.UtcNow;
                     MediaUpdated?.Invoke();
                 }
             }
@@ -476,6 +489,8 @@ internal sealed class OverlayForm : Form
                 if (_currentSession != null)
                 {
                     long ticks = (long)(seconds * TimeSpan.TicksPerSecond);
+                    PositionSeconds = seconds;
+                    LastUpdatedTime = DateTimeOffset.UtcNow;
                     return await _currentSession.TryChangePlaybackPositionAsync(ticks);
                 }
             }
@@ -1997,7 +2012,11 @@ internal sealed class OverlayForm : Form
 
             if (_isPlaying)
             {
-                if (!_sysMedia.HasActiveSession)
+                if (_sysMedia.HasActiveSession)
+                {
+                    _trackProgressSeconds = _sysMedia.GetCurrentPositionSeconds();
+                }
+                else
                 {
                     _trackProgressSeconds += dt;
                     var currTrack = Playlist[_currentTrackIndex];
@@ -2012,7 +2031,7 @@ internal sealed class OverlayForm : Form
             }
 
             double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
-            if (_hoverPos > 0.85 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.065))
+            if (_hoverPos > 0.6 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.050))
             {
                 _lastExpandedMaskUpdateTime = nowSec;
                 UpdateExpandedMask();
