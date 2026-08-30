@@ -9,13 +9,13 @@ namespace LiquidGlassCircle;
 internal sealed class OverlayForm : Form
 {
     private const int SurfaceWidth = 540;
-    private const int SurfaceHeight = 140;
+    private const int SurfaceHeight = 230;
     private const int HalfWidth = SurfaceWidth / 2;   // 270
-    private const int HalfHeight = SurfaceHeight / 2; // 70
+    private const int HalfHeight = SurfaceHeight / 2; // 115
 
-    // Default expanded size on hover (500x90)
+    // Default expanded size on hover (500x180 - doubled height)
     private const int DefaultPillWidth = 500;
-    private const int DefaultPillHeight = 90;
+    private const int DefaultPillHeight = 180;
 
     // Compact resting size with clock
     private const int CompactPillWidth = 190;
@@ -535,7 +535,8 @@ internal sealed class OverlayForm : Form
 
         currentHalfWidth = Math.Max(spawnRadius, currentHalfWidth);
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
-        double currentRadius = Math.Min(currentHalfWidth, currentHalfHeight);
+        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * hoverEase;
+        double currentRadius = Math.Min(targetRadius, Math.Min(currentHalfWidth, currentHalfHeight));
 
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
     }
