@@ -372,22 +372,22 @@ internal sealed class OverlayForm : Form
     private bool HandleMusicClick(Point pt)
     {
         // Content area offset within Surface:
-        // CenterX = 300, TargetW = 420 -> startX = 300 - 210 = 90
-        // CenterY = 108, TargetH = 130 -> startY = 108 - 65 = 43
-        float mx = pt.X - 90f;
-        float my = pt.Y - 43f;
+        // CenterX = 300, TargetW = 430 -> startX = 300 - 215 = 85
+        // TopPadding = 18 + 46 -> startY = 64
+        float mx = pt.X - 85f;
+        float my = pt.Y - 64f;
 
-        // Content layout: textStartX = 72, rightEdge = 404, barW = 332, ctrlCenterX = 72 + 166 = 238
-        // 1. Play / Pause Central Button: cx = 238, cy = 108, radius = 18
-        if (Math.Sqrt(Math.Pow(mx - 238, 2) + Math.Pow(my - 108, 2)) <= 20)
+        // Content layout: textStartX = 86, rightEdge = 416, barW = 330, ctrlCenterX = 86 + 165 = 251
+        // 1. Play / Pause Central Button: cx = 251, cy = 84, radius = 18
+        if (Math.Sqrt(Math.Pow(mx - 251, 2) + Math.Pow(my - 84, 2)) <= 20)
         {
             _isPlaying = !_isPlaying;
             UpdateMusicMask();
             return true;
         }
 
-        // 2. Next Track: cx = 283, cy = 108, radius = 16
-        if (Math.Sqrt(Math.Pow(mx - 283, 2) + Math.Pow(my - 108, 2)) <= 18)
+        // 2. Next Track: cx = 299, cy = 84, radius = 16
+        if (Math.Sqrt(Math.Pow(mx - 299, 2) + Math.Pow(my - 84, 2)) <= 18)
         {
             _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
             _trackProgressSeconds = 0.0;
@@ -395,8 +395,8 @@ internal sealed class OverlayForm : Form
             return true;
         }
 
-        // 3. Prev Track: cx = 193, cy = 108, radius = 16
-        if (Math.Sqrt(Math.Pow(mx - 193, 2) + Math.Pow(my - 108, 2)) <= 18)
+        // 3. Prev Track: cx = 203, cy = 84, radius = 16
+        if (Math.Sqrt(Math.Pow(mx - 203, 2) + Math.Pow(my - 84, 2)) <= 18)
         {
             _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
             _trackProgressSeconds = 0.0;
@@ -404,18 +404,18 @@ internal sealed class OverlayForm : Form
             return true;
         }
 
-        // 4. Heart Favorite: cx = 82, cy = 108, radius = 15
-        if (Math.Sqrt(Math.Pow(mx - 82, 2) + Math.Pow(my - 108, 2)) <= 16)
+        // 4. Heart Favorite: cx = 94, cy = 84, radius = 15
+        if (Math.Sqrt(Math.Pow(mx - 94, 2) + Math.Pow(my - 84, 2)) <= 16)
         {
             _isHearted = !_isHearted;
             UpdateMusicMask();
             return true;
         }
 
-        // 5. Timeline Scrubbing: my in [64, 86], mx in [70, 406]
-        if (my >= 64 && my <= 86 && mx >= 70 && mx <= 406)
+        // 5. Timeline Scrubbing: my in [40, 58], mx in [86, 416]
+        if (my >= 38 && my <= 60 && mx >= 84 && mx <= 418)
         {
-            double ratio = Math.Clamp((mx - 72) / (404.0 - 72.0), 0.0, 1.0);
+            double ratio = Math.Clamp((mx - 86) / (416.0 - 86.0), 0.0, 1.0);
             var track = Playlist[_currentTrackIndex];
             _trackProgressSeconds = ratio * track.DurationSeconds;
             UpdateMusicMask();
@@ -449,60 +449,115 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawVinylRecord(Graphics g, float cx, float cy, float radius, double rotationAngle, Color labelColor)
+    private static Font GetPremiumFont(float sizeInPoints, FontStyle style)
+    {
+        string[] fontCandidates = new[]
+        {
+            "Segoe UI Variable Display",
+            "Segoe UI Variable Text",
+            "Aptos Display",
+            "Segoe UI",
+            "Bahnschrift"
+        };
+
+        foreach (var name in fontCandidates)
+        {
+            try
+            {
+                var font = new Font(name, sizeInPoints, style);
+                if (font.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                    font.FontFamily.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return font;
+                }
+                font.Dispose();
+            }
+            catch { }
+        }
+
+        return new Font("Segoe UI", sizeInPoints, style);
+    }
+
+    private static void DrawRoundedSquareCover(
+        Graphics g,
+        float x,
+        float y,
+        float size,
+        float radius,
+        Color accentColor,
+        double rotationAngle,
+        bool isPlaying,
+        double visualizerTime)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
-        // 1. Vinyl Base Outer Disc (Dark Charcoal Gloss)
-        using (var brushVinyl = new SolidBrush(Color.FromArgb(240, 22, 22, 28)))
+        using var path = new GraphicsPath();
+        path.AddArc(x, y, radius * 2, radius * 2, 180, 90);
+        path.AddArc(x + size - radius * 2, y, radius * 2, radius * 2, 270, 90);
+        path.AddArc(x + size - radius * 2, y + size - radius * 2, radius * 2, radius * 2, 0, 90);
+        path.AddArc(x, y + size - radius * 2, radius * 2, radius * 2, 90, 90);
+        path.CloseFigure();
+
+        // 1. Dark Velvet Glass Base with Subtle Depth
+        using (var brushBg = new SolidBrush(Color.FromArgb(245, 18, 18, 24)))
         {
-            g.FillEllipse(brushVinyl, cx - radius, cy - radius, radius * 2f, radius * 2f);
+            g.FillPath(brushBg, path);
         }
 
-        // 2. Vinyl Micro-groove Rings (Frosted concentric circular tracks)
-        for (int i = 1; i <= 6; i++)
+        // 2. Rich Ambient Color Linear / Angle Gradient
+        using (var gradBrush = new LinearGradientBrush(
+            new RectangleF(x, y, size, size),
+            Color.FromArgb(160, accentColor),
+            Color.FromArgb(25, 12, 12, 18),
+            45f))
         {
-            float r = radius * (0.45f + i * 0.085f);
-            using var penGroove = new Pen(Color.FromArgb(35, 255, 255, 255), 1.0f);
-            g.DrawEllipse(penGroove, cx - r, cy - r, r * 2f, r * 2f);
+            g.FillPath(gradBrush, path);
         }
 
-        // 3. Ambient Vinyl Specular Sheen (Dual cone reflections)
-        using (var brushSheen = new SolidBrush(Color.FromArgb(28, 255, 255, 255)))
+        // 3. Stylized Concentric Artwork Rings
+        float cx = x + size * 0.5f;
+        float cy = y + size * 0.5f;
+        float maxR = size * 0.44f;
+
+        for (int i = 1; i <= 3; i++)
         {
-            using var sheenPath = new GraphicsPath();
-            sheenPath.AddPie(cx - radius, cy - radius, radius * 2f, radius * 2f, (float)(rotationAngle + 35), 45f);
-            sheenPath.AddPie(cx - radius, cy - radius, radius * 2f, radius * 2f, (float)(rotationAngle + 215), 45f);
-            g.FillPath(brushSheen, sheenPath);
+            float r = maxR * (0.35f + i * 0.22f);
+            using var penRing = new Pen(Color.FromArgb(32, 255, 255, 255), 1.0f);
+            g.DrawEllipse(penRing, cx - r, cy - r, r * 2, r * 2);
         }
 
-        // 4. Center Colored Label Disc
-        float labelR = radius * 0.40f;
-        using (var brushLabel = new SolidBrush(labelColor))
+        // Center Artwork Disc
+        float centerR = size * 0.16f;
+        using (var brushCenter = new SolidBrush(Color.FromArgb(235, accentColor)))
         {
-            g.FillEllipse(brushLabel, cx - labelR, cy - labelR, labelR * 2f, labelR * 2f);
+            g.FillEllipse(brushCenter, cx - centerR, cy - centerR, centerR * 2, centerR * 2);
         }
 
-        // Inner label ring
-        float innerLabelR = labelR * 0.65f;
-        using (var penInnerLabel = new Pen(Color.FromArgb(80, 255, 255, 255), 1.5f))
+        // Inner Core Ring
+        using (var penCore = new Pen(Color.FromArgb(140, 255, 255, 255), 1.0f))
         {
-            g.DrawEllipse(penInnerLabel, cx - innerLabelR, cy - innerLabelR, innerLabelR * 2f, innerLabelR * 2f);
+            g.DrawEllipse(penCore, cx - centerR * 0.55f, cy - centerR * 0.55f, centerR * 1.1f, centerR * 1.1f);
         }
 
-        // 5. Center Spindle Hole (Hollow Transparent Core)
-        float holeR = radius * 0.12f;
-        g.CompositingMode = CompositingMode.SourceCopy;
-        using (var brushHole = new SolidBrush(Color.Transparent))
+        // Center Spindle Core (Punched out)
+        float holeR = size * 0.055f;
+        using (var brushHole = new SolidBrush(Color.FromArgb(240, 14, 14, 18)))
         {
-            g.FillEllipse(brushHole, cx - holeR, cy - holeR, holeR * 2f, holeR * 2f);
+            g.FillEllipse(brushHole, cx - holeR, cy - holeR, holeR * 2, holeR * 2);
         }
-        g.CompositingMode = CompositingMode.SourceOver;
 
-        // Outer glass edge border on vinyl
-        using (var penOuter = new Pen(Color.FromArgb(90, 255, 255, 255), 1.2f))
+        // 4. Equalizer Live Waveform Overlay in bottom right corner of album art
+        if (isPlaying)
         {
-            g.DrawEllipse(penOuter, cx - radius, cy - radius, radius * 2f, radius * 2f);
+            float eqCx = x + size - 14f;
+            float eqCy = y + size - 14f;
+            DrawEqualizerBars(g, eqCx, eqCy, 1.8f, 10f, visualizerTime);
+        }
+
+        // 5. Crisp Rounded Square Glass Rim
+        using (var penRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.2f))
+        {
+            g.DrawPath(penRim, path);
         }
     }
 
@@ -673,8 +728,8 @@ internal sealed class OverlayForm : Form
         double visualizerTime)
     {
         const float superScale = 4.0f;
-        int targetW = 420;
-        int targetH = 130;
+        int targetW = 430;
+        int targetH = 110;
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
 
@@ -685,77 +740,36 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            using var fontHeader = new Font("Segoe UI Variable Display", 8.0f * superScale, FontStyle.Bold);
-            using var fontTitle = new Font("Segoe UI Variable Display", 13.0f * superScale, FontStyle.Bold);
-            using var fontArtist = new Font("Segoe UI Variable Display", 9.5f * superScale, FontStyle.Regular);
-            using var fontBadge = new Font("Segoe UI Variable Display", 7.0f * superScale, FontStyle.Bold);
-            using var fontTime = new Font("Segoe UI Variable Display", 7.5f * superScale, FontStyle.Bold);
+            using var fontTitle = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
+            using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
+            using var fontTime = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
 
-            // 1. Header Row (NOW PLAYING micro-label on left, LOSSLESS badge on right)
-            float headY = 10f * superScale;
-            using (var brushHead = new SolidBrush(Color.FromArgb(175, 255, 255, 255)))
-            {
-                g.DrawString("NOW PLAYING", fontHeader, brushHead, 16f * superScale, headY, StringFormat.GenericDefault);
-            }
+            // 1. Left Section: Rounded Square Album Artwork
+            float artX = 14f * superScale;
+            float artY = 6f * superScale;
+            float artSize = 56f * superScale;
+            float artRadius = 13f * superScale;
+            DrawRoundedSquareCover(g, artX, artY, artSize, artRadius, track.CoverAccentColor, rotationAngle, isPlaying, visualizerTime);
 
-            // Luxury Format Badge (Right)
-            var badgeSize = g.MeasureString(track.Badge, fontBadge, PointF.Empty, StringFormat.GenericDefault);
-            float badgeX = (targetW - 16f) * superScale - badgeSize.Width - 10f * superScale;
-            float badgePadH = 5f * superScale;
-            float badgePadV = 2.5f * superScale;
-            float badgeBoxW = badgeSize.Width + badgePadH * 2;
-            float badgeBoxH = badgeSize.Height + badgePadV * 2;
-            float badgeR = 3.5f * superScale;
-
-            using (var badgePath = new GraphicsPath())
-            {
-                badgePath.AddArc(badgeX, headY - 1f * superScale, badgeR * 2, badgeR * 2, 180, 90);
-                badgePath.AddArc(badgeX + badgeBoxW - badgeR * 2, headY - 1f * superScale, badgeR * 2, badgeR * 2, 270, 90);
-                badgePath.AddArc(badgeX + badgeBoxW - badgeR * 2, headY - 1f * superScale + badgeBoxH - badgeR * 2, badgeR * 2, badgeR * 2, 0, 90);
-                badgePath.AddArc(badgeX, headY - 1f * superScale + badgeBoxH - badgeR * 2, badgeR * 2, badgeR * 2, 90, 90);
-                badgePath.CloseFigure();
-
-                using var brushBadgeBg = new SolidBrush(Color.FromArgb(30, 255, 255, 255));
-                g.FillPath(brushBadgeBg, badgePath);
-                using var penBadge = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penBadge, badgePath);
-            }
-            using (var brushBadgeText = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
-            {
-                g.DrawString(track.Badge, fontBadge, brushBadgeText, badgeX + badgePadH, headY + 1f * superScale, StringFormat.GenericDefault);
-            }
-
-            // 2. Mid Section: Compact Vinyl Record (Left) & Track Info + Progress (Right)
-            float vinylCx = 38f * superScale;
-            float vinylCy = 58f * superScale;
-            float vinylRadius = 22f * superScale;
-            DrawVinylRecord(g, vinylCx, vinylCy, vinylRadius, rotationAngle, track.CoverAccentColor);
-
-            if (isPlaying)
-            {
-                float eqCx = vinylCx;
-                float eqCy = vinylCy;
-                DrawEqualizerBars(g, eqCx, eqCy, 2.0f * superScale, 11f * superScale, visualizerTime);
-            }
-
-            float textStartX = 72f * superScale;
-            float rightEdge = (targetW - 16f) * superScale;
+            // 2. Right Section: Track Details & Scrubbing Rail
+            float textStartX = artX + artSize + 16f * superScale;
+            float rightEdge = (targetW - 14f) * superScale;
             float barW = rightEdge - textStartX;
 
-            // Track Title (Crisp, clean luminous white)
+            // Track Title (Pure Luminous White)
             using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 36f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 4f * superScale, StringFormat.GenericDefault);
             }
 
-            // Artist & Album
-            using (var brushArtist = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+            // Artist & Album Subtitle
+            using (var brushArtist = new SolidBrush(Color.FromArgb(195, 255, 255, 255)))
             {
-                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 54f * superScale, StringFormat.GenericDefault);
+                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 24f * superScale, StringFormat.GenericDefault);
             }
 
             // Timeline Scrubbing Rail
-            float barY = 74f * superScale;
+            float barY = 48f * superScale;
             float barH = 2.5f * superScale;
             double progressRatio = Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0);
 
@@ -767,7 +781,7 @@ internal sealed class OverlayForm : Form
             float fillEnd = textStartX + (float)(progressRatio * barW);
             if (fillEnd > textStartX + barH)
             {
-                using var penFill = new Pen(Color.FromArgb(245, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                using var penFill = new Pen(Color.FromArgb(250, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
                 g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
             }
 
@@ -777,7 +791,7 @@ internal sealed class OverlayForm : Form
                 g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
             }
 
-            // Elapsed and Remaining Time Labels
+            // Time Labels (Elapsed on Left, Remaining on Right)
             int elMin = (int)(progressSeconds / 60);
             int elSec = (int)(progressSeconds % 60);
             string elStr = $"{elMin}:{elSec:D2}";
@@ -787,8 +801,8 @@ internal sealed class OverlayForm : Form
             int remSec = (int)(remSeconds % 60);
             string remStr = $"-{remMin}:{remSec:D2}";
 
-            float timeLabelY = 80f * superScale;
-            using (var brushTime = new SolidBrush(Color.FromArgb(170, 255, 255, 255)))
+            float timeLabelY = 54f * superScale;
+            using (var brushTime = new SolidBrush(Color.FromArgb(165, 255, 255, 255)))
             {
                 g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
                 var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
@@ -796,23 +810,23 @@ internal sealed class OverlayForm : Form
             }
 
             // 3. Bottom Row: Media Transport Controls
-            float ctrlY = 108f * superScale;
+            float ctrlY = 84f * superScale;
             float ctrlCenterX = textStartX + barW * 0.5f;
 
             // Heart / Favorite Icon (Left)
-            DrawHeartIcon(g, textStartX + 10f * superScale, ctrlY, 12f * superScale, isHearted);
+            DrawHeartIcon(g, textStartX + 8f * superScale, ctrlY, 12f * superScale, isHearted);
 
             // Previous Track Button
-            DrawTrackSkipButton(g, ctrlCenterX - 45f * superScale, ctrlY, 13f * superScale, isNext: false);
+            DrawTrackSkipButton(g, ctrlCenterX - 48f * superScale, ctrlY, 13f * superScale, isNext: false);
 
             // Center Play / Pause Hero Glass Button
             DrawPlayPauseButton(g, ctrlCenterX, ctrlY, 15f * superScale, isPlaying);
 
             // Next Track Button
-            DrawTrackSkipButton(g, ctrlCenterX + 45f * superScale, ctrlY, 13f * superScale, isNext: true);
+            DrawTrackSkipButton(g, ctrlCenterX + 48f * superScale, ctrlY, 13f * superScale, isNext: true);
 
             // AirPlay / Streaming Icon (Right)
-            DrawAirPlayIcon(g, rightEdge - 10f * superScale, ctrlY, 12f * superScale);
+            DrawAirPlayIcon(g, rightEdge - 8f * superScale, ctrlY, 12f * superScale);
         }
 
         // Downsample 4x to target resolution with area-averaging
@@ -1544,9 +1558,9 @@ internal sealed class OverlayForm : Form
 
             if (musicAlpha > 0.005 && musicMask != null && musicW > 0 && musicH > 0)
             {
-                // Stable music player positioning: anchored to modal center
+                // Stable music player positioning: moved down with generous top padding (46px top vs 24px bottom)
                 int startX = (int)Math.Round((SurfaceWidth * 0.5) - musicW * 0.5);
-                int startY = (int)Math.Round((TopPadding + DefaultPillHeight * 0.5) - musicH * 0.5);
+                int startY = TopPadding + 46;
 
                 // Pass 1: Crisp Ambient Drop Shadow (1px offset)
                 double shadowAlpha = musicAlpha * 0.45;
