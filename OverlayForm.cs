@@ -1,7 +1,9 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows.Forms;
 
 namespace LiquidGlassCircle;
@@ -154,6 +156,19 @@ internal sealed class OverlayForm : Form
         }
     }
 
+    private sealed class WeatherData
+    {
+        public string City { get; set; } = "Kochi";
+        public int Temperature { get; set; } = 27;
+        public string Condition { get; set; } = "Light Drizzle";
+        public string IconEmoji { get; set; } = "🌦️";
+        public int HighTemp { get; set; } = 28;
+        public int LowTemp { get; set; } = 25;
+        public int Humidity { get; set; } = 80;
+        public int WindSpeed { get; set; } = 7;
+        public int RainProb { get; set; } = 85;
+    }
+
     private FastSurface? _screenCapturer;
     private FastSurface? _renderSurface;
     private readonly byte[] _halfRawBuffer = new byte[HalfWidth * HalfHeight * 4];
@@ -165,6 +180,11 @@ internal sealed class OverlayForm : Form
     private int _timeWidth;
     private int _timeHeight;
     private readonly object _timeLock = new();
+
+    private byte[]? _weatherMask;
+    private int _weatherWidth;
+    private int _weatherHeight;
+    private readonly object _weatherLock = new();
 
     private readonly AutoResetEvent _renderSignal = new(false);
     private Thread? _renderThread;
@@ -247,6 +267,199 @@ internal sealed class OverlayForm : Form
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
 
         UpdateTimeMaskIfNeeded();
+
+        // Initialize instant fallback weather mask
+        var (wMask, wW, wH) = PrecomputeWeatherMask(new WeatherData());
+        lock (_weatherLock)
+        {
+            _weatherMask = wMask;
+            _weatherWidth = wW;
+            _weatherHeight = wH;
+        }
+
+        // Fetch live real-time local weather in background
+        FetchWeatherAsync();
+    }
+
+    private void FetchWeatherAsync()
+    {
+        Task.Run(async () =>
+        {
+            try
+            {
+                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                string city = "Kochi";
+                double lat = 9.9406, lon = 76.2653;
+
+                try
+                {
+                    string ipJson = await client.GetStringAsync("http://ip-api.com/json/");
+                    using var ipDoc = JsonDocument.Parse(ipJson);
+                    if (ipDoc.RootElement.TryGetProperty("city", out var cityElem))
+                        city = cityElem.GetString() ?? city;
+                    if (ipDoc.RootElement.TryGetProperty("lat", out var latElem))
+                        lat = latElem.GetDouble();
+                    if (ipDoc.RootElement.TryGetProperty("lon", out var lonElem))
+                        lon = lonElem.GetDouble();
+                }
+                catch { }
+
+                string weatherUrl = $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&daily=temperature_2m_max,temperature_2m_min&timezone=auto";
+                string weatherJson = await client.GetStringAsync(weatherUrl);
+                using var wDoc = JsonDocument.Parse(weatherJson);
+
+                var current = wDoc.RootElement.GetProperty("current");
+                int temp = (int)Math.Round(current.GetProperty("temperature_2m").GetDouble());
+                int humidity = (int)Math.Round(current.GetProperty("relative_humidity_2m").GetDouble());
+                int wCode = current.GetProperty("weather_code").GetInt32();
+                int wind = (int)Math.Round(current.GetProperty("wind_speed_10m").GetDouble());
+
+                var daily = wDoc.RootElement.GetProperty("daily");
+                int hi = (int)Math.Round(daily.GetProperty("temperature_2m_max")[0].GetDouble());
+                int lo = (int)Math.Round(daily.GetProperty("temperature_2m_min")[0].GetDouble());
+
+                var (cond, icon) = GetWeatherInfo(wCode);
+                var wData = new WeatherData
+                {
+                    City = city,
+                    Temperature = temp,
+                    Condition = cond,
+                    IconEmoji = icon,
+                    HighTemp = hi,
+                    LowTemp = lo,
+                    Humidity = humidity,
+                    WindSpeed = wind,
+                    RainProb = Math.Clamp(humidity + 10, 0, 100)
+                };
+
+                var (mask, w, h) = PrecomputeWeatherMask(wData);
+                lock (_weatherLock)
+                {
+                    _weatherMask = mask;
+                    _weatherWidth = w;
+                    _weatherHeight = h;
+                }
+            }
+            catch { }
+        });
+    }
+
+    private static (string condition, string icon) GetWeatherInfo(int code) => code switch
+    {
+        0 => ("Clear Sky", "☀️"),
+        1 or 2 => ("Partly Cloudy", "⛅"),
+        3 => ("Overcast", "☁️"),
+        45 or 48 => ("Foggy", "🌫️"),
+        51 or 53 or 55 => ("Light Drizzle", "🌦️"),
+        61 or 63 or 65 => ("Rain", "🌧️"),
+        71 or 73 or 75 => ("Snow", "🌨️"),
+        80 or 81 or 82 => ("Rain Showers", "🌧️"),
+        95 or 96 or 99 => ("Thunderstorm", "⛈️"),
+        _ => ("Pleasant", "⛅")
+    };
+
+    private static (byte[] mask, int width, int height) PrecomputeWeatherMask(WeatherData wData)
+    {
+        const float superScale = 4.0f;
+        int targetW = 450;
+        int targetH = 145;
+        int superW = (int)(targetW * superScale);
+        int superH = (int)(targetH * superScale);
+
+        using var superBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(superBmp))
+        {
+            g.Clear(Color.Transparent);
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+            using var fontCity = new Font("Segoe UI Variable Display", 13.5f * superScale, FontStyle.Bold);
+            using var fontDate = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
+            using var fontTemp = new Font("Segoe UI Variable Display", 36.0f * superScale, FontStyle.Bold);
+            using var fontCond = new Font("Segoe UI Variable Display", 13.0f * superScale, FontStyle.Bold);
+            using var fontSub = new Font("Segoe UI Variable Display", 10.5f * superScale, FontStyle.Regular);
+            using var fontPill = new Font("Segoe UI Variable Display", 10.0f * superScale, FontStyle.Bold);
+
+            // 1. Header: Location (Left) & Date (Right)
+            string locStr = "📍 " + wData.City;
+            string dateStr = DateTime.Now.ToString("dddd, MMM d");
+            using (var brushWhite = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+            {
+                g.DrawString(locStr, fontCity, brushWhite, 16f * superScale, 10f * superScale, StringFormat.GenericTypographic);
+            }
+            using (var brushSub = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            {
+                var dateSize = g.MeasureString(dateStr, fontDate, PointF.Empty, StringFormat.GenericTypographic);
+                g.DrawString(dateStr, fontDate, brushSub, (targetW - 16f) * superScale - dateSize.Width, 12f * superScale, StringFormat.GenericTypographic);
+            }
+
+            // 2. Middle Row: Hero Temperature & Condition
+            string tempStr = wData.Temperature + "°";
+            using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+            {
+                g.DrawString(tempStr, fontTemp, brushTemp, 16f * superScale, 40f * superScale, StringFormat.GenericTypographic);
+            }
+
+            var tempSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericTypographic);
+            float condX = 16f * superScale + tempSize.Width + 16f * superScale;
+
+            string condStr = wData.IconEmoji + "  " + wData.Condition;
+            using (var brushCond = new SolidBrush(Color.FromArgb(245, 255, 255, 255)))
+            {
+                g.DrawString(condStr, fontCond, brushCond, condX, 46f * superScale, StringFormat.GenericTypographic);
+            }
+
+            string hiLoStr = "H: " + wData.HighTemp + "°   L: " + wData.LowTemp + "°";
+            using (var brushHiLo = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            {
+                g.DrawString(hiLoStr, fontSub, brushHiLo, condX, 68f * superScale, StringFormat.GenericTypographic);
+            }
+
+            // 3. Bottom Row: 3 Micro-metric Badges
+            string[] badges = {
+                "💧 " + wData.Humidity + "% Humidity",
+                "💨 " + wData.WindSpeed + " km/h Wind",
+                "🌧️ " + wData.RainProb + "% Precip"
+            };
+
+            float badgeY = 104f * superScale;
+            float badgeStartX = 16f * superScale;
+            float badgeSpacing = 148f * superScale;
+
+            for (int i = 0; i < badges.Length; i++)
+            {
+                float bx = badgeStartX + i * badgeSpacing;
+                using var brushBadge = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
+                g.DrawString(badges[i], fontPill, brushBadge, bx, badgeY, StringFormat.GenericTypographic);
+            }
+        }
+
+        // Downsample 4x to target resolution with area-averaging
+        byte[] mask = new byte[targetW * targetH];
+        var data = superBmp.LockBits(new Rectangle(0, 0, superW, superH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        unsafe
+        {
+            byte* scan = (byte*)data.Scan0;
+            for (int y = 0; y < targetH; y++)
+            {
+                for (int x = 0; x < targetW; x++)
+                {
+                    int sum = 0;
+                    for (int dy = 0; dy < 4; dy++)
+                    {
+                        int sy = y * 4 + dy;
+                        int rowOffset = sy * superW * 4;
+                        for (int dx = 0; dx < 4; dx++)
+                        {
+                            int sx = x * 4 + dx;
+                            sum += scan[rowOffset + sx * 4 + 3];
+                        }
+                    }
+                    mask[y * targetW + x] = (byte)(sum >> 4);
+                }
+            }
+        }
+        superBmp.UnlockBits(data);
+        return (mask, targetW, targetH);
     }
 
     private void UpdateTimeMaskIfNeeded()
@@ -882,6 +1095,116 @@ internal sealed class OverlayForm : Form
                         byte bgB = (byte)bg;
 
                         double fgA = (maskA / 255.0) * textAlpha * 0.98;
+                        double invA = 1.0 - fgA;
+                        double whiteVal = 255.0 * fgA * (bgA / 255.0);
+
+                        uint pR = (uint)Math.Min(255, Math.Round(bgR * invA + whiteVal));
+                        uint pG = (uint)Math.Min(255, Math.Round(bgG * invA + whiteVal));
+                        uint pB = (uint)Math.Min(255, Math.Round(bgB * invA + whiteVal));
+
+                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                    }
+                }
+            }
+
+            // 5. Real-time Weather Card on Hover Expansion
+            byte[]? weatherMask;
+            int weatherW, weatherH;
+            lock (_weatherLock)
+            {
+                weatherMask = _weatherMask;
+                weatherW = _weatherWidth;
+                weatherH = _weatherHeight;
+            }
+
+            // Weather opacity: fades in as hover expands to full modal
+            double spawnWeatherAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
+            double hoverWeatherAlpha = Math.Clamp((_hoverProgress - 0.28) / 0.72, 0.0, 1.0);
+            double weatherAlpha = EaseOutCubic(spawnWeatherAlpha) * EaseOutCubic(hoverWeatherAlpha);
+
+            if (weatherAlpha > 0.005 && weatherMask != null && weatherW > 0 && weatherH > 0)
+            {
+                double weatherScale = 0.94 + 0.06 * EaseOutCubic(hoverWeatherAlpha);
+                int sw = Math.Max(1, (int)Math.Round(weatherW * weatherScale));
+                int sh = Math.Max(1, (int)Math.Round(weatherH * weatherScale));
+
+                int startX = (int)Math.Round(geom.CenterX - sw * 0.5);
+                int startY = (int)Math.Round(geom.CenterY - sh * 0.5);
+
+                // Pass 1: Crisp Ambient Drop Shadow (1px offset)
+                double shadowAlpha = weatherAlpha * 0.45;
+                for (int ty = 0; ty < sh; ty++)
+                {
+                    int dstY = startY + ty + 1;
+                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+
+                    int srcY = (int)Math.Floor((ty / (double)sh) * weatherH);
+                    srcY = Math.Clamp(srcY, 0, weatherH - 1);
+                    int srcRow = srcY * weatherW;
+                    int dstRow = dstY * SurfaceWidth;
+
+                    for (int tx = 0; tx < sw; tx++)
+                    {
+                        int dstX = startX + tx;
+                        if (dstX < 0 || dstX >= SurfaceWidth) continue;
+
+                        int srcX = (int)Math.Floor((tx / (double)sw) * weatherW);
+                        srcX = Math.Clamp(srcX, 0, weatherW - 1);
+
+                        byte maskA = weatherMask[srcRow + srcX];
+                        if (maskA == 0) continue;
+
+                        int dstIdx = dstRow + dstX;
+                        uint bg = pDst[dstIdx];
+                        byte bgA = (byte)(bg >> 24);
+                        if (bgA == 0) continue;
+
+                        double sFactor = (maskA / 255.0) * shadowAlpha;
+                        double invS = 1.0 - sFactor;
+
+                        byte bgR = (byte)(bg >> 16);
+                        byte bgG = (byte)(bg >> 8);
+                        byte bgB = (byte)bg;
+
+                        uint pR = (uint)Math.Round(bgR * invS);
+                        uint pG = (uint)Math.Round(bgG * invS);
+                        uint pB = (uint)Math.Round(bgB * invS);
+                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                    }
+                }
+
+                // Pass 2: Razor-Sharp Pure Luminous White Text & Weather Icons
+                for (int ty = 0; ty < sh; ty++)
+                {
+                    int dstY = startY + ty;
+                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+
+                    int srcY = (int)Math.Floor((ty / (double)sh) * weatherH);
+                    srcY = Math.Clamp(srcY, 0, weatherH - 1);
+                    int srcRow = srcY * weatherW;
+                    int dstRow = dstY * SurfaceWidth;
+
+                    for (int tx = 0; tx < sw; tx++)
+                    {
+                        int dstX = startX + tx;
+                        if (dstX < 0 || dstX >= SurfaceWidth) continue;
+
+                        int srcX = (int)Math.Floor((tx / (double)sw) * weatherW);
+                        srcX = Math.Clamp(srcX, 0, weatherW - 1);
+
+                        byte maskA = weatherMask[srcRow + srcX];
+                        if (maskA == 0) continue;
+
+                        int dstIdx = dstRow + dstX;
+                        uint bg = pDst[dstIdx];
+                        byte bgA = (byte)(bg >> 24);
+                        if (bgA == 0) continue;
+
+                        byte bgR = (byte)(bg >> 16);
+                        byte bgG = (byte)(bg >> 8);
+                        byte bgB = (byte)bg;
+
+                        double fgA = (maskA / 255.0) * weatherAlpha * 0.98;
                         double invA = 1.0 - fgA;
                         double whiteVal = 255.0 * fgA * (bgA / 255.0);
 

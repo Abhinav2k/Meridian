@@ -7,9 +7,14 @@ The app is a transparent, borderless desktop overlay: there is no visible host w
 ### Dynamic Interaction & States
 
 - **Compact Resting State ($190\text{px} \times 44\text{px}$)**:
-  - Displays **real-time live clock** (e.g. `9:00:25 AM`) in razor-sharp $4\times$ supersampled `Segoe UI Variable Display` typography.
-- **Interactive Mouse Hover Expansion ($500\text{px} \times 180\text{px}$)**:
-  - Moving the mouse cursor over the pill triggers a fluid liquid expansion downward into a spacious $500\text{px} \times 180\text{px}$ glass modal, while the time text smoothly fades away to pure translucent glass.
+  - Displays **real-time live clock** (e.g. `09:25 :40 AM`) in razor-sharp $4\times$ supersampled `Segoe UI Variable Display` luxury Swiss typography.
+- **Interactive Mouse Hover Weather Dashboard ($500\text{px} \times 180\text{px}$)**:
+  - Moving the mouse cursor over the pill triggers a fluid liquid expansion downward into a spacious $500\text{px} \times 180\text{px}$ glass modal.
+  - The live time text fades out as an **Apple / visionOS style Weather Dashboard** smoothly blooms into view:
+    - **Header**: `📍 Location` & `Date / Day`
+    - **Hero Temperature & Condition**: `27° · 🌦️ Light Drizzle` with `H: 28° · L: 25°`
+    - **3-Metric Bar**: `💧 80% Humidity`, `💨 7 km/h Wind`, `🌧️ 95% Precip`
+  - Automatically fetches real local live weather asynchronously in the background.
   - Moving the mouse away smoothly collapses the modal back to its compact resting state and restores the live clock.
 
 ### Hotkeys & Controls
