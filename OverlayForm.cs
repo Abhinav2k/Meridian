@@ -624,16 +624,9 @@ internal sealed class OverlayForm : Form
             }
             else if (e.Button == MouseButtons.Left)
             {
-                if (_hoverPos > 0.6)
+                if (_hoverPos > 0.3)
                 {
-                    if (!await HandleExpandedClickAsync(e.Location))
-                    {
-                        ToggleDirection();
-                    }
-                }
-                else
-                {
-                    ToggleDirection();
+                    await HandleExpandedClickAsync(e.Location);
                 }
             }
         };
