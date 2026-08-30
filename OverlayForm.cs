@@ -18,9 +18,9 @@ internal sealed class OverlayForm : Form
     private const int DefaultPillWidth = 500;
     private const int DefaultPillHeight = 180;
 
-    // Compact resting size bounds (148px paused -> 204px playing)
-    private const int CompactPausedWidth = 148;
-    private const int CompactPlayingWidth = 204;
+    // Compact resting size bounds (150px paused -> 206px playing)
+    private const int CompactPausedWidth = 150;
+    private const int CompactPlayingWidth = 206;
     private const int CompactPillHeight = 44;
 
     private const int TopPadding = 18;
@@ -174,6 +174,21 @@ internal sealed class OverlayForm : Form
             ReleaseDC(IntPtr.Zero, screenDC);
         }
 
+        public bool Capture(int x, int y, int width, int height)
+        {
+            if (MemDC == IntPtr.Zero) return false;
+            IntPtr screenDC = GetDC(IntPtr.Zero);
+            if (screenDC == IntPtr.Zero) return false;
+            try
+            {
+                return BitBlt(MemDC, 0, 0, width, height, screenDC, x, y, 0x00CC0020);
+            }
+            finally
+            {
+                ReleaseDC(IntPtr.Zero, screenDC);
+            }
+        }
+
         public void Dispose()
         {
             if (MemDC != IntPtr.Zero)
@@ -272,7 +287,6 @@ internal sealed class OverlayForm : Form
 
     // Tab state in expanded modal: 0 = Music, 1 = Weather, 2 = Chrono/Clock
     private int _activeTab = 0;
-    private double _tabIndicatorX = 237.0; // Smooth sliding tab indicator position
 
     private int _currentTrackIndex = 0;
     private bool _isPlaying = true;
@@ -298,6 +312,7 @@ internal sealed class OverlayForm : Form
     private double _hoverPos = 0.0; // Spring position (0.0 to 1.0+)
     private double _hoverVel = 0.0; // Spring velocity
     private double _animDirection = 1.0; // +1.0 = forward (expand), -1.0 = backward (retract)
+    private readonly Stopwatch _totalStopwatch = Stopwatch.StartNew();
     private readonly Stopwatch _frameStopwatch = new();
     private volatile PillGeometry _currentGeometry = new(SurfaceWidth * 0.5, -20.0, 14.0, 14.0, 14.0);
 
@@ -418,22 +433,22 @@ internal sealed class OverlayForm : Form
 
     private bool HandleExpandedClick(Point pt)
     {
-        // Check Top Tab Bar click: Y in [30, 62], X in [210, 390]
-        if (pt.Y >= 30 && pt.Y <= 62)
+        // Check Top Tab Bar click: Y in [26, 60], X in [190, 410]
+        if (pt.Y >= 26 && pt.Y <= 60)
         {
-            if (pt.X >= 210 && pt.X < 270)
+            if (pt.X >= 195 && pt.X < 265)
             {
                 _activeTab = 0;
                 UpdateExpandedMask();
                 return true;
             }
-            if (pt.X >= 270 && pt.X < 330)
+            if (pt.X >= 265 && pt.X < 335)
             {
                 _activeTab = 1;
                 UpdateExpandedMask();
                 return true;
             }
-            if (pt.X >= 330 && pt.X <= 390)
+            if (pt.X >= 335 && pt.X <= 405)
             {
                 _activeTab = 2;
                 UpdateExpandedMask();
@@ -475,7 +490,7 @@ internal sealed class OverlayForm : Form
             }
 
             // 3. Prev Track: cx = 201, cy = 120, radius = 16
-            if (Math.Sqrt(Math.Pow(mx - 201, 2) + Math.Pow(my - 120, 2)) <= 18)
+            if (Math.Sqrt(Math.Pow(mx - 201, 2) + Math.Pow(my - 201, 2)) <= 18)
             {
                 _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
                 _trackProgressSeconds = 0.0;
@@ -491,7 +506,7 @@ internal sealed class OverlayForm : Form
                 return true;
             }
 
-            // 5. Timeline Scrubbing: my in [78, 98], mx in [80, 444]
+            // 5. Timeline Scrubbing: my in [76, 100], mx in [78, 446]
             if (my >= 76 && my <= 100 && mx >= 78 && mx <= 446)
             {
                 double ratio = Math.Clamp((mx - 86) / (444.0 - 86.0), 0.0, 1.0);
@@ -534,7 +549,6 @@ internal sealed class OverlayForm : Form
         var track = Playlist[_currentTrackIndex];
         var (mask, w, h) = PrecomputeExpandedMask(
             _activeTab,
-            _tabIndicatorX,
             track,
             _trackProgressSeconds,
             _isPlaying,
@@ -853,7 +867,6 @@ internal sealed class OverlayForm : Form
 
     private static (byte[] mask, int width, int height) PrecomputeExpandedMask(
         int activeTab,
-        double tabIndicatorX,
         TrackInfo track,
         double progressSeconds,
         bool isPlaying,
@@ -880,9 +893,10 @@ internal sealed class OverlayForm : Form
             using var fontTime = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
             using var fontLarge = GetPremiumFont(22.0f * superScale, FontStyle.Bold);
             using var fontMedium = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
+            using var fontClockHeader = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
 
             // ==========================================
-            // TOP SECTION: Small Hover-Switchable Tabs
+            // TOP SECTION: Small Hover-Switchable Tabs & Live Clock Badge
             // ==========================================
             float tabBarCx = (targetW * 0.5f) * superScale;
             float tabBarCy = 14f * superScale;
@@ -935,7 +949,7 @@ internal sealed class OverlayForm : Form
                 g.DrawPath(penActive, pathActive);
             }
 
-            // Tab 0: Music Icon & Label
+            // Tab 0: Music, Tab 1: Weather, Tab 2: Chrono
             string[] tabLabels = new[] { "♫ Music", "☀ Weather", "⏱ Chrono" };
             for (int t = 0; t < 3; t++)
             {
@@ -947,6 +961,14 @@ internal sealed class OverlayForm : Form
                 Color tabColor = (t == activeTab) ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(145, 255, 255, 255);
                 using var brushTab = new SolidBrush(tabColor);
                 g.DrawString(tabLabels[t], fontTab, brushTab, labelX, labelY, StringFormat.GenericDefault);
+            }
+
+            // Live Time Badge in Header (Top-Right)
+            string liveClockStr = DateTime.Now.ToString("h:mm tt");
+            var clockSize = g.MeasureString(liveClockStr, fontClockHeader, PointF.Empty, StringFormat.GenericDefault);
+            using (var brushHeaderClock = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+            {
+                g.DrawString(liveClockStr, fontClockHeader, brushHeaderClock, (targetW - 18f) * superScale - clockSize.Width, tabBarCy - clockSize.Height * 0.5f, StringFormat.GenericDefault);
             }
 
             // ==========================================
@@ -1175,7 +1197,10 @@ internal sealed class OverlayForm : Form
                         for (int dx = 0; dx < 4; dx++)
                         {
                             int sx = x * 4 + dx;
-                            sum += scan[rowOffset + sx * 4 + 3];
+                            int pxOffset = rowOffset + sx * 4;
+                            int a = scan[pxOffset + 3];
+                            int lum = (a > 0) ? a : Math.Max((int)scan[pxOffset + 0], Math.Max((int)scan[pxOffset + 1], (int)scan[pxOffset + 2]));
+                            sum += lum;
                         }
                     }
                     mask[y * targetW + x] = (byte)(sum >> 4);
@@ -1190,7 +1215,7 @@ internal sealed class OverlayForm : Form
     {
         var now = DateTime.Now;
         var track = Playlist[_currentTrackIndex];
-        double nowSec = _frameStopwatch.Elapsed.TotalSeconds;
+        double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
 
         if (_isPlaying || now.ToString("hh:mm:ss tt") != _lastTimeString)
         {
@@ -1231,12 +1256,22 @@ internal sealed class OverlayForm : Form
         string timeSec = ":" + now.ToString("ss");
         string timeAmPm = now.ToString("tt");
 
-        using var fontMain = GetPremiumFont(13.5f * superScale, FontStyle.Bold);
-        using var fontSec = GetPremiumFont(9.5f * superScale, FontStyle.Bold);
-        using var fontAmPm = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
+        using var fontMain = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
+        using var fontSec = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
+        using var fontAmPm = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
 
-        // Dynamic compact width: 140px paused -> 196px playing
-        int targetW = (int)Math.Round(140.0 + (196.0 - 140.0) * playingExpandP);
+        using var bmpMeasure = new Bitmap(1, 1);
+        using var gMeasure = Graphics.FromImage(bmpMeasure);
+        var sizeMain = gMeasure.MeasureString(timeMain, fontMain, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeSec = gMeasure.MeasureString(timeSec, fontSec, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeAmPm = gMeasure.MeasureString(timeAmPm, fontAmPm, PointF.Empty, StringFormat.GenericTypographic);
+
+        float spacingSec = 2f * superScale;
+        float spacingAmPm = 4.5f * superScale;
+        float totalTextWidth = sizeMain.Width + spacingSec + sizeSec.Width + spacingAmPm + sizeAmPm.Width;
+
+        // Dynamic compact width: 146px paused -> 204px playing
+        int targetW = (int)Math.Round(146.0 + (204.0 - 146.0) * playingExpandP);
         int targetH = 34;
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
@@ -1249,10 +1284,10 @@ internal sealed class OverlayForm : Form
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
             // 1. Left Section: Rotating Circular Vinyl Album Disc (Appears only when playing!)
-            if (playingExpandP > 0.08)
+            if (playingExpandP > 0.05)
             {
-                float discAlpha = (float)Math.Clamp((playingExpandP - 0.08) / 0.92, 0.0, 1.0);
-                float discCx = 14f * superScale;
+                float discAlpha = (float)Math.Clamp((playingExpandP - 0.05) / 0.95, 0.0, 1.0);
+                float discCx = 14.5f * superScale;
                 float discCy = 17f * superScale;
                 float discR = 10.5f * superScale;
 
@@ -1300,32 +1335,42 @@ internal sealed class OverlayForm : Form
             }
 
             // 2. Middle Section: Swiss Horology Clock Typography
-            float currX = (playingExpandP > 0.08) ? 32f * superScale : 14f * superScale;
-            float baseLineY = 7.5f * superScale;
+            float textStartX;
+            if (playingExpandP > 0.05)
+            {
+                float leftBound = 27f * superScale;
+                float rightBound = (targetW - 25f) * superScale;
+                textStartX = leftBound + Math.Max(0f, (rightBound - leftBound - totalTextWidth) * 0.5f);
+            }
+            else
+            {
+                textStartX = Math.Max(0f, (superW - totalTextWidth) * 0.5f);
+            }
+
+            float currX = textStartX;
+            float baseLineY = 7.0f * superScale;
 
             using (var brushMain = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
                 g.DrawString(timeMain, fontMain, brushMain, currX, baseLineY, StringFormat.GenericTypographic);
             }
-            var sizeMain = g.MeasureString(timeMain, fontMain, PointF.Empty, StringFormat.GenericTypographic);
-            currX += sizeMain.Width + 2f * superScale;
+            currX += sizeMain.Width + spacingSec;
 
-            using (var brushSec = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
+            using (var brushSec = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
             {
                 g.DrawString(timeSec, fontSec, brushSec, currX, baseLineY + 2.5f * superScale, StringFormat.GenericTypographic);
             }
-            var sizeSec = g.MeasureString(timeSec, fontSec, PointF.Empty, StringFormat.GenericTypographic);
-            currX += sizeSec.Width + 4.5f * superScale;
+            currX += sizeSec.Width + spacingAmPm;
 
-            using (var brushAmPm = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            using (var brushAmPm = new SolidBrush(Color.FromArgb(185, 255, 255, 255)))
             {
                 g.DrawString(timeAmPm, fontAmPm, brushAmPm, currX, baseLineY + 3.0f * superScale, StringFormat.GenericTypographic);
             }
 
             // 3. Right Section: Live 3-Bar Audio Visualizer (Appears when playing)
-            if (playingExpandP > 0.15)
+            if (playingExpandP > 0.10)
             {
-                float eqCx = (targetW - 14f) * superScale;
+                float eqCx = (targetW - 13f) * superScale;
                 float eqCy = 17f * superScale;
                 DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, isPlaying ? visualizerTime : 0.0);
             }
@@ -1349,7 +1394,10 @@ internal sealed class OverlayForm : Form
                         for (int dx = 0; dx < 4; dx++)
                         {
                             int sx = x * 4 + dx;
-                            sum += scan[rowOffset + sx * 4 + 3];
+                            int pxOffset = rowOffset + sx * 4;
+                            int a = scan[pxOffset + 3];
+                            int lum = (a > 0) ? a : Math.Max((int)scan[pxOffset + 0], Math.Max((int)scan[pxOffset + 1], (int)scan[pxOffset + 2]));
+                            sum += lum;
                         }
                     }
                     mask[y * targetW + x] = (byte)(sum >> 4);
@@ -1396,11 +1444,46 @@ internal sealed class OverlayForm : Form
             var surface = _renderSurface;
             if (surface != null && surface.BitsPtr != IntPtr.Zero)
             {
-                using var bmp = new Bitmap(SurfaceWidth, SurfaceHeight, PixelFormat.Format32bppArgb);
-                var data = bmp.LockBits(new Rectangle(0, 0, SurfaceWidth, SurfaceHeight), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                using var bmp = new Bitmap(SurfaceWidth, SurfaceHeight, PixelFormat.Format32bppRgb);
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    using var bgBrush = new LinearGradientBrush(
+                        new Rectangle(0, 0, SurfaceWidth, SurfaceHeight),
+                        Color.FromArgb(28, 32, 52),
+                        Color.FromArgb(12, 14, 24),
+                        45f);
+                    g.FillRectangle(bgBrush, 0, 0, SurfaceWidth, SurfaceHeight);
+                }
+
+                var data = bmp.LockBits(new Rectangle(0, 0, SurfaceWidth, SurfaceHeight), ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
                 unsafe
                 {
-                    Buffer.MemoryCopy((void*)surface.BitsPtr, (void*)data.Scan0, SurfaceWidth * SurfaceHeight * 4, SurfaceWidth * SurfaceHeight * 4);
+                    uint* pSrc = (uint*)surface.BitsPtr;
+                    uint* pDstBmp = (uint*)data.Scan0;
+                    for (int i = 0; i < SurfaceWidth * SurfaceHeight; i++)
+                    {
+                        uint src = pSrc[i];
+                        byte sa = (byte)(src >> 24);
+                        if (sa == 0) continue;
+
+                        byte sr = (byte)(src >> 16);
+                        byte sg = (byte)(src >> 8);
+                        byte sb = (byte)src;
+
+                        uint dst = pDstBmp[i];
+                        byte dr = (byte)(dst >> 16);
+                        byte dg = (byte)(dst >> 8);
+                        byte db = (byte)dst;
+
+                        double aNorm = sa / 255.0;
+                        double invA = 1.0 - aNorm;
+
+                        byte finalR = (byte)Math.Clamp(sr + dr * invA, 0, 255);
+                        byte finalG = (byte)Math.Clamp(sg + dg * invA, 0, 255);
+                        byte finalB = (byte)Math.Clamp(sb + db * invA, 0, 255);
+
+                        pDstBmp[i] = (0xFFu << 24) | ((uint)finalR << 16) | ((uint)finalG << 8) | finalB;
+                    }
                 }
                 bmp.UnlockBits(data);
                 string dir = AppDomain.CurrentDomain.BaseDirectory;
@@ -1516,10 +1599,10 @@ internal sealed class OverlayForm : Form
                     int mouseSurfaceX = cursorPos.x - rect.Left;
                     int mouseSurfaceY = cursorPos.y - rect.Top;
 
-                    // Tab bar area: Y in [26, 62], centered around X = 300
-                    if (mouseSurfaceY >= 26 && mouseSurfaceY <= 62)
+                    // Tab bar area: Y in [26, 60], centered around X = 300
+                    if (mouseSurfaceY >= 26 && mouseSurfaceY <= 60)
                     {
-                        if (mouseSurfaceX >= 205 && mouseSurfaceX < 268)
+                        if (mouseSurfaceX >= 195 && mouseSurfaceX < 265)
                         {
                             if (_activeTab != 0)
                             {
@@ -1527,7 +1610,7 @@ internal sealed class OverlayForm : Form
                                 UpdateExpandedMask();
                             }
                         }
-                        else if (mouseSurfaceX >= 268 && mouseSurfaceX < 330)
+                        else if (mouseSurfaceX >= 265 && mouseSurfaceX < 335)
                         {
                             if (_activeTab != 1)
                             {
@@ -1535,7 +1618,7 @@ internal sealed class OverlayForm : Form
                                 UpdateExpandedMask();
                             }
                         }
-                        else if (mouseSurfaceX >= 330 && mouseSurfaceX <= 395)
+                        else if (mouseSurfaceX >= 335 && mouseSurfaceX <= 405)
                         {
                             if (_activeTab != 2)
                             {
@@ -1585,7 +1668,7 @@ internal sealed class OverlayForm : Form
                 _visualizerTime += dt;
             }
 
-            double nowSec = _frameStopwatch.Elapsed.TotalSeconds;
+            double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
             if (_hoverPos > 0.05 && (nowSec - _lastExpandedMaskUpdateTime >= 0.035 || !_isPlaying))
             {
                 _lastExpandedMaskUpdateTime = nowSec;
@@ -1605,7 +1688,7 @@ internal sealed class OverlayForm : Form
     {
         double targetCenterX = SurfaceWidth * 0.5;
 
-        // Compact pill width: 148px when paused, smoothly expanding to 204px when playing
+        // Compact pill width: 150px when paused, smoothly expanding to 206px when playing
         double activeCompactWidth = CompactPausedWidth + (CompactPlayingWidth - CompactPausedWidth) * playingExpandP;
         double restingHalfWidth = (activeCompactWidth * 0.5) + ((DefaultPillWidth * 0.5) - (activeCompactWidth * 0.5)) * hoverP;
         double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverP;
@@ -1661,236 +1744,223 @@ internal sealed class OverlayForm : Form
         if (capturer == null || surface == null || IsDisposed)
             return;
 
-        IntPtr screenDC = GetDC(IntPtr.Zero);
-        if (screenDC != IntPtr.Zero)
-        {
-            try
-            {
-                BitBlt(capturer.MemDC, 0, 0, SurfaceWidth, SurfaceHeight, screenDC, screenPos.X, screenPos.Y, 0x00CC0020);
-            }
-            finally
-            {
-                ReleaseDC(IntPtr.Zero, screenDC);
-            }
-        }
+        capturer.Capture(screenPos.X, screenPos.Y, SurfaceWidth, SurfaceHeight);
 
-        byte* pCap = (byte*)capturer.BitsPtr.ToPointer();
-        byte* pOut = (byte*)surface.BitsPtr.ToPointer();
-        if (pCap == null || pOut == null) return;
+        byte* pRaw = (byte*)capturer.BitsPtr;
+        uint* pDst = (uint*)surface.BitsPtr;
+        if (pRaw == null || pDst == null) return;
 
-        // Pass 1: Downsample 2x
-        fixed (byte* pHalf = _halfRawBuffer)
+        fixed (byte* pHalfRaw = _halfRawBuffer)
+        fixed (byte* pBlurH = _blurHBuffer)
+        fixed (byte* pBlurred = _blurredBuffer)
         {
+            // 1. Box downsample (600x250 -> 300x125): 4x fewer pixels, anti-aliased pre-filter
             for (int y = 0; y < HalfHeight; y++)
             {
-                int srcY = y * 2;
-                int srcRow0 = srcY * SurfaceWidth * 4;
-                int srcRow1 = (srcY + 1) * SurfaceWidth * 4;
+                int srcRow0 = (y * 2) * SurfaceWidth * 4;
+                int srcRow1 = (y * 2 + 1) * SurfaceWidth * 4;
                 int dstRow = y * HalfWidth * 4;
 
                 for (int x = 0; x < HalfWidth; x++)
                 {
-                    int srcX = x * 2 * 4;
-                    int dstX = x * 4;
+                    int srcX0 = (x * 2) * 4;
+                    int srcX1 = srcX0 + 4;
+                    int dstX = dstRow + x * 4;
 
-                    int b = pCap[srcRow0 + srcX] + pCap[srcRow0 + srcX + 4] + pCap[srcRow1 + srcX] + pCap[srcRow1 + srcX + 4];
-                    int g = pCap[srcRow0 + srcX + 1] + pCap[srcRow0 + srcX + 5] + pCap[srcRow1 + srcX + 1] + pCap[srcRow1 + srcX + 5];
-                    int r = pCap[srcRow0 + srcX + 2] + pCap[srcRow0 + srcX + 6] + pCap[srcRow1 + srcX + 2] + pCap[srcRow1 + srcX + 6];
-
-                    pHalf[dstRow + dstX] = (byte)(b >> 2);
-                    pHalf[dstRow + dstX + 1] = (byte)(g >> 2);
-                    pHalf[dstRow + dstX + 2] = (byte)(r >> 2);
-                    pHalf[dstRow + dstX + 3] = 255;
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pRaw[srcRow0 + srcX0 + c] +
+                                  pRaw[srcRow0 + srcX1 + c] +
+                                  pRaw[srcRow1 + srcX0 + c] +
+                                  pRaw[srcRow1 + srcX1 + c];
+                        pHalfRaw[dstX + c] = (byte)(sum >> 2);
+                    }
+                    pHalfRaw[dstX + 3] = 255;
                 }
             }
-        }
 
-        // Pass 2: Horizontal Blur (Radius = 14 on half-res)
-        const int blurR = 14;
-        const int blurKernel = blurR * 2 + 1;
-        const int blurDiv = blurKernel;
-
-        fixed (byte* pHalf = _halfRawBuffer)
-        fixed (byte* pBlurH = _blurHBuffer)
-        fixed (byte* pBlurred = _blurredBuffer)
-        {
+            // 2. Single-pass 5-tap Gaussian Blur on 300x125 (Crisp, crystal liquid glass diffusion)
+            // Horizontal (pHalfRaw -> pBlurH)
             for (int y = 0; y < HalfHeight; y++)
             {
                 int rowOffset = y * HalfWidth * 4;
-                int sumB = 0, sumG = 0, sumR = 0;
-
-                for (int k = -blurR; k <= blurR; k++)
+                for (int x = 0; x < HalfWidth; x++)
                 {
-                    int kx = Math.Clamp(k, 0, HalfWidth - 1);
-                    sumB += pHalf[rowOffset + kx * 4];
-                    sumG += pHalf[rowOffset + kx * 4 + 1];
-                    sumR += pHalf[rowOffset + kx * 4 + 2];
+                    int xm2 = Math.Max(0, x - 2);
+                    int xm1 = Math.Max(0, x - 1);
+                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
+                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
+
+                    int offM2 = rowOffset + xm2 * 4;
+                    int offM1 = rowOffset + xm1 * 4;
+                    int off0 = rowOffset + x * 4;
+                    int offP1 = rowOffset + xp1 * 4;
+                    int offP2 = rowOffset + xp2 * 4;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pHalfRaw[offM2 + c] +
+                                  (pHalfRaw[offM1 + c] << 2) +
+                                  pHalfRaw[off0 + c] * 6 +
+                                  (pHalfRaw[offP1 + c] << 2) +
+                                  pHalfRaw[offP2 + c];
+                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurH[off0 + 3] = 255;
                 }
+            }
+
+            // Vertical (pBlurH -> pBlurred)
+            for (int y = 0; y < HalfHeight; y++)
+            {
+                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
+                int y0 = y * HalfWidth * 4;
+                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
+                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
 
                 for (int x = 0; x < HalfWidth; x++)
                 {
-                    int dstIdx = rowOffset + x * 4;
-                    pBlurH[dstIdx] = (byte)(sumB / blurDiv);
-                    pBlurH[dstIdx + 1] = (byte)(sumG / blurDiv);
-                    pBlurH[dstIdx + 2] = (byte)(sumR / blurDiv);
-                    pBlurH[dstIdx + 3] = 255;
+                    int colOffset = x * 4;
+                    int offM2 = ym2 + colOffset;
+                    int offM1 = ym1 + colOffset;
+                    int off0 = y0 + colOffset;
+                    int offP1 = yp1 + colOffset;
+                    int offP2 = yp2 + colOffset;
 
-                    int xLeft = Math.Clamp(x - blurR, 0, HalfWidth - 1);
-                    int xRight = Math.Clamp(x + blurR + 1, 0, HalfWidth - 1);
-
-                    sumB += pHalf[rowOffset + xRight * 4] - pHalf[rowOffset + xLeft * 4];
-                    sumG += pHalf[rowOffset + xRight * 4 + 1] - pHalf[rowOffset + xLeft * 4 + 1];
-                    sumR += pHalf[rowOffset + xRight * 4 + 2] - pHalf[rowOffset + xLeft * 4 + 2];
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurH[offM2 + c] +
+                                  (pBlurH[offM1 + c] << 2) +
+                                  pBlurH[off0 + c] * 6 +
+                                  (pBlurH[offP1 + c] << 2) +
+                                  pBlurH[offP2 + c];
+                        pBlurred[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurred[off0 + 3] = 255;
                 }
             }
 
-            // Pass 3: Vertical Blur
-            for (int x = 0; x < HalfWidth; x++)
-            {
-                int sumB = 0, sumG = 0, sumR = 0;
-
-                for (int k = -blurR; k <= blurR; k++)
-                {
-                    int ky = Math.Clamp(k, 0, HalfHeight - 1);
-                    int idx = ky * HalfWidth * 4 + x * 4;
-                    sumB += pBlurH[idx];
-                    sumG += pBlurH[idx + 1];
-                    sumR += pBlurH[idx + 2];
-                }
-
-                for (int y = 0; y < HalfHeight; y++)
-                {
-                    int dstIdx = y * HalfWidth * 4 + x * 4;
-                    pBlurred[dstIdx] = (byte)(sumB / blurDiv);
-                    pBlurred[dstIdx + 1] = (byte)(sumG / blurDiv);
-                    pBlurred[dstIdx + 2] = (byte)(sumR / blurDiv);
-                    pBlurred[dstIdx + 3] = 255;
-
-                    int yTop = Math.Clamp(y - blurR, 0, HalfHeight - 1);
-                    int yBot = Math.Clamp(y + blurR + 1, 0, HalfHeight - 1);
-
-                    int idxTop = yTop * HalfWidth * 4 + x * 4;
-                    int idxBot = yBot * HalfWidth * 4 + x * 4;
-
-                    sumB += pBlurH[idxBot] - pBlurH[idxTop];
-                    sumG += pBlurH[idxBot + 1] - pBlurH[idxTop + 1];
-                    sumR += pBlurH[idxBot + 2] - pBlurH[idxTop + 2];
-                }
-            }
-        }
-
-        // Pass 4: Frosted Glass Shader with Analytical Normal & Caustic Edge Lighting
-        double cx = geom.CenterX;
-        double cy = geom.CenterY;
-        double hw = geom.HalfWidth;
-        double hh = geom.HalfHeight;
-        double radius = geom.Radius;
-
-        double straightHalfW = Math.Max(0.0, hw - radius);
-        double straightHalfH = Math.Max(0.0, hh - radius);
-
-        fixed (byte* pBlurred = _blurredBuffer)
-        {
-            uint* pDst = (uint*)pOut;
+            // 3. Liquid Glass Refraction, Continuous Bilinear Reconstruction & Specular Lighting
+            double straightW = geom.HalfWidth - geom.Radius;
+            double straightH = geom.HalfHeight - geom.Radius;
 
             for (int y = 0; y < SurfaceHeight; y++)
             {
-                double py = y - cy;
-                double qy = Math.Abs(py) - straightHalfH;
                 int rowIdx = y * SurfaceWidth;
+                double py = y - geom.CenterY;
+                double absPy = Math.Abs(py);
+                double qy = absPy - straightH;
 
                 for (int x = 0; x < SurfaceWidth; x++)
                 {
-                    double px = x - cx;
-                    double qx = Math.Abs(px) - straightHalfW;
+                    int idx = rowIdx + x;
+                    double px = x - geom.CenterX;
+                    double absPx = Math.Abs(px);
+                    double qx = absPx - straightW;
 
-                    double outX = Math.Max(0.0, qx);
-                    double outY = Math.Max(0.0, qy);
-                    double outDist = Math.Sqrt(outX * outX + outY * outY);
-                    double inDist = Math.Min(0.0, Math.Max(qx, qy));
-                    double d = outDist + inDist - radius;
+                    double outsideX = Math.Max(0.0, qx);
+                    double outsideY = Math.Max(0.0, qy);
+                    double outsideDist = Math.Sqrt(outsideX * outsideX + outsideY * outsideY);
+                    double insideDist = Math.Min(0.0, Math.Max(qx, qy));
+                    double sdf = outsideDist + insideDist - geom.Radius;
 
-                    if (d > 1.5)
+                    // 1. Ultra-smooth Hermite cubic anti-aliased alpha falloff
+                    double edgeFactor = Math.Clamp((-sdf + 0.8) / 1.6, 0.0, 1.0);
+                    double alphaVal = edgeFactor * edgeFactor * (3.0 - 2.0 * edgeFactor);
+                    byte a = (byte)Math.Round(alphaVal * 255.0);
+
+                    if (a == 0)
                     {
-                        pDst[rowIdx + x] = 0;
+                        pDst[idx] = 0;
                         continue;
                     }
 
-                    // Anti-aliased outer edge mask
-                    double edgeAlpha = Math.Clamp(0.5 - d, 0.0, 1.0);
-                    if (edgeAlpha <= 0.0)
-                    {
-                        pDst[rowIdx + x] = 0;
-                        continue;
-                    }
-
-                    // Analytical Normal Calculation
+                    // Compute continuous normal vector for smooth border refraction and specular lighting
                     double nx = 0.0, ny = 0.0;
-                    if (outDist > 1e-6)
+                    if (outsideDist > 1e-4)
                     {
-                        nx = (outX / outDist) * Math.Sign(px);
-                        ny = (outY / outDist) * Math.Sign(py);
+                        nx = (outsideX / outsideDist) * Math.Sign(px);
+                        ny = (outsideY / outsideDist) * Math.Sign(py);
+                    }
+                    else if (insideDist > -1e-4)
+                    {
+                        if (qx > qy) nx = Math.Sign(px);
+                        else ny = Math.Sign(py);
                     }
                     else
                     {
-                        if (qx > qy)
-                            nx = Math.Sign(px);
-                        else
-                            ny = Math.Sign(py);
+                        if (qx > qy) nx = Math.Sign(px) * Math.Clamp(1.0 + qx / geom.Radius, 0.0, 1.0);
+                        else ny = Math.Sign(py) * Math.Clamp(1.0 + qy / geom.Radius, 0.0, 1.0);
                     }
 
-                    // Refraction sampling in blurred buffer
-                    double edgeFactor = Math.Clamp(-d / (radius * 0.45), 0.0, 1.0);
-                    double refractionScale = (1.0 - edgeFactor) * 8.5;
+                    // Meniscus lens refraction
+                    double edgeDistance = Math.Max(0.0, -sdf);
+                    double u = Math.Clamp(1.0 - (edgeDistance / 14.0), 0.0, 1.0);
+                    double bend = Math.Pow(u, 2.5) * 6.5;
 
-                    double sampleX = (x + nx * refractionScale) * 0.5;
-                    double sampleY = (y + ny * refractionScale) * 0.5;
+                    double sx = Math.Clamp(x - nx * bend, 0.0, SurfaceWidth - 2.0);
+                    double sy = Math.Clamp(y - ny * bend, 0.0, SurfaceHeight - 2.0);
 
-                    int sx0 = Math.Clamp((int)Math.Floor(sampleX), 0, HalfWidth - 1);
-                    int sy0 = Math.Clamp((int)Math.Floor(sampleY), 0, HalfHeight - 1);
-                    int sx1 = Math.Clamp(sx0 + 1, 0, HalfWidth - 1);
-                    int sy1 = Math.Clamp(sy0 + 1, 0, HalfHeight - 1);
+                    // Smooth bilinear sampling from half-resolution frosted glass buffer
+                    double hx = Math.Clamp(sx * 0.5, 0.0, HalfWidth - 2.0);
+                    double hy = Math.Clamp(sy * 0.5, 0.0, HalfHeight - 2.0);
 
-                    double fx = sampleX - sx0;
-                    double fy = sampleY - sy0;
+                    int ix = (int)Math.Floor(hx);
+                    int iy = (int)Math.Floor(hy);
+                    double fx = hx - ix;
+                    double fy = hy - iy;
 
-                    int idx00 = sy0 * HalfWidth * 4 + sx0 * 4;
-                    int idx10 = sy0 * HalfWidth * 4 + sx1 * 4;
-                    int idx01 = sy1 * HalfWidth * 4 + sx0 * 4;
-                    int idx11 = sy1 * HalfWidth * 4 + sx1 * 4;
+                    int w00 = (int)Math.Round((1.0 - fx) * (1.0 - fy) * 256.0);
+                    int w10 = (int)Math.Round(fx * (1.0 - fy) * 256.0);
+                    int w01 = (int)Math.Round((1.0 - fx) * fy * 256.0);
+                    int w11 = Math.Max(0, 256 - (w00 + w10 + w01));
 
-                    double b0 = pBlurred[idx00] * (1 - fx) + pBlurred[idx10] * fx;
-                    double b1 = pBlurred[idx01] * (1 - fx) + pBlurred[idx11] * fx;
-                    double blurBlue = b0 * (1 - fy) + b1 * fy;
+                    int off00 = (iy * HalfWidth + ix) * 4;
+                    int off10 = (iy * HalfWidth + ix + 1) * 4;
+                    int off01 = ((iy + 1) * HalfWidth + ix) * 4;
+                    int off11 = ((iy + 1) * HalfWidth + ix + 1) * 4;
 
-                    double g0 = pBlurred[idx00 + 1] * (1 - fx) + pBlurred[idx10 + 1] * fx;
-                    double g1 = pBlurred[idx01 + 1] * (1 - fx) + pBlurred[idx11 + 1] * fx;
-                    double blurGreen = g0 * (1 - fy) + g1 * fy;
+                    int b = (pBlurred[off00 + 0] * w00 + pBlurred[off10 + 0] * w10 + pBlurred[off01 + 0] * w01 + pBlurred[off11 + 0] * w11) >> 8;
+                    int g = (pBlurred[off00 + 1] * w00 + pBlurred[off10 + 1] * w10 + pBlurred[off01 + 1] * w01 + pBlurred[off11 + 1] * w11) >> 8;
+                    int r = (pBlurred[off00 + 2] * w00 + pBlurred[off10 + 2] * w10 + pBlurred[off01 + 2] * w01 + pBlurred[off11 + 2] * w11) >> 8;
 
-                    double r0 = pBlurred[idx00 + 2] * (1 - fx) + pBlurred[idx10 + 2] * fx;
-                    double r1 = pBlurred[idx01 + 2] * (1 - fx) + pBlurred[idx11 + 2] * fx;
-                    double blurRed = r0 * (1 - fy) + r1 * fy;
+                    b = Math.Clamp(b, 0, 255);
+                    g = Math.Clamp(g, 0, 255);
+                    r = Math.Clamp(r, 0, 255);
 
-                    // Specular Highlight & Inner Glass Rim
-                    const double lx = -0.57735;
-                    const double ly = -0.57735;
-                    double nDotL = Math.Max(0.0, -(nx * lx + ny * ly));
-                    double specular = Math.Pow(nDotL, 16.0) * 0.65;
+                    // Apple Liquid Glass Crystal Tint
+                    r = (r * 242 + 205 * 14) >> 8;
+                    g = (g * 242 + 228 * 14) >> 8;
+                    b = (b * 242 + 255 * 14) >> 8;
 
-                    // Fine Fresnel edge ring
-                    double fresnel = Math.Pow(1.0 - Math.Clamp(-d / 4.5, 0.0, 1.0), 2.5) * 0.55;
+                    // 2. Smooth Continuous Glass Border Lighting
+                    // A. Outer Specular White Rim
+                    double outerRimGauss = Math.Exp(-Math.Pow((sdf + 1.0) / 1.25, 2.0));
+                    int outerRimLight = (int)(outerRimGauss * 225.0 * alphaVal);
 
-                    // Tint & Light Composite
-                    double finalR = Math.Min(255.0, blurRed * 0.96 + 18.0 + (specular + fresnel) * 220.0);
-                    double finalG = Math.Min(255.0, blurGreen * 0.96 + 20.0 + (specular + fresnel) * 230.0);
-                    double finalB = Math.Min(255.0, blurBlue * 0.96 + 26.0 + (specular + fresnel) * 255.0);
+                    // B. Inner Bevel Sheen
+                    double innerRimGauss = Math.Exp(-Math.Pow((sdf + 3.2) / 1.6, 2.0));
+                    int innerRimLight = (int)(innerRimGauss * 50.0 * alphaVal);
 
-                    byte a = (byte)Math.Round(edgeAlpha * 255.0);
-                    byte rByte = (byte)Math.Round(finalR * edgeAlpha);
-                    byte gByte = (byte)Math.Round(finalG * edgeAlpha);
-                    byte bByte = (byte)Math.Round(finalB * edgeAlpha);
+                    // C. Top Ambient Sky Highlight
+                    double topNorm = Math.Clamp(-py / Math.Max(geom.HalfHeight, 1.0), 0.0, 1.0);
+                    double topDomeGauss = Math.Exp(-Math.Pow((sdf + 8.0) / 9.0, 2.0)) * topNorm;
+                    int topDomeLight = (int)(topDomeGauss * 35.0 * alphaVal);
 
-                    pDst[rowIdx + x] = ((uint)a << 24) | ((uint)rByte << 16) | ((uint)gByte << 8) | bByte;
+                    int totalLight = outerRimLight + innerRimLight + topDomeLight;
+                    if (totalLight > 0)
+                    {
+                        r = Math.Min(255, r + totalLight);
+                        g = Math.Min(255, g + totalLight);
+                        b = Math.Min(255, b + totalLight);
+                    }
+
+                    // Premultiplied 32-bit ARGB for GPU compositor
+                    uint pR = (uint)((r * a) / 255);
+                    uint pG = (uint)((g * a) / 255);
+                    uint pB = (uint)((b * a) / 255);
+                    pDst[idx] = ((uint)a << 24) | (pR << 16) | (pG << 8) | pB;
                 }
             }
 
@@ -1915,6 +1985,44 @@ internal sealed class OverlayForm : Form
                 int startX = (int)Math.Round((SurfaceWidth * 0.5) - timeW * 0.5);
                 int startY = (int)Math.Round((TopPadding + CompactPillHeight * 0.5) - timeH * 0.5);
 
+                // Pass 1: Crisp Ambient Drop Shadow (1px offset)
+                double shadowAlpha = textAlpha * 0.45;
+                for (int ty = 0; ty < timeH; ty++)
+                {
+                    int dstY = startY + ty + 1;
+                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+
+                    int srcRow = ty * timeW;
+                    int dstRow = dstY * SurfaceWidth;
+
+                    for (int tx = 0; tx < timeW; tx++)
+                    {
+                        int dstX = startX + tx;
+                        if (dstX < 0 || dstX >= SurfaceWidth) continue;
+
+                        byte maskA = timeMask[srcRow + tx];
+                        if (maskA == 0) continue;
+
+                        int dstIdx = dstRow + dstX;
+                        uint bg = pDst[dstIdx];
+                        byte bgA = (byte)(bg >> 24);
+                        if (bgA == 0) continue;
+
+                        double sFactor = (maskA / 255.0) * shadowAlpha;
+                        double invS = 1.0 - sFactor;
+
+                        byte bgR = (byte)(bg >> 16);
+                        byte bgG = (byte)(bg >> 8);
+                        byte bgB = (byte)bg;
+
+                        uint pR = (uint)Math.Round(bgR * invS);
+                        uint pG = (uint)Math.Round(bgG * invS);
+                        uint pB = (uint)Math.Round(bgB * invS);
+                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                    }
+                }
+
+                // Pass 2: Ultra-luminous pure white typography
                 for (int ty = 0; ty < timeH; ty++)
                 {
                     int dstY = startY + ty;
@@ -1974,6 +2082,44 @@ internal sealed class OverlayForm : Form
                 int startX = (int)Math.Round((SurfaceWidth * 0.5) - expW * 0.5);
                 int startY = TopPadding + 8;
 
+                // Pass 1: Crisp Ambient Drop Shadow (1px offset)
+                double shadowAlpha = expAlpha * 0.45;
+                for (int ty = 0; ty < expH; ty++)
+                {
+                    int dstY = startY + ty + 1;
+                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+
+                    int srcRow = ty * expW;
+                    int dstRow = dstY * SurfaceWidth;
+
+                    for (int tx = 0; tx < expW; tx++)
+                    {
+                        int dstX = startX + tx;
+                        if (dstX < 0 || dstX >= SurfaceWidth) continue;
+
+                        byte maskA = expMask[srcRow + tx];
+                        if (maskA == 0) continue;
+
+                        int dstIdx = dstRow + dstX;
+                        uint bg = pDst[dstIdx];
+                        byte bgA = (byte)(bg >> 24);
+                        if (bgA == 0) continue;
+
+                        double sFactor = (maskA / 255.0) * shadowAlpha;
+                        double invS = 1.0 - sFactor;
+
+                        byte bgR = (byte)(bg >> 16);
+                        byte bgG = (byte)(bg >> 8);
+                        byte bgB = (byte)bg;
+
+                        uint pR = (uint)Math.Round(bgR * invS);
+                        uint pG = (uint)Math.Round(bgG * invS);
+                        uint pB = (uint)Math.Round(bgB * invS);
+                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                    }
+                }
+
+                // Pass 2: Ultra-luminous pure white content
                 for (int ty = 0; ty < expH; ty++)
                 {
                     int dstY = startY + ty;
