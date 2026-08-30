@@ -8,8 +8,8 @@ The app is a transparent, borderless desktop overlay: there is no visible host w
 
 - **Compact Resting State ($190\text{px} \times 44\text{px}$)**:
   - Displays **real-time live clock** (e.g. `9:00:25 AM`) in razor-sharp $4\times$ supersampled `Segoe UI Variable Display` typography.
-- **Interactive Mouse Hover Expansion ($680\text{px} \times 64\text{px}$)**:
-  - Moving the mouse cursor over the pill triggers a fluid liquid expansion to a wide $680\text{px}$ bar, while the time text smoothly fades away to pure translucent glass.
+- **Interactive Mouse Hover Expansion ($500\text{px} \times 90\text{px}$)**:
+  - Moving the mouse cursor over the pill triggers a fluid liquid expansion to the full $500\text{px} \times 90\text{px}$ card, while the time text smoothly fades away to pure translucent glass.
   - Moving the mouse away smoothly collapses the pill back to its compact resting state and fades the live time clock back in.
 
 ### Hotkeys & Controls
