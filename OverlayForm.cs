@@ -690,22 +690,22 @@ internal sealed class OverlayForm : Form
 
     private async Task<bool> HandleExpandedClickAsync(Point pt)
     {
-        // Check Top Tab Bar click: Y in [26, 60], X in [190, 410]
-        if (pt.Y >= 26 && pt.Y <= 60)
+        // Check Top Tab Bar click: Y in [24, 54], X in [84, 162]
+        if (pt.Y >= 24 && pt.Y <= 54)
         {
-            if (pt.X >= 195 && pt.X < 265)
+            if (pt.X >= 84 && pt.X < 110)
             {
                 _activeTab = 0;
                 UpdateExpandedMask();
                 return true;
             }
-            if (pt.X >= 265 && pt.X < 335)
+            if (pt.X >= 110 && pt.X < 134)
             {
                 _activeTab = 1;
                 UpdateExpandedMask();
                 return true;
             }
-            if (pt.X >= 335 && pt.X <= 405)
+            if (pt.X >= 134 && pt.X <= 162)
             {
                 _activeTab = 2;
                 UpdateExpandedMask();
@@ -1218,17 +1218,16 @@ internal sealed class OverlayForm : Form
             using var fontClockHeader = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
 
             // ==========================================
-            // TOP SECTION: Hover Tabs & Live Clock Badge
+            // TOP SECTION: Compact Left-Aligned Hover Icon Tabs & Right Live Clock Badge
             // ==========================================
-            float tabBarCx = (targetW * 0.5f) * superScale;
+            float tabStartX = 16f * superScale;
             float tabBarCy = 14f * superScale;
-            float tabWidth = 58f * superScale;
-            float tabHeight = 22f * superScale;
-            float totalTabsW = tabWidth * 3f;
-            float tabStartX = tabBarCx - totalTabsW * 0.5f;
+            float tabItemW = 24f * superScale;
+            float tabHeight = 20f * superScale;
+            float totalTabsW = tabItemW * 3f; // 72px
 
             // Tab Bar Background Container Pill
-            float barPad = 2.5f * superScale;
+            float barPad = 2.0f * superScale;
             using (var pathBar = new GraphicsPath())
             {
                 float bx = tabStartX - barPad;
@@ -1250,12 +1249,12 @@ internal sealed class OverlayForm : Form
             }
 
             // Active Tab Sliding Indicator Pill
-            float activeX = tabStartX + activeTab * tabWidth;
+            float activeX = tabStartX + activeTab * tabItemW;
             using (var pathActive = new GraphicsPath())
             {
                 float ax = activeX;
                 float ay = tabBarCy - tabHeight * 0.5f;
-                float aw = tabWidth;
+                float aw = tabItemW;
                 float ah = tabHeight;
                 float ar = ah * 0.5f;
 
@@ -1271,17 +1270,19 @@ internal sealed class OverlayForm : Form
                 g.DrawPath(penActive, pathActive);
             }
 
-            string[] tabLabels = new[] { "♫ Music", "☀ Weather", "⏱ Chrono" };
+            // Compact Icon-Only Tab Labels (♫, ☀, ⏱)
+            string[] tabIcons = new[] { "♫", "☀", "⏱" };
+            using var fontIconTab = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
             for (int t = 0; t < 3; t++)
             {
-                float tx = tabStartX + t * tabWidth;
-                var strSize = g.MeasureString(tabLabels[t], fontTab, PointF.Empty, StringFormat.GenericDefault);
-                float labelX = tx + (tabWidth - strSize.Width) * 0.5f;
+                float tx = tabStartX + t * tabItemW;
+                var strSize = g.MeasureString(tabIcons[t], fontIconTab, PointF.Empty, StringFormat.GenericTypographic);
+                float labelX = tx + (tabItemW - strSize.Width) * 0.5f;
                 float labelY = tabBarCy - strSize.Height * 0.5f;
 
-                Color tabColor = (t == activeTab) ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(155, 255, 255, 255);
+                Color tabColor = (t == activeTab) ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(150, 255, 255, 255);
                 using var brushTab = new SolidBrush(tabColor);
-                g.DrawString(tabLabels[t], fontTab, brushTab, labelX, labelY, StringFormat.GenericDefault);
+                g.DrawString(tabIcons[t], fontIconTab, brushTab, labelX, labelY, StringFormat.GenericTypographic);
             }
 
             // Live Time Badge in Header (Top-Right)
@@ -1289,7 +1290,7 @@ internal sealed class OverlayForm : Form
             var clockSize = g.MeasureString(liveClockStr, fontClockHeader, PointF.Empty, StringFormat.GenericDefault);
             using (var brushHeaderClock = new SolidBrush(Color.FromArgb(205, 255, 255, 255)))
             {
-                g.DrawString(liveClockStr, fontClockHeader, brushHeaderClock, (targetW - 18f) * superScale - clockSize.Width, tabBarCy - clockSize.Height * 0.5f, StringFormat.GenericDefault);
+                g.DrawString(liveClockStr, fontClockHeader, brushHeaderClock, (targetW - 16f) * superScale - clockSize.Width, tabBarCy - clockSize.Height * 0.5f, StringFormat.GenericDefault);
             }
 
             // ==========================================
@@ -1942,9 +1943,9 @@ internal sealed class OverlayForm : Form
                     int mouseSurfaceX = cursorPos.x - rect.Left;
                     int mouseSurfaceY = cursorPos.y - rect.Top;
 
-                    if (mouseSurfaceY >= 26 && mouseSurfaceY <= 60)
+                    if (mouseSurfaceY >= 24 && mouseSurfaceY <= 54)
                     {
-                        if (mouseSurfaceX >= 195 && mouseSurfaceX < 265)
+                        if (mouseSurfaceX >= 84 && mouseSurfaceX < 110)
                         {
                             if (_activeTab != 0)
                             {
@@ -1952,7 +1953,7 @@ internal sealed class OverlayForm : Form
                                 UpdateExpandedMask();
                             }
                         }
-                        else if (mouseSurfaceX >= 265 && mouseSurfaceX < 335)
+                        else if (mouseSurfaceX >= 110 && mouseSurfaceX < 134)
                         {
                             if (_activeTab != 1)
                             {
@@ -1960,7 +1961,7 @@ internal sealed class OverlayForm : Form
                                 UpdateExpandedMask();
                             }
                         }
-                        else if (mouseSurfaceX >= 335 && mouseSurfaceX <= 405)
+                        else if (mouseSurfaceX >= 134 && mouseSurfaceX <= 162)
                         {
                             if (_activeTab != 2)
                             {
@@ -2308,8 +2309,8 @@ internal sealed class OverlayForm : Form
             }
 
             double spawnTextAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
-            double hoverFadeOut = Math.Clamp(1.0 - (_hoverPos / 0.35), 0.0, 1.0);
-            double textAlpha = EaseOutCubic(spawnTextAlpha) * hoverFadeOut;
+            double hoverFadeOut = Math.Clamp(1.0 - (_hoverPos / 0.22), 0.0, 1.0);
+            double textAlpha = EaseOutCubic(spawnTextAlpha) * (hoverFadeOut * hoverFadeOut * (3.0 - 2.0 * hoverFadeOut));
 
             if (textAlpha > 0.005 && timeColors != null && timeW > 0 && timeH > 0)
             {
@@ -2360,6 +2361,7 @@ internal sealed class OverlayForm : Form
 
             // ========================================================
             // EXPANDED MODAL FULL 32-BIT ARGB COLOR COMPOSITING
+            // (Premium Hermite Fade + Geometric SDF Containment Clipping)
             // ========================================================
             uint[]? expColors;
             int expW, expH;
@@ -2371,8 +2373,9 @@ internal sealed class OverlayForm : Form
             }
 
             double spawnExpAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
-            double hoverExpAlpha = Math.Clamp((_hoverPos - 0.28) / 0.72, 0.0, 1.0);
-            double expAlpha = EaseOutCubic(spawnExpAlpha) * EaseOutCubic(hoverExpAlpha);
+            double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
+            double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
+            double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
 
             if (expAlpha > 0.005 && expColors != null && expW > 0 && expH > 0)
             {
@@ -2401,6 +2404,22 @@ internal sealed class OverlayForm : Form
                         byte bgA = (byte)(bg >> 24);
                         if (bgA == 0) continue;
 
+                        // SDF Physical Containment Check: ensure pixel lies strictly inside the pill body
+                        double ppx = dstX - geom.CenterX;
+                        double ppy = dstY - geom.CenterY;
+                        double pqx = Math.Abs(ppx) - straightW;
+                        double pqy = Math.Abs(ppy) - straightH;
+                        double pOutX = Math.Max(0.0, pqx);
+                        double pOutY = Math.Max(0.0, pqy);
+                        double pOutDist = Math.Sqrt(pOutX * pOutX + pOutY * pOutY);
+                        double pInDist = Math.Min(0.0, Math.Max(pqx, pqy));
+                        double pSdf = pOutDist + pInDist - geom.Radius;
+
+                        if (pSdf > -2.0) continue;
+                        double pEdgeMask = Math.Clamp((-pSdf - 2.0) / 4.0, 0.0, 1.0);
+                        double finalAlpha = expAlpha * pEdgeMask;
+                        if (finalAlpha < 0.005) continue;
+
                         byte srcR = (byte)(src >> 16);
                         byte srcG = (byte)(src >> 8);
                         byte srcB = (byte)src;
@@ -2409,12 +2428,12 @@ internal sealed class OverlayForm : Form
                         byte bgG = (byte)(bg >> 8);
                         byte bgB = (byte)bg;
 
-                        double alphaNorm = (srcA / 255.0) * expAlpha;
+                        double alphaNorm = (srcA / 255.0) * finalAlpha;
                         double invAlpha = 1.0 - alphaNorm;
 
-                        uint pR = (uint)Math.Clamp(Math.Round(srcR * expAlpha + bgR * invAlpha), 0, 255);
-                        uint pG = (uint)Math.Clamp(Math.Round(srcG * expAlpha + bgG * invAlpha), 0, 255);
-                        uint pB = (uint)Math.Clamp(Math.Round(srcB * expAlpha + bgB * invAlpha), 0, 255);
+                        uint pR = (uint)Math.Clamp(Math.Round(srcR * finalAlpha + bgR * invAlpha), 0, 255);
+                        uint pG = (uint)Math.Clamp(Math.Round(srcG * finalAlpha + bgG * invAlpha), 0, 255);
+                        uint pB = (uint)Math.Clamp(Math.Round(srcB * finalAlpha + bgB * invAlpha), 0, 255);
 
                         pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
                     }
