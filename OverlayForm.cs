@@ -548,6 +548,7 @@ internal sealed class OverlayForm : Form
 
     // Compact pill dynamic expansion when music plays (0.0 = paused/compact, 1.0 = playing/expanded)
     private double _playingExpandP = 0.0;
+    private double _mediaElementsAlpha = 0.0;
 
     private uint[]? _expandedColors;
     private int _expandedWidth;
@@ -719,6 +720,8 @@ internal sealed class OverlayForm : Form
             UpdateExpandedMask();
             UpdateTimeMaskIfNeeded();
         }
+
+        _renderSignal.Set();
     }
 
     private static int HitTestMediaButton(float mx, float my)
@@ -1074,10 +1077,12 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawEqualizerBars(Graphics g, float cx, float cy, float barWidth, float maxHeight, double time)
+    private static void DrawEqualizerBars(Graphics g, float cx, float cy, float barWidth, float maxHeight, double time, float alpha = 1.0f)
     {
+        if (alpha <= 0.01f) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(Color.FromArgb(245, 255, 255, 255));
+        int a = (int)Math.Clamp(245f * alpha, 0f, 255f);
+        using var brush = new SolidBrush(Color.FromArgb(a, 255, 255, 255));
 
         const int barCount = 4;
         float spacing = barWidth * 0.65f;
@@ -1705,9 +1710,12 @@ internal sealed class OverlayForm : Form
         var cover = GetCurrentCoverArt(track);
         double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
 
-        if (_isPlaying || now.ToString("h:mm:ss tt") != _lastTimeString)
+        bool isTransitioning = (_playingExpandP > 0.001 && _playingExpandP < 0.999) ||
+                               (_mediaElementsAlpha > 0.001 && _mediaElementsAlpha < 0.999);
+
+        if (_isPlaying || isTransitioning || now.ToString("h:mm:ss tt") != _lastTimeString)
         {
-            if (_isPlaying && nowSec - _lastTimeMaskUpdateTime < 0.030)
+            if ((_isPlaying || isTransitioning) && nowSec - _lastTimeMaskUpdateTime < 0.016)
             {
                 return;
             }
@@ -1721,6 +1729,7 @@ internal sealed class OverlayForm : Form
                 _isPlaying,
                 _visualizerTime,
                 _playingExpandP,
+                _mediaElementsAlpha,
                 track.CoverAccentColor);
 
             lock (_timeLock)
@@ -1739,6 +1748,7 @@ internal sealed class OverlayForm : Form
         bool isPlaying,
         double visualizerTime,
         double playingExpandP,
+        double mediaElementsAlpha,
         Color trackAccent)
     {
         const float superScale = 4.0f;
@@ -1773,13 +1783,14 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            // 1. Left Section: Rotating Circular Vinyl Album Disc (Equal 9px Padding, Full Album Art)
-            if (playingExpandP > 0.05)
+            // 1. Left Section: Rotating Circular Vinyl Album Disc (Controlled by mediaElementsAlpha)
+            if (mediaElementsAlpha > 0.01)
             {
-                float discAlpha = (float)Math.Clamp((playingExpandP - 0.05) / 0.95, 0.0, 1.0);
+                float discAlpha = (float)Math.Clamp(mediaElementsAlpha, 0.0, 1.0);
+                float discScale = 0.85f + 0.15f * discAlpha;
                 float discCx = 22.0f * superScale;
                 float discCy = 22.0f * superScale;
-                float discR = 13.0f * superScale;
+                float discR = 13.0f * superScale * discScale;
 
                 var state = g.Save();
 
@@ -1825,7 +1836,6 @@ internal sealed class OverlayForm : Form
                         g.DrawEllipse(penGroove, discCx - r, discCy - r, r * 2, r * 2);
                     }
 
-                    // 3. Rotating Specular Light Sheen sweep
                     using (var brushSheen = new SolidBrush(Color.FromArgb((int)(35 * discAlpha), 255, 255, 255)))
                     {
                         using var sheenPath = new GraphicsPath();
@@ -1854,18 +1864,12 @@ internal sealed class OverlayForm : Form
                 g.Restore(state);
             }
 
-            // 2. Middle Section: Optical Clock Typography
-            float availCenter;
-            if (playingExpandP > 0.05)
-            {
-                float leftBound = (22f + 13f + 8f) * superScale;
-                float rightBound = (targetW - 9f - 14f) * superScale;
-                availCenter = (leftBound + rightBound) * 0.5f;
-            }
-            else
-            {
-                availCenter = superW * 0.5f;
-            }
+            // 2. Middle Section: Optical Clock Typography (Smooth Glide between expanded and paused center)
+            float leftBound = (22f + 13f + 8f) * superScale;
+            float rightBound = (targetW - 9f - 14f) * superScale;
+            float centerExpanded = (leftBound + rightBound) * 0.5f;
+            float centerPaused = superW * 0.5f;
+            float availCenter = centerPaused + (centerExpanded - centerPaused) * (float)playingExpandP;
 
             float textStartX = availCenter - totalClockWidth * 0.5f;
             float cy = superH * 0.5f;
@@ -1889,12 +1893,12 @@ internal sealed class OverlayForm : Form
                 g.DrawString(timeAmPm, fontSub, brushAmPm, subStartX, subBotY, StringFormat.GenericTypographic);
             }
 
-            // 3. Right Section: Live 3-Bar Equalizer
-            if (playingExpandP > 0.10)
+            // 3. Right Section: Live 3-Bar Equalizer (Controlled by mediaElementsAlpha)
+            if (mediaElementsAlpha > 0.01)
             {
                 float eqCx = (targetW - 15f) * superScale;
                 float eqCy = 22f * superScale;
-                DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, isPlaying ? visualizerTime : 0.0);
+                DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, isPlaying ? visualizerTime : 0.0, (float)mediaElementsAlpha);
             }
         }
 
@@ -2107,8 +2111,33 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            double targetPlayingExpand = _isPlaying ? 1.0 : 0.0;
-            _playingExpandP += (targetPlayingExpand - _playingExpandP) * Math.Min(1.0, 10.0 * dt);
+            if (_isPlaying)
+            {
+                // Expand pill width smoothly
+                _playingExpandP += (1.0 - _playingExpandP) * Math.Min(1.0, 10.0 * dt);
+
+                // Once pill has expanded sufficiently (> 0.45), smoothly fade in album art disc and visualizer
+                if (_playingExpandP > 0.45)
+                {
+                    _mediaElementsAlpha += (1.0 - _mediaElementsAlpha) * Math.Min(1.0, 14.0 * dt);
+                }
+                else
+                {
+                    _mediaElementsAlpha = 0.0;
+                }
+            }
+            else
+            {
+                // When paused: Album art disc and visualizer disappear FIRST before the collapse
+                _mediaElementsAlpha = Math.Max(0.0, _mediaElementsAlpha - dt * 14.0);
+
+                // Only start collapsing the pill width after media elements have fully faded out
+                if (_mediaElementsAlpha <= 0.08)
+                {
+                    _playingExpandP += (0.0 - _playingExpandP) * Math.Min(1.0, 12.0 * dt);
+                    if (_playingExpandP < 0.001) _playingExpandP = 0.0;
+                }
+            }
 
             bool isHovered = false;
             if (_progress > 0.10 && GetCursorPos(out var cursorPos))
@@ -2705,6 +2734,19 @@ internal sealed class OverlayForm : Form
                         uint bg = pDst[dstIdx];
                         byte bgA = (byte)(bg >> 24);
                         if (bgA == 0) continue;
+
+                        // SDF Physical Containment Check: ensure clock, disc, and equalizer pixels lie strictly inside the glass pill
+                        double ppx = dstX - geom.CenterX;
+                        double ppy = dstY - geom.CenterY;
+                        double pqx = Math.Abs(ppx) - straightW;
+                        double pqy = Math.Abs(ppy) - straightH;
+                        double pOutX = Math.Max(0.0, pqx);
+                        double pOutY = Math.Max(0.0, pqy);
+                        double pOutDist = Math.Sqrt(pOutX * pOutX + pOutY * pOutY);
+                        double pInDist = Math.Min(0.0, Math.Max(pqx, pqy));
+                        double pSdf = pOutDist + pInDist - geom.Radius;
+
+                        if (pSdf > -0.5) continue;
 
                         byte srcR = (byte)(src >> 16);
                         byte srcG = (byte)(src >> 8);
