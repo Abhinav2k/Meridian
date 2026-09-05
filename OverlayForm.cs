@@ -34,8 +34,40 @@ internal sealed class OverlayForm : Form
     private const int WmNcHitTest = 0x84;
     private const int HtTransparent = -1;
 
-    private const int WsExLayered = 0x80000;
-    private const int WsExToolWindow = 0x80;
+    private const int WsExTopMost = 0x00000008;
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExLayered = 0x00080000;
+    private const int WsExNoActivate = 0x08000000;
+
+    private const int WmMouseActivate = 0x0021;
+    private const int MaNoActivate = 3;
+
+    private const uint GW_HWNDPREV = 3;
+
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_NOOWNERZORDER = 0x0200;
+    private const uint SWP_NOSENDCHANGING = 0x0400;
+
+    private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int X,
+        int Y,
+        int cx,
+        int cy,
+        uint uFlags);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern IntPtr FindWindow(string? lpClassName, string? lpWindowName);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
     private const uint UlwAlpha = 0x02;
     private const byte AcSrcOver = 0x00;
     private const byte AcSrcAlpha = 0x01;
@@ -728,6 +760,7 @@ internal sealed class OverlayForm : Form
     private double _currentCompactWidth = CompactPausedWidth;
     private double _lastRenderedTimeAlpha = -1.0;
     private double _lastRenderedCompactWidth = -1.0;
+    private double _lastZOrderCheckTime = 0.0;
 
     private uint[]? _expandedColors;
     private int _expandedWidth;
@@ -1073,6 +1106,7 @@ internal sealed class OverlayForm : Form
         _screenCapturer = new FastSurface(SurfaceWidth, SurfaceHeight);
         _renderSurface = new FastSurface(SurfaceWidth, SurfaceHeight);
         SetWindowDisplayAffinity(_hwnd, WdaExcludeFromCapture);
+        EnsureSystemZOrder();
 
         UpdateTimeMaskIfNeeded();
         UpdateExpandedMask();
@@ -2391,6 +2425,8 @@ internal sealed class OverlayForm : Form
         catch { }
     }
 
+    protected override bool ShowWithoutActivation => true;
+
     protected override CreateParams CreateParams
     {
         get
@@ -2398,12 +2434,45 @@ internal sealed class OverlayForm : Form
             var parameters = base.CreateParams;
             parameters.ExStyle |= WsExLayered;
             parameters.ExStyle |= WsExToolWindow;
+            parameters.ExStyle |= WsExTopMost;
+            parameters.ExStyle |= WsExNoActivate;
             return parameters;
         }
     }
 
+    private void EnsureSystemZOrder()
+    {
+        IntPtr hwnd = _hwnd;
+        if (hwnd == IntPtr.Zero || IsDisposed) return;
+
+        // Place immediately below the Windows Taskbar (Shell_TrayWnd).
+        // This guarantees that the auto-hide taskbar unhides smoothly in front without obstruction,
+        // while our pill stays persistently above all application and regular windows!
+        IntPtr trayHwnd = FindWindow("Shell_TrayWnd", null);
+        IntPtr targetAfter = (trayHwnd != IntPtr.Zero) ? trayHwnd : HWND_TOPMOST;
+
+        IntPtr windowAbove = GetWindow(hwnd, GW_HWNDPREV);
+        if (windowAbove == targetAfter)
+        {
+            return;
+        }
+
+        SetWindowPos(
+            hwnd,
+            targetAfter,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
+    }
+
     protected override void WndProc(ref Message m)
     {
+        if (m.Msg == WmMouseActivate)
+        {
+            // Do not activate or steal focus from active windows on click
+            m.Result = (IntPtr)MaNoActivate;
+            return;
+        }
+
         if (m.Msg == WmNcHitTest)
         {
             var pt = PointToClient(Cursor.Position);
@@ -2729,6 +2798,12 @@ internal sealed class OverlayForm : Form
             {
                 _lastExpandedMaskUpdateTime = nowSec;
                 UpdateExpandedMask();
+            }
+
+            if (nowSec - _lastZOrderCheckTime >= 0.20)
+            {
+                _lastZOrderCheckTime = nowSec;
+                EnsureSystemZOrder();
             }
 
             if (_needExpandedUpdate)
