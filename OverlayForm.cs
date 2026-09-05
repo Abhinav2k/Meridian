@@ -244,10 +244,19 @@ internal sealed class OverlayForm : Form
         public string Artist { get; private set; } = "Play music on Windows to control";
         public string Album { get; private set; } = "";
         public bool IsPlaying { get; private set; } = false;
+        public GlobalSystemMediaTransportControlsSessionPlaybackStatus PlaybackStatus { get; private set; }
+            = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
         public DateTimeOffset LastUpdatedTime { get; private set; } = DateTimeOffset.UtcNow;
         public double PositionSeconds { get; private set; } = 0.0;
         public double DurationSeconds { get; private set; } = 0.0;
         public bool IsShuffle { get; private set; } = false;
+
+        public bool HasActiveTrack =>
+            HasActiveSession &&
+            PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed &&
+            PlaybackStatus != GlobalSystemMediaTransportControlsSessionPlaybackStatus.Stopped &&
+            !string.IsNullOrWhiteSpace(Title) &&
+            Title != "No Media Playing";
 
         public readonly object CoverLock = new();
         private Bitmap? _coverBitmap;
@@ -304,12 +313,13 @@ internal sealed class OverlayForm : Form
                     session.MediaPropertiesChanged += (s, e) => RefreshMediaProperties();
                     session.PlaybackInfoChanged += (s, e) => RefreshPlaybackInfo();
                     session.TimelinePropertiesChanged += (s, e) => RefreshTimeline();
-                    RefreshMediaProperties();
                     RefreshPlaybackInfo();
+                    RefreshMediaProperties();
                     RefreshTimeline();
                 }
                 else
                 {
+                    PlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
                     IsPlaying = false;
                     Title = "No Media Playing";
                     Artist = "Play music on Windows to control";
@@ -392,6 +402,23 @@ internal sealed class OverlayForm : Form
 
                     MediaUpdated?.Invoke();
                 }
+                else if (props != null && string.IsNullOrWhiteSpace(props.Title))
+                {
+                    Title = "No Media Playing";
+                    Artist = "Play music on Windows to control";
+                    Album = "";
+                    Bitmap? old;
+                    lock (CoverLock)
+                    {
+                        old = _coverBitmap;
+                        _coverBitmap = null;
+                    }
+                    if (old != null)
+                    {
+                        _ = Task.Delay(500).ContinueWith(_ => { try { old.Dispose(); } catch { } });
+                    }
+                    MediaUpdated?.Invoke();
+                }
             }
             catch { }
         }
@@ -400,10 +427,16 @@ internal sealed class OverlayForm : Form
         {
             try
             {
-                if (_currentSession == null) return;
+                if (_currentSession == null)
+                {
+                    PlaybackStatus = GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed;
+                    IsPlaying = false;
+                    return;
+                }
                 var info = _currentSession.GetPlaybackInfo();
                 if (info != null)
                 {
+                    PlaybackStatus = info.PlaybackStatus;
                     IsPlaying = info.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
                     if (info.IsShuffleActive.HasValue)
                     {
@@ -536,6 +569,8 @@ internal sealed class OverlayForm : Form
     private int _activeTab = TabHome;
     private readonly TrackInfo _currentTrack = new();
     private bool _isPlaying = false; // Only true when real music is playing!
+    private bool _hasActiveMedia = false; // True when active media track exists (playing or paused)
+    private bool _lastRenderedIsPlaying = false;
     private double _trackProgressSeconds = 0.0;
     private bool _isShuffle = false;
     private double _vinylRotationAngle = 0.0;
@@ -613,8 +648,19 @@ internal sealed class OverlayForm : Form
                 else
                 {
                     _isPlaying = !_isPlaying;
+                    _hasActiveMedia = _isPlaying;
                     UpdateExpandedMask();
-                    UpdateTimeMaskIfNeeded();
+                    UpdateTimeMaskIfNeeded(force: true);
+                }
+            }
+            else if (e.KeyCode == Keys.X)
+            {
+                if (!_sysMedia.HasActiveSession)
+                {
+                    _isPlaying = false;
+                    _hasActiveMedia = false;
+                    UpdateExpandedMask();
+                    UpdateTimeMaskIfNeeded(force: true);
                 }
             }
             else if (e.KeyCode is Keys.Right or Keys.N)
@@ -698,6 +744,7 @@ internal sealed class OverlayForm : Form
         if (_sysMedia.HasActiveSession)
         {
             _isPlaying = _sysMedia.IsPlaying;
+            _hasActiveMedia = _sysMedia.HasActiveTrack;
             _isShuffle = _sysMedia.IsShuffle;
             _trackProgressSeconds = _sysMedia.PositionSeconds;
 
@@ -707,18 +754,19 @@ internal sealed class OverlayForm : Form
             _currentTrack.DurationSeconds = _sysMedia.DurationSeconds;
 
             UpdateExpandedMask();
-            UpdateTimeMaskIfNeeded();
+            UpdateTimeMaskIfNeeded(force: true);
         }
         else
         {
             _isPlaying = false;
+            _hasActiveMedia = false;
             _currentTrack.Title = "No Media Playing";
             _currentTrack.Artist = "Play music on Windows to control";
             _currentTrack.Album = "";
             _currentTrack.DurationSeconds = 0.0;
 
             UpdateExpandedMask();
-            UpdateTimeMaskIfNeeded();
+            UpdateTimeMaskIfNeeded(force: true);
         }
 
         _renderSignal.Set();
@@ -792,8 +840,9 @@ internal sealed class OverlayForm : Form
                         else
                         {
                             _isPlaying = !_isPlaying;
+                            _hasActiveMedia = _isPlaying;
                             UpdateExpandedMask();
-                            UpdateTimeMaskIfNeeded();
+                            UpdateTimeMaskIfNeeded(force: true);
                         }
                         return true;
 
@@ -1077,7 +1126,7 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawEqualizerBars(Graphics g, float cx, float cy, float barWidth, float maxHeight, double time, float alpha = 1.0f)
+    private static void DrawEqualizerBars(Graphics g, float cx, float cy, float barWidth, float maxHeight, double time, bool isPlaying = true, float alpha = 1.0f)
     {
         if (alpha <= 0.01f) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -1091,9 +1140,17 @@ internal sealed class OverlayForm : Form
 
         for (int i = 0; i < barCount; i++)
         {
-            double wave = (Math.Sin(time * 8.0 + i * 1.6) * 0.5 + 0.5) * 0.65 +
-                          (Math.Cos(time * 13.0 + i * 2.4) * 0.5 + 0.5) * 0.35;
-            float h = (float)Math.Clamp(maxHeight * (0.25 + 0.75 * wave), barWidth, maxHeight);
+            float h;
+            if (isPlaying)
+            {
+                double wave = (Math.Sin(time * 8.0 + i * 1.6) * 0.5 + 0.5) * 0.65 +
+                              (Math.Cos(time * 13.0 + i * 2.4) * 0.5 + 0.5) * 0.35;
+                h = (float)Math.Clamp(maxHeight * (0.25 + 0.75 * wave), barWidth, maxHeight);
+            }
+            else
+            {
+                h = barWidth * 1.25f;
+            }
 
             float bx = startX + i * (barWidth + spacing);
             float by = cy - h * 0.5f;
@@ -1703,7 +1760,7 @@ internal sealed class OverlayForm : Form
         return (colorBuffer, targetW, targetH);
     }
 
-    private void UpdateTimeMaskIfNeeded()
+    private void UpdateTimeMaskIfNeeded(bool force = false)
     {
         var now = DateTime.Now;
         var track = _currentTrack;
@@ -1713,12 +1770,15 @@ internal sealed class OverlayForm : Form
         bool isTransitioning = (_playingExpandP > 0.001 && _playingExpandP < 0.999) ||
                                (_mediaElementsAlpha > 0.001 && _mediaElementsAlpha < 0.999);
 
-        if (_isPlaying || isTransitioning || now.ToString("h:mm:ss tt") != _lastTimeString)
+        bool stateChanged = (_isPlaying != _lastRenderedIsPlaying);
+
+        if (_isPlaying || isTransitioning || stateChanged || force || now.ToString("h:mm:ss tt") != _lastTimeString)
         {
-            if ((_isPlaying || isTransitioning) && nowSec - _lastTimeMaskUpdateTime < 0.016)
+            if ((_isPlaying || isTransitioning) && !force && !stateChanged && nowSec - _lastTimeMaskUpdateTime < 0.016)
             {
                 return;
             }
+            _lastRenderedIsPlaying = _isPlaying;
             _lastTimeMaskUpdateTime = nowSec;
             _lastTimeString = now.ToString("h:mm:ss tt");
 
@@ -1898,7 +1958,7 @@ internal sealed class OverlayForm : Form
             {
                 float eqCx = (targetW - 15f) * superScale;
                 float eqCy = 22f * superScale;
-                DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, isPlaying ? visualizerTime : 0.0, (float)mediaElementsAlpha);
+                DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, visualizerTime, isPlaying, (float)mediaElementsAlpha);
             }
         }
 
@@ -2111,15 +2171,17 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            if (_isPlaying)
+            if (_hasActiveMedia)
             {
-                // Expand pill width smoothly
+                // Expand pill width smoothly (stays expanded at 206px whether playing or paused!)
                 _playingExpandP += (1.0 - _playingExpandP) * Math.Min(1.0, 10.0 * dt);
+                if (Math.Abs(1.0 - _playingExpandP) < 0.001) _playingExpandP = 1.0;
 
                 // Once pill has expanded sufficiently (> 0.45), smoothly fade in album art disc and visualizer
                 if (_playingExpandP > 0.45)
                 {
                     _mediaElementsAlpha += (1.0 - _mediaElementsAlpha) * Math.Min(1.0, 14.0 * dt);
+                    if (Math.Abs(1.0 - _mediaElementsAlpha) < 0.001) _mediaElementsAlpha = 1.0;
                 }
                 else
                 {
@@ -2128,7 +2190,7 @@ internal sealed class OverlayForm : Form
             }
             else
             {
-                // When paused: Album art disc and visualizer disappear FIRST before the collapse
+                // When stopped/closed: Album art disc and visualizer disappear FIRST before the collapse
                 _mediaElementsAlpha = Math.Max(0.0, _mediaElementsAlpha - dt * 14.0);
 
                 // Only start collapsing the pill width after media elements have fully faded out
@@ -2159,10 +2221,10 @@ internal sealed class OverlayForm : Form
                     isHovered = true;
                 }
 
-                // Intelligence: on hover expansion, auto-select Media Tab if playing, Home Tab if paused
+                // Intelligence: on hover expansion, auto-select Media Tab if active media, Home Tab if no media
                 if (!_wasHovered && isHovered)
                 {
-                    _activeTab = _isPlaying ? TabMusic : TabHome;
+                    _activeTab = _hasActiveMedia ? TabMusic : TabHome;
                     UpdateExpandedMask();
                 }
 
