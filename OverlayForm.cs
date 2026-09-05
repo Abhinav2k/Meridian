@@ -224,57 +224,13 @@ internal sealed class OverlayForm : Form
 
     private sealed class TrackInfo
     {
-        public string Title { get; set; } = "Starboy";
-        public string Artist { get; set; } = "The Weeknd • Daft Punk";
-        public string Album { get; set; } = "Starboy";
-        public double DurationSeconds { get; set; } = 230.0;
-        public Color CoverAccentColor { get; set; } = Color.FromArgb(255, 235, 45, 75);
+        public string Title { get; set; } = "No Media Playing";
+        public string Artist { get; set; } = "Play music on Windows to control";
+        public string Album { get; set; } = "";
+        public double DurationSeconds { get; set; } = 0.0;
+        public Color CoverAccentColor { get; set; } = Color.FromArgb(255, 60, 65, 80);
         public Bitmap? CustomCover { get; set; }
     }
-
-    private static readonly TrackInfo[] Playlist = new[]
-    {
-        new TrackInfo
-        {
-            Title = "Starboy",
-            Artist = "The Weeknd • Daft Punk",
-            Album = "Starboy",
-            DurationSeconds = 230.0,
-            CoverAccentColor = Color.FromArgb(255, 235, 40, 80)
-        },
-        new TrackInfo
-        {
-            Title = "Midnight City",
-            Artist = "M83 • Anthony Gonzalez",
-            Album = "Hurry Up, We're Dreaming",
-            DurationSeconds = 243.0,
-            CoverAccentColor = Color.FromArgb(255, 120, 60, 240)
-        },
-        new TrackInfo
-        {
-            Title = "Blinding Lights",
-            Artist = "The Weeknd • Max Martin",
-            Album = "After Hours",
-            DurationSeconds = 200.0,
-            CoverAccentColor = Color.FromArgb(255, 245, 140, 30)
-        },
-        new TrackInfo
-        {
-            Title = "Get Lucky",
-            Artist = "Daft Punk • Pharrell Williams",
-            Album = "Random Access Memories",
-            DurationSeconds = 248.0,
-            CoverAccentColor = Color.FromArgb(255, 240, 200, 50)
-        },
-        new TrackInfo
-        {
-            Title = "Nightcall",
-            Artist = "Kavinsky • Lovefoxxx",
-            Album = "OutRun",
-            DurationSeconds = 258.0,
-            CoverAccentColor = Color.FromArgb(255, 20, 180, 240)
-        }
-    };
 
     internal sealed class SystemMediaController
     {
@@ -284,13 +240,13 @@ internal sealed class OverlayForm : Form
         public event Action? MediaUpdated;
 
         public bool HasActiveSession => _currentSession != null;
-        public string Title { get; private set; } = "Starboy";
-        public string Artist { get; private set; } = "The Weeknd • Daft Punk";
-        public string Album { get; private set; } = "Starboy";
+        public string Title { get; private set; } = "No Media Playing";
+        public string Artist { get; private set; } = "Play music on Windows to control";
+        public string Album { get; private set; } = "";
         public bool IsPlaying { get; private set; } = false;
         public DateTimeOffset LastUpdatedTime { get; private set; } = DateTimeOffset.UtcNow;
         public double PositionSeconds { get; private set; } = 0.0;
-        public double DurationSeconds { get; private set; } = 230.0;
+        public double DurationSeconds { get; private set; } = 0.0;
         public bool IsShuffle { get; private set; } = false;
         public Bitmap? CoverBitmap { get; private set; }
 
@@ -335,6 +291,14 @@ internal sealed class OverlayForm : Form
                 else
                 {
                     IsPlaying = false;
+                    Title = "No Media Playing";
+                    Artist = "Play music on Windows to control";
+                    Album = "";
+                    PositionSeconds = 0.0;
+                    DurationSeconds = 0.0;
+                    var old = CoverBitmap;
+                    CoverBitmap = null;
+                    old?.Dispose();
                     MediaUpdated?.Invoke();
                 }
             }
@@ -514,16 +478,32 @@ internal sealed class OverlayForm : Form
     private int _timeHeight;
     private readonly object _timeLock = new();
 
-    // Tab state in expanded modal: 0 = Music, 1 = Weather, 2 = Chrono/Clock
-    private int _activeTab = 0;
+    // Tab constants: 0 = Home, 1 = Music, 2 = Weather, 3 = Chrono/Clock
+    private const int TabHome = 0;
+    private const int TabMusic = 1;
+    private const int TabWeather = 2;
+    private const int TabChrono = 3;
 
-    private int _currentTrackIndex = 0;
+    // Projected 3D Button IDs for Media Player tab
+    private const int BtnNone = 0;
+    private const int BtnShuffle = 1;
+    private const int BtnPrev = 2;
+    private const int BtnPlayPause = 3;
+    private const int BtnNext = 4;
+    private const int BtnAirPlay = 5;
+
+    private int _activeTab = TabHome;
+    private readonly TrackInfo _currentTrack = new();
     private bool _isPlaying = false; // Only true when real music is playing!
     private double _trackProgressSeconds = 0.0;
     private bool _isShuffle = false;
     private double _vinylRotationAngle = 0.0;
     private double _visualizerTime = 0.0;
     private double _lastExpandedMaskUpdateTime = 0.0;
+    private int _hoveredButton = BtnNone;
+    private int _clickedButton = BtnNone;
+    private double _clickAnimTimer = 0.0;
+    private bool _wasHovered = false;
 
     // Compact pill dynamic expansion when music plays (0.0 = paused/compact, 1.0 = playing/expanded)
     private double _playingExpandP = 0.0;
@@ -601,31 +581,12 @@ internal sealed class OverlayForm : Form
                 {
                     await _sysMedia.SkipNextAsync();
                 }
-                else
-                {
-                    if (_isShuffle)
-                    {
-                        _currentTrackIndex = Random.Shared.Next(0, Playlist.Length);
-                    }
-                    else
-                    {
-                        _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
-                    }
-                    _trackProgressSeconds = 0.0;
-                    UpdateExpandedMask();
-                }
             }
             else if (e.KeyCode is Keys.Left or Keys.P)
             {
                 if (_sysMedia.HasActiveSession)
                 {
                     await _sysMedia.SkipPreviousAsync();
-                }
-                else
-                {
-                    _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
-                    _trackProgressSeconds = 0.0;
-                    UpdateExpandedMask();
                 }
             }
             else if (e.KeyCode is Keys.S or Keys.Z or Keys.U)
@@ -642,17 +603,22 @@ internal sealed class OverlayForm : Form
             }
             else if (e.KeyCode == Keys.D1)
             {
-                _activeTab = 0;
+                _activeTab = TabHome;
                 UpdateExpandedMask();
             }
             else if (e.KeyCode == Keys.D2)
             {
-                _activeTab = 1;
+                _activeTab = TabMusic;
                 UpdateExpandedMask();
             }
             else if (e.KeyCode == Keys.D3)
             {
-                _activeTab = 2;
+                _activeTab = TabWeather;
+                UpdateExpandedMask();
+            }
+            else if (e.KeyCode == Keys.D4)
+            {
+                _activeTab = TabChrono;
                 UpdateExpandedMask();
             }
             else if (e.KeyCode is Keys.F or Keys.Down)
@@ -693,137 +659,153 @@ internal sealed class OverlayForm : Form
             _isShuffle = _sysMedia.IsShuffle;
             _trackProgressSeconds = _sysMedia.PositionSeconds;
 
-            var track = Playlist[_currentTrackIndex];
-            track.Title = _sysMedia.Title;
-            track.Artist = _sysMedia.Artist;
-            track.Album = _sysMedia.Album;
-            track.DurationSeconds = _sysMedia.DurationSeconds;
+            _currentTrack.Title = string.IsNullOrWhiteSpace(_sysMedia.Title) ? "No Media Playing" : _sysMedia.Title;
+            _currentTrack.Artist = string.IsNullOrWhiteSpace(_sysMedia.Artist) ? "Audio" : _sysMedia.Artist;
+            _currentTrack.Album = _sysMedia.Album;
+            _currentTrack.DurationSeconds = _sysMedia.DurationSeconds;
+
+            UpdateExpandedMask();
+            UpdateTimeMaskIfNeeded();
+        }
+        else
+        {
+            _isPlaying = false;
+            _currentTrack.Title = "No Media Playing";
+            _currentTrack.Artist = "Play music on Windows to control";
+            _currentTrack.Album = "";
+            _currentTrack.DurationSeconds = 0.0;
 
             UpdateExpandedMask();
             UpdateTimeMaskIfNeeded();
         }
     }
 
+    private static int HitTestMediaButton(float mx, float my)
+    {
+        float cy = 120f;
+        if (Math.Abs(my - cy) > 22f) return BtnNone;
+
+        if (Math.Abs(mx - 98f) <= 16f) return BtnShuffle;
+        if (Math.Abs(mx - 217f) <= 18f) return BtnPrev;
+        if (Math.Abs(mx - 265f) <= 22f) return BtnPlayPause;
+        if (Math.Abs(mx - 313f) <= 18f) return BtnNext;
+        if (Math.Abs(mx - 432f) <= 16f) return BtnAirPlay;
+
+        return BtnNone;
+    }
+
     private async Task<bool> HandleExpandedClickAsync(Point pt)
     {
-        // Check Top Tab Bar click: Y in [24, 54], X in [84, 162]
+        // Check Top Tab Bar click: Y in [24, 54]
+        // 4 Tabs: Home [86, 108), Music [108, 130), Weather [130, 152), Chrono [152, 176]
         if (pt.Y >= 24 && pt.Y <= 54)
         {
-            if (pt.X >= 84 && pt.X < 110)
+            if (pt.X >= 86 && pt.X < 108)
             {
-                _activeTab = 0;
+                _activeTab = TabHome;
                 UpdateExpandedMask();
                 return true;
             }
-            if (pt.X >= 110 && pt.X < 134)
+            if (pt.X >= 108 && pt.X < 130)
             {
-                _activeTab = 1;
+                _activeTab = TabMusic;
                 UpdateExpandedMask();
                 return true;
             }
-            if (pt.X >= 134 && pt.X <= 162)
+            if (pt.X >= 130 && pt.X < 152)
             {
-                _activeTab = 2;
+                _activeTab = TabWeather;
+                UpdateExpandedMask();
+                return true;
+            }
+            if (pt.X >= 152 && pt.X <= 176)
+            {
+                _activeTab = TabChrono;
                 UpdateExpandedMask();
                 return true;
             }
         }
 
-        if (_activeTab == 0)
+        if (_activeTab == TabMusic)
         {
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
 
-            // 1. Play / Pause Central Button: cx = 249, cy = 120, radius = 18
-            if (Math.Sqrt(Math.Pow(mx - 249, 2) + Math.Pow(my - 120, 2)) <= 20)
+            int btn = HitTestMediaButton(mx, my);
+            if (btn != BtnNone)
             {
-                if (_sysMedia.HasActiveSession)
+                _clickedButton = btn;
+                _clickAnimTimer = 1.0;
+                UpdateExpandedMask();
+
+                switch (btn)
                 {
-                    await _sysMedia.TogglePlayPauseAsync();
+                    case BtnPlayPause:
+                        if (_sysMedia.HasActiveSession)
+                        {
+                            await _sysMedia.TogglePlayPauseAsync();
+                        }
+                        else
+                        {
+                            _isPlaying = !_isPlaying;
+                            UpdateExpandedMask();
+                            UpdateTimeMaskIfNeeded();
+                        }
+                        return true;
+
+                    case BtnNext:
+                        if (_sysMedia.HasActiveSession)
+                        {
+                            await _sysMedia.SkipNextAsync();
+                        }
+                        return true;
+
+                    case BtnPrev:
+                        if (_sysMedia.HasActiveSession)
+                        {
+                            await _sysMedia.SkipPreviousAsync();
+                        }
+                        return true;
+
+                    case BtnShuffle:
+                        if (_sysMedia.HasActiveSession)
+                        {
+                            await _sysMedia.ChangeShuffleAsync(!_isShuffle);
+                        }
+                        else
+                        {
+                            _isShuffle = !_isShuffle;
+                            UpdateExpandedMask();
+                        }
+                        return true;
+
+                    case BtnAirPlay:
+                        return true;
                 }
-                else
-                {
-                    _isPlaying = !_isPlaying;
-                    UpdateExpandedMask();
-                    UpdateTimeMaskIfNeeded();
-                }
-                return true;
             }
 
-            // 2. Next Track: cx = 297, cy = 120, radius = 16
-            if (Math.Sqrt(Math.Pow(mx - 297, 2) + Math.Pow(my - 120, 2)) <= 18)
+            // Timeline Scrubbing: my in [76, 100], mx in [86, 444]
+            if (my >= 76 && my <= 100 && mx >= 86 && mx <= 444)
             {
-                if (_sysMedia.HasActiveSession)
+                if (_currentTrack.DurationSeconds > 0)
                 {
-                    await _sysMedia.SkipNextAsync();
-                }
-                else
-                {
-                    if (_isShuffle)
+                    double ratio = Math.Clamp((mx - 86) / (444.0 - 86.0), 0.0, 1.0);
+                    double targetSec = ratio * _currentTrack.DurationSeconds;
+
+                    if (_sysMedia.HasActiveSession)
                     {
-                        _currentTrackIndex = Random.Shared.Next(0, Playlist.Length);
+                        await _sysMedia.ChangePlaybackPositionAsync(targetSec);
                     }
                     else
                     {
-                        _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
+                        _trackProgressSeconds = targetSec;
+                        UpdateExpandedMask();
                     }
-                    _trackProgressSeconds = 0.0;
-                    UpdateExpandedMask();
-                }
-                return true;
-            }
-
-            // 3. Prev Track: cx = 201, cy = 120, radius = 16
-            if (Math.Sqrt(Math.Pow(mx - 201, 2) + Math.Pow(my - 120, 2)) <= 18)
-            {
-                if (_sysMedia.HasActiveSession)
-                {
-                    await _sysMedia.SkipPreviousAsync();
-                }
-                else
-                {
-                    _currentTrackIndex = (_currentTrackIndex - 1 + Playlist.Length) % Playlist.Length;
-                    _trackProgressSeconds = 0.0;
-                    UpdateExpandedMask();
-                }
-                return true;
-            }
-
-            // 4. Shuffle Toggle Button: cx = 94, cy = 120, radius = 15
-            if (Math.Sqrt(Math.Pow(mx - 94, 2) + Math.Pow(my - 120, 2)) <= 16)
-            {
-                if (_sysMedia.HasActiveSession)
-                {
-                    await _sysMedia.ChangeShuffleAsync(!_isShuffle);
-                }
-                else
-                {
-                    _isShuffle = !_isShuffle;
-                    UpdateExpandedMask();
-                }
-                return true;
-            }
-
-            // 5. Timeline Scrubbing: my in [76, 100], mx in [78, 446]
-            if (my >= 76 && my <= 100 && mx >= 78 && mx <= 446)
-            {
-                double ratio = Math.Clamp((mx - 86) / (444.0 - 86.0), 0.0, 1.0);
-                var track = Playlist[_currentTrackIndex];
-                double targetSec = ratio * track.DurationSeconds;
-
-                if (_sysMedia.HasActiveSession)
-                {
-                    await _sysMedia.ChangePlaybackPositionAsync(targetSec);
-                }
-                else
-                {
-                    _trackProgressSeconds = targetSec;
-                    UpdateExpandedMask();
                 }
                 return true;
             }
         }
-        else if (_activeTab == 2)
+        else if (_activeTab == TabChrono)
         {
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
@@ -855,6 +837,11 @@ internal sealed class OverlayForm : Form
         if (_sysMedia.HasActiveSession && _sysMedia.CoverBitmap != null)
         {
             return _sysMedia.CoverBitmap;
+        }
+
+        if (track.Title == "No Media Playing" || string.IsNullOrEmpty(track.Title))
+        {
+            return null;
         }
 
         if (track.CustomCover == null)
@@ -890,7 +877,9 @@ internal sealed class OverlayForm : Form
         }
 
         // Bold Stylized Initial Monogram
-        string initial = !string.IsNullOrEmpty(track.Title) ? track.Title.Substring(0, 1).ToUpperInvariant() : "♪";
+        string initial = !string.IsNullOrEmpty(track.Title) && track.Title != "No Media Playing"
+            ? track.Title.Substring(0, 1).ToUpperInvariant()
+            : "♪";
         using var font = GetPremiumFont(size * 0.35f, FontStyle.Bold);
         var strSize = g.MeasureString(initial, font, PointF.Empty, StringFormat.GenericTypographic);
         using var brushText = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
@@ -901,7 +890,7 @@ internal sealed class OverlayForm : Form
 
     private void UpdateExpandedMask()
     {
-        var track = Playlist[_currentTrackIndex];
+        var track = _currentTrack;
         var cover = GetCurrentCoverArt(track);
         var (colors, w, h) = PrecomputeExpandedContent(
             _activeTab,
@@ -911,7 +900,10 @@ internal sealed class OverlayForm : Form
             _isPlaying,
             _isShuffle,
             _vinylRotationAngle,
-            _visualizerTime);
+            _visualizerTime,
+            _hoveredButton,
+            _clickedButton,
+            _clickAnimTimer);
 
         lock (_expandedLock)
         {
@@ -1000,9 +992,15 @@ internal sealed class OverlayForm : Form
             for (int i = 1; i <= 3; i++)
             {
                 float r = maxR * (0.35f + i * 0.22f);
-                using var penRing = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f);
+                using var penRing = new Pen(Color.FromArgb(50, 255, 255, 255), 1.0f);
                 g.DrawEllipse(penRing, cx - r, cy - r, r * 2, r * 2);
             }
+
+            // Minimal elegant note icon centered in idle frosted card
+            using var fontNote = GetPremiumFont(16.0f * (size / 216f), FontStyle.Bold);
+            var noteSize = g.MeasureString("♫", fontNote, PointF.Empty, StringFormat.GenericTypographic);
+            using var brushNote = new SolidBrush(Color.FromArgb(130, 255, 255, 255));
+            g.DrawString("♫", fontNote, brushNote, cx - noteSize.Width * 0.5f, cy - noteSize.Height * 0.5f, StringFormat.GenericTypographic);
         }
 
         // Live Equalizer Waveform on Bottom-Right of Album Card
@@ -1050,24 +1048,86 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawPlayPauseButton(Graphics g, float cx, float cy, float radius, bool isPlaying)
+    private static void DrawProjectedButtonContainer(
+        Graphics g,
+        float cx,
+        float cy,
+        float radius,
+        bool isHovered,
+        bool isClicked,
+        double clickProgress,
+        float superScale,
+        Action drawGlyph)
+    {
+        var state = g.Save();
+
+        // Tactile micro-spring press on click
+        if (isClicked && clickProgress > 0.0)
+        {
+            float pulse = (float)Math.Sin(clickProgress * Math.PI);
+            float scale = 1.0f - 0.12f * pulse;
+            float shiftY = 1.5f * pulse * superScale;
+            g.TranslateTransform(cx, cy + shiftY);
+            g.ScaleTransform(scale, scale);
+            g.TranslateTransform(-cx, -cy);
+        }
+
+        // 1. Projected 3D Bottom Drop Shadow (elevates button above glass surface)
+        float shadowOffset = 2.0f * superScale;
+        using (var brushShadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
+        {
+            g.FillEllipse(brushShadow, cx - radius, cy - radius + shadowOffset, radius * 2f, radius * 2f);
+        }
+
+        // 2. Tactile Button Body (Glass Fill)
+        if (isHovered)
+        {
+            // Darkened glass interaction on mouse hover as requested
+            using var brushBody = new LinearGradientBrush(
+                new RectangleF(cx - radius, cy - radius, radius * 2f, radius * 2f),
+                Color.FromArgb(145, 12, 18, 28),
+                Color.FromArgb(180, 6, 10, 18),
+                90f);
+            g.FillEllipse(brushBody, cx - radius, cy - radius, radius * 2f, radius * 2f);
+        }
+        else
+        {
+            // Projected tactile glass (raised appearance)
+            using var brushBody = new LinearGradientBrush(
+                new RectangleF(cx - radius, cy - radius, radius * 2f, radius * 2f),
+                Color.FromArgb(55, 255, 255, 255),
+                Color.FromArgb(18, 255, 255, 255),
+                90f);
+            g.FillEllipse(brushBody, cx - radius, cy - radius, radius * 2f, radius * 2f);
+        }
+
+        // 3. Crisp Glass Outer Rim
+        Color rimColor = isHovered ? Color.FromArgb(190, 255, 255, 255) : Color.FromArgb(130, 255, 255, 255);
+        using (var penRim = new Pen(rimColor, 1.1f * superScale))
+        {
+            g.DrawEllipse(penRim, cx - radius, cy - radius, radius * 2f, radius * 2f);
+        }
+
+        // 4. Top Specular Crescent Arc (3D Beveled Ridge)
+        using (var penSpec = new Pen(Color.FromArgb(220, 255, 255, 255), 1.3f * superScale))
+        {
+            g.DrawArc(penSpec, cx - radius + 0.5f * superScale, cy - radius + 0.5f * superScale, (radius - 0.5f * superScale) * 2f, (radius - 0.5f * superScale) * 2f, 200, 140);
+        }
+
+        // 5. Button Glyph
+        drawGlyph();
+
+        g.Restore(state);
+    }
+
+    private static void DrawPlayPauseGlyph(Graphics g, float cx, float cy, float radius, bool isPlaying)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
-
-        using (var brushBtn = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
-        {
-            g.FillEllipse(brushBtn, cx - radius, cy - radius, radius * 2f, radius * 2f);
-        }
-        using (var penBtn = new Pen(Color.FromArgb(160, 255, 255, 255), 1.2f))
-        {
-            g.DrawEllipse(penBtn, cx - radius, cy - radius, radius * 2f, radius * 2f);
-        }
-
         using var brushGlyph = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
         if (isPlaying)
         {
             float barW = radius * 0.22f;
-            float barH = radius * 0.72f;
+            float barH = radius * 0.68f;
             float barGap = radius * 0.24f;
 
             float b1X = cx - (barW + barGap * 0.5f);
@@ -1079,10 +1139,10 @@ internal sealed class OverlayForm : Form
         }
         else
         {
-            float triSize = radius * 0.70f;
+            float triSize = radius * 0.68f;
             float triH = triSize * 0.90f;
             float triW = triSize * 0.85f;
-            float leftX = cx - triW * 0.40f;
+            float leftX = cx - triW * 0.38f;
             float topY = cy - triH * 0.50f;
 
             PointF[] tri = new[]
@@ -1095,7 +1155,7 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawTrackSkipButton(Graphics g, float cx, float cy, float size, bool isNext)
+    private static void DrawTrackSkipGlyph(Graphics g, float cx, float cy, float size, bool isNext)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
@@ -1122,7 +1182,7 @@ internal sealed class OverlayForm : Form
         g.FillPolygon(brush, tri2);
     }
 
-    private static void DrawShuffleIcon(Graphics g, float cx, float cy, float size, bool isActive)
+    private static void DrawShuffleGlyph(Graphics g, float cx, float cy, float size, bool isActive)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         float w = size * 0.95f;
@@ -1175,7 +1235,7 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawAirPlayIcon(Graphics g, float cx, float cy, float size)
+    private static void DrawAirPlayGlyph(Graphics g, float cx, float cy, float size)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var pen = new Pen(Color.FromArgb(200, 255, 255, 255), size * 0.12f) { StartCap = LineCap.Round, EndCap = LineCap.Round };
@@ -1210,7 +1270,10 @@ internal sealed class OverlayForm : Form
         bool isPlaying,
         bool isShuffle,
         double rotationAngle,
-        double visualizerTime)
+        double visualizerTime,
+        int hoveredButton,
+        int clickedButton,
+        double clickAnimProgress)
     {
         const float superScale = 4.0f;
         int targetW = 460;
@@ -1234,13 +1297,14 @@ internal sealed class OverlayForm : Form
             using var fontClockHeader = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
 
             // ==========================================
-            // TOP SECTION: Compact Left-Aligned Hover Icon Tabs & Right Live Clock Badge
+            // TOP SECTION: Compact Left-Aligned Icon Tabs & Right Live Clock
+            // 4 Tabs: Home (⌂), Music (♫), Weather (☀), Chrono (⏱)
             // ==========================================
             float tabStartX = 16f * superScale;
             float tabBarCy = 14f * superScale;
-            float tabItemW = 24f * superScale;
+            float tabItemW = 22f * superScale;
             float tabHeight = 20f * superScale;
-            float totalTabsW = tabItemW * 3f; // 72px
+            float totalTabsW = tabItemW * 4f; // 88px at 1x
 
             // Tab Bar Background Container Pill
             float barPad = 2.0f * superScale;
@@ -1286,10 +1350,10 @@ internal sealed class OverlayForm : Form
                 g.DrawPath(penActive, pathActive);
             }
 
-            // Compact Icon-Only Tab Labels (♫, ☀, ⏱)
-            string[] tabIcons = new[] { "♫", "☀", "⏱" };
+            // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱)
+            string[] tabIcons = new[] { "⌂", "♫", "☀", "⏱" };
             using var fontIconTab = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
-            for (int t = 0; t < 3; t++)
+            for (int t = 0; t < 4; t++)
             {
                 float tx = tabStartX + t * tabItemW;
                 var strSize = g.MeasureString(tabIcons[t], fontIconTab, PointF.Empty, StringFormat.GenericTypographic);
@@ -1312,9 +1376,14 @@ internal sealed class OverlayForm : Form
             // ==========================================
             // CONTENT AREA
             // ==========================================
-            if (activeTab == 0)
+            if (activeTab == TabHome)
             {
-                // TAB 0: MUSIC PLAYER
+                // TAB 0: HOME TAB (Blank / pristine liquid glass workspace ready for future widgets)
+                // Left intentionally empty as requested.
+            }
+            else if (activeTab == TabMusic)
+            {
+                // TAB 1: MUSIC PLAYER
                 float artX = 16f * superScale;
                 float artY = 46f * superScale;
                 float artSize = 54f * superScale;
@@ -1337,7 +1406,9 @@ internal sealed class OverlayForm : Form
 
                 float barY = 86f * superScale;
                 float barH = 2.5f * superScale;
-                double progressRatio = Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0);
+                double progressRatio = (track.DurationSeconds > 0)
+                    ? Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0)
+                    : 0.0;
 
                 using (var penRail = new Pen(Color.FromArgb(50, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
                 {
@@ -1357,14 +1428,24 @@ internal sealed class OverlayForm : Form
                     g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
                 }
 
-                int elMin = (int)(progressSeconds / 60);
-                int elSec = (int)(progressSeconds % 60);
-                string elStr = $"{elMin}:{elSec:D2}";
+                string elStr;
+                string remStr;
+                if (track.DurationSeconds > 0)
+                {
+                    int elMin = (int)(progressSeconds / 60);
+                    int elSec = (int)(progressSeconds % 60);
+                    elStr = $"{elMin}:{elSec:D2}";
 
-                double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
-                int remMin = (int)(remSeconds / 60);
-                int remSec = (int)(remSeconds % 60);
-                string remStr = $"-{remMin}:{remSec:D2}";
+                    double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
+                    int remMin = (int)(remSeconds / 60);
+                    int remSec = (int)(remSeconds % 60);
+                    remStr = $"-{remMin}:{remSec:D2}";
+                }
+                else
+                {
+                    elStr = "0:00";
+                    remStr = "--:--";
+                }
 
                 float timeLabelY = 92f * superScale;
                 using (var brushTime = new SolidBrush(Color.FromArgb(165, 255, 255, 255)))
@@ -1375,17 +1456,31 @@ internal sealed class OverlayForm : Form
                 }
 
                 float ctrlY = 120f * superScale;
-                float ctrlCenterX = textStartX + barW * 0.5f;
 
-                DrawShuffleIcon(g, textStartX + 8f * superScale, ctrlY, 13f * superScale, isShuffle);
-                DrawTrackSkipButton(g, ctrlCenterX - 48f * superScale, ctrlY, 13f * superScale, isNext: false);
-                DrawPlayPauseButton(g, ctrlCenterX, ctrlY, 15f * superScale, isPlaying);
-                DrawTrackSkipButton(g, ctrlCenterX + 48f * superScale, ctrlY, 13f * superScale, isNext: true);
-                DrawAirPlayIcon(g, rightEdge - 8f * superScale, ctrlY, 12f * superScale);
+                // Projected Tactile Glass Buttons with Dark Hover and Click Micro-Animation
+                DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 14f * superScale,
+                    hoveredButton == BtnShuffle, clickedButton == BtnShuffle, clickAnimProgress, superScale,
+                    () => DrawShuffleGlyph(g, 98f * superScale, ctrlY, 13f * superScale, isShuffle));
+
+                DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 16f * superScale,
+                    hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
+                    () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false));
+
+                DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 18f * superScale,
+                    hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
+                    () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying));
+
+                DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 16f * superScale,
+                    hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
+                    () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true));
+
+                DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 14f * superScale,
+                    hoveredButton == BtnAirPlay, clickedButton == BtnAirPlay, clickAnimProgress, superScale,
+                    () => DrawAirPlayGlyph(g, 432f * superScale, ctrlY, 12f * superScale));
             }
-            else if (activeTab == 1)
+            else if (activeTab == TabWeather)
             {
-                // TAB 1: LUXURY WEATHER
+                // TAB 2: LUXURY WEATHER
                 float wX = 24f * superScale;
                 float wY = 46f * superScale;
 
@@ -1446,7 +1541,7 @@ internal sealed class OverlayForm : Form
             }
             else
             {
-                // TAB 2: SWISS CHRONO & CLOCK
+                // TAB 3: SWISS CHRONO & CLOCK
                 var now = DateTime.Now;
                 string grandTime = now.ToString("hh:mm:ss tt");
                 string grandDate = now.ToString("dddd, MMMM dd, yyyy");
@@ -1544,18 +1639,18 @@ internal sealed class OverlayForm : Form
     private void UpdateTimeMaskIfNeeded()
     {
         var now = DateTime.Now;
-        var track = Playlist[_currentTrackIndex];
+        var track = _currentTrack;
         var cover = GetCurrentCoverArt(track);
         double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
 
-        if (_isPlaying || now.ToString("hh:mm:ss tt") != _lastTimeString)
+        if (_isPlaying || now.ToString("h:mm:ss tt") != _lastTimeString)
         {
             if (_isPlaying && nowSec - _lastTimeMaskUpdateTime < 0.030)
             {
                 return;
             }
             _lastTimeMaskUpdateTime = nowSec;
-            _lastTimeString = now.ToString("hh:mm:ss tt");
+            _lastTimeString = now.ToString("h:mm:ss tt");
 
             var (colors, w, h) = PrecomputeClockContent(
                 now,
@@ -1585,23 +1680,24 @@ internal sealed class OverlayForm : Form
         Color trackAccent)
     {
         const float superScale = 4.0f;
-        string timeMain = now.ToString("hh:mm");
+        string timeMain = now.ToString("h:mm");
         string timeSec = ":" + now.ToString("ss");
         string timeAmPm = now.ToString("tt");
 
         using var fontMain = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
-        using var fontSec = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
-        using var fontAmPm = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+        using var fontSub = GetPremiumFont(6.5f * superScale, FontStyle.Bold);
 
         using var bmpMeasure = new Bitmap(1, 1);
         using var gMeasure = Graphics.FromImage(bmpMeasure);
-        var sizeMain = gMeasure.MeasureString(timeMain, fontMain, PointF.Empty, StringFormat.GenericTypographic);
-        var sizeSec = gMeasure.MeasureString(timeSec, fontSec, PointF.Empty, StringFormat.GenericTypographic);
-        var sizeAmPm = gMeasure.MeasureString(timeAmPm, fontAmPm, PointF.Empty, StringFormat.GenericTypographic);
+        gMeasure.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-        float spacingSec = 2f * superScale;
-        float spacingAmPm = 4.5f * superScale;
-        float totalTextWidth = sizeMain.Width + spacingSec + sizeSec.Width + spacingAmPm + sizeAmPm.Width;
+        var sizeMain = gMeasure.MeasureString(timeMain, fontMain, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeSec = gMeasure.MeasureString(timeSec, fontSub, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeAmPm = gMeasure.MeasureString(timeAmPm, fontSub, PointF.Empty, StringFormat.GenericTypographic);
+
+        float subW = Math.Max(sizeSec.Width, sizeAmPm.Width);
+        float spacingSub = 2.5f * superScale;
+        float totalClockWidth = sizeMain.Width + spacingSub + subW;
 
         int targetW = (int)Math.Round(150.0 + (206.0 - 150.0) * playingExpandP);
         int targetH = CompactPillHeight; // 44px
@@ -1682,37 +1778,39 @@ internal sealed class OverlayForm : Form
                 g.Restore(state);
             }
 
-            // 2. Middle Section: Clock Typography
-            float textStartX;
+            // 2. Middle Section: Optical Clock Typography
+            float availCenter;
             if (playingExpandP > 0.05)
             {
                 float leftBound = (22f + 13f + 8f) * superScale;
                 float rightBound = (targetW - 9f - 14f) * superScale;
-                textStartX = leftBound + Math.Max(0f, (rightBound - leftBound - totalTextWidth) * 0.5f);
+                availCenter = (leftBound + rightBound) * 0.5f;
             }
             else
             {
-                textStartX = Math.Max(0f, (superW - totalTextWidth) * 0.5f);
+                availCenter = superW * 0.5f;
             }
 
-            float currX = textStartX;
-            float baseLineY = (superH - sizeMain.Height) * 0.5f;
+            float textStartX = availCenter - totalClockWidth * 0.5f;
+            float cy = superH * 0.5f;
+            float mainY = cy - sizeMain.Height * 0.5f - 1.25f * superScale;
+            float subTopY = cy - sizeSec.Height - 1.25f * superScale;
+            float subBotY = cy - 1.0f * superScale;
 
             using (var brushMain = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                g.DrawString(timeMain, fontMain, brushMain, currX, baseLineY, StringFormat.GenericTypographic);
+                g.DrawString(timeMain, fontMain, brushMain, textStartX, mainY, StringFormat.GenericTypographic);
             }
-            currX += sizeMain.Width + spacingSec;
 
-            using (var brushSec = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+            float subStartX = textStartX + sizeMain.Width + spacingSub;
+            using (var brushSec = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
             {
-                g.DrawString(timeSec, fontSec, brushSec, currX, baseLineY + 2.5f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(timeSec, fontSub, brushSec, subStartX, subTopY, StringFormat.GenericTypographic);
             }
-            currX += sizeSec.Width + spacingAmPm;
 
             using (var brushAmPm = new SolidBrush(Color.FromArgb(185, 255, 255, 255)))
             {
-                g.DrawString(timeAmPm, fontAmPm, brushAmPm, currX, baseLineY + 3.0f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(timeAmPm, fontSub, brushAmPm, subStartX, subBotY, StringFormat.GenericTypographic);
             }
 
             // 3. Right Section: Live 3-Bar Equalizer
@@ -1954,39 +2052,93 @@ internal sealed class OverlayForm : Form
                     isHovered = true;
                 }
 
+                // Intelligence: on hover expansion, auto-select Media Tab if playing, Home Tab if paused
+                if (!_wasHovered && isHovered)
+                {
+                    _activeTab = _isPlaying ? TabMusic : TabHome;
+                    UpdateExpandedMask();
+                }
+
                 if (_hoverPos > 0.6)
                 {
                     int mouseSurfaceX = cursorPos.x - rect.Left;
                     int mouseSurfaceY = cursorPos.y - rect.Top;
 
+                    // 4 Tab Switcher Hover: Home [86, 108), Music [108, 130), Weather [130, 152), Chrono [152, 176]
                     if (mouseSurfaceY >= 24 && mouseSurfaceY <= 54)
                     {
-                        if (mouseSurfaceX >= 84 && mouseSurfaceX < 110)
+                        if (mouseSurfaceX >= 86 && mouseSurfaceX < 108)
                         {
-                            if (_activeTab != 0)
+                            if (_activeTab != TabHome)
                             {
-                                _activeTab = 0;
+                                _activeTab = TabHome;
                                 UpdateExpandedMask();
                             }
                         }
-                        else if (mouseSurfaceX >= 110 && mouseSurfaceX < 134)
+                        else if (mouseSurfaceX >= 108 && mouseSurfaceX < 130)
                         {
-                            if (_activeTab != 1)
+                            if (_activeTab != TabMusic)
                             {
-                                _activeTab = 1;
+                                _activeTab = TabMusic;
                                 UpdateExpandedMask();
                             }
                         }
-                        else if (mouseSurfaceX >= 134 && mouseSurfaceX <= 162)
+                        else if (mouseSurfaceX >= 130 && mouseSurfaceX < 152)
                         {
-                            if (_activeTab != 2)
+                            if (_activeTab != TabWeather)
                             {
-                                _activeTab = 2;
+                                _activeTab = TabWeather;
+                                UpdateExpandedMask();
+                            }
+                        }
+                        else if (mouseSurfaceX >= 152 && mouseSurfaceX <= 176)
+                        {
+                            if (_activeTab != TabChrono)
+                            {
+                                _activeTab = TabChrono;
                                 UpdateExpandedMask();
                             }
                         }
                     }
+
+                    // Media Player Projected Buttons Hover Interaction (darker tint on hover)
+                    if (_activeTab == TabMusic)
+                    {
+                        float mx = mouseSurfaceX - 70f;
+                        float my = mouseSurfaceY - 26f;
+                        int hoveredBtn = HitTestMediaButton(mx, my);
+                        if (hoveredBtn != _hoveredButton)
+                        {
+                            _hoveredButton = hoveredBtn;
+                            UpdateExpandedMask();
+                        }
+                    }
+                    else if (_hoveredButton != BtnNone)
+                    {
+                        _hoveredButton = BtnNone;
+                        UpdateExpandedMask();
+                    }
                 }
+            }
+
+            if (!isHovered && _hoveredButton != BtnNone)
+            {
+                _hoveredButton = BtnNone;
+                UpdateExpandedMask();
+            }
+
+            _wasHovered = isHovered;
+
+            // Animate tactile button click bounce
+            if (_clickAnimTimer > 0.0)
+            {
+                _clickAnimTimer -= dt * 7.0;
+                if (_clickAnimTimer <= 0.0)
+                {
+                    _clickAnimTimer = 0.0;
+                    _clickedButton = BtnNone;
+                }
+                UpdateExpandedMask();
             }
 
             double target = isHovered ? 1.0 : 0.0;
@@ -2020,11 +2172,9 @@ internal sealed class OverlayForm : Form
                 else
                 {
                     _trackProgressSeconds += dt;
-                    var currTrack = Playlist[_currentTrackIndex];
-                    if (_trackProgressSeconds >= currTrack.DurationSeconds)
+                    if (_currentTrack.DurationSeconds > 0 && _trackProgressSeconds >= _currentTrack.DurationSeconds)
                     {
                         _trackProgressSeconds = 0.0;
-                        _currentTrackIndex = (_currentTrackIndex + 1) % Playlist.Length;
                     }
                 }
                 _vinylRotationAngle = (_vinylRotationAngle + 45.0 * dt) % 360.0;
