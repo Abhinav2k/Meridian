@@ -571,6 +571,7 @@ internal sealed class OverlayForm : Form
     private bool _isPlaying = false; // Only true when real music is playing!
     private bool _hasActiveMedia = false; // True when active media track exists (playing or paused)
     private bool _lastRenderedIsPlaying = false;
+    private volatile bool _needExpandedUpdate = false;
     private double _trackProgressSeconds = 0.0;
     private bool _isShuffle = false;
     private double _vinylRotationAngle = 0.0;
@@ -741,35 +742,34 @@ internal sealed class OverlayForm : Form
 
     private void OnSystemMediaUpdated()
     {
-        if (_sysMedia.HasActiveSession)
+        try
         {
-            _isPlaying = _sysMedia.IsPlaying;
-            _hasActiveMedia = _sysMedia.HasActiveTrack;
-            _isShuffle = _sysMedia.IsShuffle;
-            _trackProgressSeconds = _sysMedia.PositionSeconds;
+            if (_sysMedia.HasActiveSession)
+            {
+                _isPlaying = _sysMedia.IsPlaying;
+                _hasActiveMedia = _sysMedia.HasActiveTrack;
+                _isShuffle = _sysMedia.IsShuffle;
+                _trackProgressSeconds = _sysMedia.PositionSeconds;
 
-            _currentTrack.Title = string.IsNullOrWhiteSpace(_sysMedia.Title) ? "No Media Playing" : _sysMedia.Title;
-            _currentTrack.Artist = string.IsNullOrWhiteSpace(_sysMedia.Artist) ? "Audio" : _sysMedia.Artist;
-            _currentTrack.Album = _sysMedia.Album;
-            _currentTrack.DurationSeconds = _sysMedia.DurationSeconds;
+                _currentTrack.Title = string.IsNullOrWhiteSpace(_sysMedia.Title) ? "No Media Playing" : _sysMedia.Title;
+                _currentTrack.Artist = string.IsNullOrWhiteSpace(_sysMedia.Artist) ? "Audio" : _sysMedia.Artist;
+                _currentTrack.Album = _sysMedia.Album;
+                _currentTrack.DurationSeconds = _sysMedia.DurationSeconds;
+            }
+            else
+            {
+                _isPlaying = false;
+                _hasActiveMedia = false;
+                _currentTrack.Title = "No Media Playing";
+                _currentTrack.Artist = "Play music on Windows to control";
+                _currentTrack.Album = "";
+                _currentTrack.DurationSeconds = 0.0;
+            }
 
-            UpdateExpandedMask();
-            UpdateTimeMaskIfNeeded(force: true);
+            _needExpandedUpdate = true;
+            _renderSignal.Set();
         }
-        else
-        {
-            _isPlaying = false;
-            _hasActiveMedia = false;
-            _currentTrack.Title = "No Media Playing";
-            _currentTrack.Artist = "Play music on Windows to control";
-            _currentTrack.Album = "";
-            _currentTrack.DurationSeconds = 0.0;
-
-            UpdateExpandedMask();
-            UpdateTimeMaskIfNeeded(force: true);
-        }
-
-        _renderSignal.Set();
+        catch { }
     }
 
     private static int HitTestMediaButton(float mx, float my)
@@ -2354,6 +2354,12 @@ internal sealed class OverlayForm : Form
             if (_hoverPos > 0.6 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.050))
             {
                 _lastExpandedMaskUpdateTime = nowSec;
+                UpdateExpandedMask();
+            }
+
+            if (_needExpandedUpdate)
+            {
+                _needExpandedUpdate = false;
                 UpdateExpandedMask();
             }
 
