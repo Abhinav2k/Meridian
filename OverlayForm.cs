@@ -2009,9 +2009,9 @@ internal sealed class OverlayForm : Form
             {
                 float discAlpha = (float)Math.Clamp(mediaElementsAlpha, 0.0, 1.0);
                 float discScale = 0.85f + 0.15f * discAlpha;
-                float discCx = 22.0f * superScale;
-                float discCy = 22.0f * superScale;
-                float discR = 13.0f * superScale * discScale;
+                float discCx = 23.0f * superScale;
+                float discCy = 23.0f * superScale;
+                float discR = 15.0f * superScale * discScale;
 
                 var state = g.Save();
 
@@ -2086,7 +2086,7 @@ internal sealed class OverlayForm : Form
             }
 
             // 2. Middle Section: Optical Clock Typography (Smooth Glide between expanded and paused center)
-            float leftBound = (22f + 13f + 8f) * superScale;
+            float leftBound = (23f + 15f + 8f) * superScale;
             float rightBound = (targetW - 9f - 14f) * superScale;
             float centerExpanded = (leftBound + rightBound) * 0.5f;
             float centerPaused = superW * 0.5f;
