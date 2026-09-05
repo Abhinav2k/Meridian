@@ -2288,9 +2288,30 @@ internal sealed class OverlayForm : Form
                     double alphaVal = edgeFactor * edgeFactor * (3.0 - 2.0 * edgeFactor);
                     byte a = (byte)Math.Round(alphaVal * 255.0);
 
+                    // Soft ambient drop shadow computation (evaluated in the outer penumbra band)
+                    byte shadowA = 0;
+                    if (sdf >= -1.5 && sdf <= 22.0)
+                    {
+                        double spy = py - 4.0;
+                        double absSpy = Math.Abs(spy);
+                        double sqy = absSpy - straightH;
+                        double sOutX = Math.Max(0.0, qx);
+                        double sOutY = Math.Max(0.0, sqy);
+                        double sOutDist = Math.Sqrt(sOutX * sOutX + sOutY * sOutY);
+                        double sInDist = Math.Min(0.0, Math.Max(qx, sqy));
+                        double shadowSdf = sOutDist + sInDist - geom.Radius;
+
+                        if (shadowSdf < 16.0)
+                        {
+                            double sNorm = Math.Clamp(shadowSdf / 14.0, 0.0, 1.0);
+                            double sFalloff = (1.0 - sNorm) * (1.0 - sNorm);
+                            shadowA = (byte)(sFalloff * 80.0);
+                        }
+                    }
+
                     if (a == 0)
                     {
-                        pDst[idx] = 0;
+                        pDst[idx] = (shadowA > 0) ? ((uint)shadowA << 24) : 0;
                         continue;
                     }
 
@@ -2356,15 +2377,20 @@ internal sealed class OverlayForm : Form
                     g = Math.Clamp(g, 0, 255);
                     r = Math.Clamp(r, 0, 255);
 
-                    r = (r * 242 + 205 * 14) >> 8;
-                    g = (g * 242 + 228 * 14) >> 8;
-                    b = (b * 242 + 255 * 14) >> 8;
+                    // Dark smoked liquid glass: noticeably decreased brightness while preserving colorful translucent blur
+                    r = (r * 110 + 14 * 146) >> 8;
+                    g = (g * 110 + 16 * 146) >> 8;
+                    b = (b * 110 + 24 * 146) >> 8;
 
-                    // Pure optical edge: defined naturally by heavy edge diffusion and refraction (no artificial white paint)
+                    // Composite glass over ambient drop shadow
+                    byte finalA = (shadowA > 0 && a < 255)
+                        ? (byte)Math.Min(255, a + ((shadowA * (255 - a)) >> 8))
+                        : a;
+
                     uint pR = (uint)((r * a) / 255);
                     uint pG = (uint)((g * a) / 255);
                     uint pB = (uint)((b * a) / 255);
-                    pDst[idx] = ((uint)a << 24) | (pR << 16) | (pG << 8) | pB;
+                    pDst[idx] = ((uint)finalA << 24) | (pR << 16) | (pG << 8) | pB;
                 }
             }
 
