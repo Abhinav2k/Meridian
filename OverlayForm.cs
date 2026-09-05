@@ -2286,19 +2286,19 @@ internal sealed class OverlayForm : Form
                     g = (g * 242 + 228 * 14) >> 8;
                     b = (b * 242 + 255 * 14) >> 8;
 
-                    // Ultra-fast Rational Gaussian Rim Lighting
-                    double t1 = (sdf + 1.0) * 0.80; // (sdf + 1.0) / 1.25
+                    // Refined, subtle glass rim highlight (soft, sleek edge glow instead of harsh white border)
+                    double t1 = (sdf + 0.75) * 1.10;
                     double t1Sq = t1 * t1;
-                    int outerRimLight = (t1Sq < 9.0) ? (int)((225.0 * alphaVal) / (1.0 + t1Sq * (1.0 + 0.45 * t1Sq))) : 0;
+                    int outerRimLight = (t1Sq < 9.0) ? (int)((70.0 * alphaVal) / (1.0 + t1Sq * (1.0 + 0.45 * t1Sq))) : 0;
 
-                    double t2 = (sdf + 3.2) * 0.625; // (sdf + 3.2) / 1.6
+                    double t2 = (sdf + 2.2) * 0.90;
                     double t2Sq = t2 * t2;
-                    int innerRimLight = (t2Sq < 9.0) ? (int)((50.0 * alphaVal) / (1.0 + t2Sq * (1.0 + 0.45 * t2Sq))) : 0;
+                    int innerRimLight = (t2Sq < 9.0) ? (int)((14.0 * alphaVal) / (1.0 + t2Sq * (1.0 + 0.45 * t2Sq))) : 0;
 
-                    double t3 = (sdf + 8.0) * (1.0 / 9.0);
+                    double t3 = (sdf + 6.0) * (1.0 / 7.0);
                     double t3Sq = t3 * t3;
                     double topNorm = Math.Clamp(-py / Math.Max(geom.HalfHeight, 1.0), 0.0, 1.0);
-                    int topDomeLight = (t3Sq < 9.0) ? (int)((35.0 * alphaVal * topNorm) / (1.0 + t3Sq * (1.0 + 0.45 * t3Sq))) : 0;
+                    int topDomeLight = (t3Sq < 9.0) ? (int)((18.0 * alphaVal * topNorm) / (1.0 + t3Sq * (1.0 + 0.45 * t3Sq))) : 0;
 
                     int totalLight = outerRimLight + innerRimLight + topDomeLight;
                     if (totalLight > 0)
