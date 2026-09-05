@@ -248,7 +248,27 @@ internal sealed class OverlayForm : Form
         public double PositionSeconds { get; private set; } = 0.0;
         public double DurationSeconds { get; private set; } = 0.0;
         public bool IsShuffle { get; private set; } = false;
-        public Bitmap? CoverBitmap { get; private set; }
+
+        public readonly object CoverLock = new();
+        private Bitmap? _coverBitmap;
+
+        public Bitmap? CoverBitmap
+        {
+            get
+            {
+                lock (CoverLock)
+                {
+                    return _coverBitmap;
+                }
+            }
+            private set
+            {
+                lock (CoverLock)
+                {
+                    _coverBitmap = value;
+                }
+            }
+        }
 
         public double GetCurrentPositionSeconds()
         {
@@ -296,9 +316,16 @@ internal sealed class OverlayForm : Form
                     Album = "";
                     PositionSeconds = 0.0;
                     DurationSeconds = 0.0;
-                    var old = CoverBitmap;
-                    CoverBitmap = null;
-                    old?.Dispose();
+                    Bitmap? old;
+                    lock (CoverLock)
+                    {
+                        old = _coverBitmap;
+                        _coverBitmap = null;
+                    }
+                    if (old != null)
+                    {
+                        _ = Task.Delay(500).ContinueWith(_ => { try { old.Dispose(); } catch { } });
+                    }
                     MediaUpdated?.Invoke();
                 }
             }
@@ -335,18 +362,32 @@ internal sealed class OverlayForm : Form
                                 {
                                     g.DrawImage(rawBmp, 0, 0, rawBmp.Width, rawBmp.Height);
                                 }
-                                var old = CoverBitmap;
-                                CoverBitmap = bmp;
-                                old?.Dispose();
+                                Bitmap? old;
+                                lock (CoverLock)
+                                {
+                                    old = _coverBitmap;
+                                    _coverBitmap = bmp;
+                                }
+                                if (old != null)
+                                {
+                                    _ = Task.Delay(500).ContinueWith(_ => { try { old.Dispose(); } catch { } });
+                                }
                             }
                         }
                         catch { }
                     }
                     else
                     {
-                        var old = CoverBitmap;
-                        CoverBitmap = null;
-                        old?.Dispose();
+                        Bitmap? old;
+                        lock (CoverLock)
+                        {
+                            old = _coverBitmap;
+                            _coverBitmap = null;
+                        }
+                        if (old != null)
+                        {
+                            _ = Task.Delay(500).ContinueWith(_ => { try { old.Dispose(); } catch { } });
+                        }
                     }
 
                     MediaUpdated?.Invoke();
@@ -966,20 +1007,33 @@ internal sealed class OverlayForm : Form
         var state = g.Save();
         g.SetClip(path);
 
+        bool coverDrawn = false;
         if (coverBmp != null)
         {
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(coverBmp, x, y, size, size);
+            try
+            {
+                lock (coverBmp)
+                {
+                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    g.DrawImage(coverBmp, x, y, size, size);
 
-            // Silky top glass highlight overlay
-            using var brushHighlight = new LinearGradientBrush(
-                new RectangleF(x, y, size, size * 0.5f),
-                Color.FromArgb(60, 255, 255, 255),
-                Color.FromArgb(0, 255, 255, 255),
-                90f);
-            g.FillRectangle(brushHighlight, x, y, size, size * 0.5f);
+                    // Silky top glass highlight overlay
+                    using var brushHighlight = new LinearGradientBrush(
+                        new RectangleF(x, y, size, size * 0.5f),
+                        Color.FromArgb(60, 255, 255, 255),
+                        Color.FromArgb(0, 255, 255, 255),
+                        90f);
+                    g.FillRectangle(brushHighlight, x, y, size, size * 0.5f);
+                    coverDrawn = true;
+                }
+            }
+            catch
+            {
+                coverDrawn = false;
+            }
         }
-        else
+
+        if (!coverDrawn)
         {
             // Subtle Translucent Frosted Glass Album Card Fill
             using var brushBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
@@ -1735,15 +1789,29 @@ internal sealed class OverlayForm : Form
                     g.SetClip(fullDiscPath);
 
                     // 1. FULL ROTATING ALBUM ART FILLING THE ENTIRE DISC
+                    bool coverDrawn = false;
                     if (coverBmp != null)
                     {
-                        g.TranslateTransform(discCx, discCy);
-                        g.RotateTransform((float)vinylAngle);
-                        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                        g.DrawImage(coverBmp, -discR, -discR, discR * 2, discR * 2);
-                        g.ResetTransform();
+                        try
+                        {
+                            lock (coverBmp)
+                            {
+                                g.TranslateTransform(discCx, discCy);
+                                g.RotateTransform((float)vinylAngle);
+                                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                g.DrawImage(coverBmp, -discR, -discR, discR * 2, discR * 2);
+                                g.ResetTransform();
+                                coverDrawn = true;
+                            }
+                        }
+                        catch
+                        {
+                            g.ResetTransform();
+                            coverDrawn = false;
+                        }
                     }
-                    else
+
+                    if (!coverDrawn)
                     {
                         using var brushCenter = new SolidBrush(Color.FromArgb((int)(220 * discAlpha), trackAccent));
                         g.FillPath(brushCenter, fullDiscPath);
@@ -2012,9 +2080,11 @@ internal sealed class OverlayForm : Form
             _renderSignal.WaitOne(6);
             if (!_running) break;
 
-            IntPtr hwnd = _hwnd;
-            if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
-                continue;
+            try
+            {
+                IntPtr hwnd = _hwnd;
+                if (hwnd == IntPtr.Zero || !GetWindowRect(hwnd, out var rect))
+                    continue;
 
             double dt = _frameStopwatch.Elapsed.TotalSeconds;
             _frameStopwatch.Restart();
@@ -2203,7 +2273,12 @@ internal sealed class OverlayForm : Form
 
             ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
         }
+        catch (Exception)
+        {
+            // Prevent unexpected transient GDI+ or OS rendering exceptions from killing the render thread
+        }
     }
+}
 
     private static PillGeometry ComputeGeometry(double spawnP, double hoverP, double playingExpandP)
     {
