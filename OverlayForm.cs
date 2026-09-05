@@ -2261,6 +2261,98 @@ internal sealed class OverlayForm : Form
         catch { }
     }
 
+    public void SaveDesktopScreenshotWithPill(string filename = "screenshot.png")
+    {
+        try
+        {
+            var surface = _renderSurface;
+            if (surface == null || surface.BitsPtr == IntPtr.Zero) return;
+
+            Rectangle bounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+            using var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+            }
+
+            int posX = Location.X;
+            int posY = Location.Y;
+
+            var data = bmp.LockBits(new Rectangle(0, 0, bounds.Width, bounds.Height), ImageLockMode.ReadWrite, PixelFormat.Format32bppArgb);
+            unsafe
+            {
+                uint* pSrc = (uint*)surface.BitsPtr;
+                uint* pDstBmp = (uint*)data.Scan0;
+                int stride = data.Stride / 4;
+
+                for (int y = 0; y < SurfaceHeight; y++)
+                {
+                    int dstY = posY + y;
+                    if (dstY < 0 || dstY >= bounds.Height) continue;
+
+                    int srcRow = y * SurfaceWidth;
+                    int dstRow = dstY * stride;
+
+                    for (int x = 0; x < SurfaceWidth; x++)
+                    {
+                        int dstX = posX + x;
+                        if (dstX < 0 || dstX >= bounds.Width) continue;
+
+                        uint src = pSrc[srcRow + x];
+                        byte sa = (byte)(src >> 24);
+                        if (sa == 0) continue;
+
+                        byte sr = (byte)(src >> 16);
+                        byte sg = (byte)(src >> 8);
+                        byte sb = (byte)src;
+
+                        uint dst = pDstBmp[dstRow + dstX];
+                        byte dr = (byte)(dst >> 16);
+                        byte dg = (byte)(dst >> 8);
+                        byte db = (byte)dst;
+
+                        double aNorm = sa / 255.0;
+                        double invA = 1.0 - aNorm;
+
+                        byte finalR = (byte)Math.Clamp(sr + dr * invA, 0, 255);
+                        byte finalG = (byte)Math.Clamp(sg + dg * invA, 0, 255);
+                        byte finalB = (byte)Math.Clamp(sb + db * invA, 0, 255);
+
+                        pDstBmp[dstRow + dstX] = (0xFFu << 24) | ((uint)finalR << 16) | ((uint)finalG << 8) | finalB;
+                    }
+                }
+            }
+            bmp.UnlockBits(data);
+
+            string dir = AppDomain.CurrentDomain.BaseDirectory;
+            string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
+            string parentDir = Path.GetFullPath(Path.Combine(rootDir, @".."));
+
+            bmp.Save(Path.Combine(rootDir, filename), ImageFormat.Png);
+            bmp.Save(Path.Combine(parentDir, filename), ImageFormat.Png);
+        }
+        catch { }
+    }
+
+    private int _screenshotFrameCounter = 0;
+    private void CheckScreenshotTrigger()
+    {
+        if ((++_screenshotFrameCounter % 10) != 0) return;
+
+        try
+        {
+            string dir = AppDomain.CurrentDomain.BaseDirectory;
+            string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
+            string triggerPath = Path.Combine(rootDir, "take_screenshot.trigger");
+            if (File.Exists(triggerPath))
+            {
+                SaveDesktopScreenshotWithPill("screenshot.png");
+                File.Delete(triggerPath);
+            }
+        }
+        catch { }
+    }
+
     protected override CreateParams CreateParams
     {
         get
@@ -3106,6 +3198,8 @@ internal sealed class OverlayForm : Form
                 }
             }
             catch { }
+
+            CheckScreenshotTrigger();
         }
     }
 
