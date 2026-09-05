@@ -504,6 +504,7 @@ internal sealed class OverlayForm : Form
     private readonly byte[] _halfRawBuffer = new byte[HalfWidth * HalfHeight * 4];
     private readonly byte[] _blurHBuffer = new byte[HalfWidth * HalfHeight * 4];
     private readonly byte[] _blurredBuffer = new byte[HalfWidth * HalfHeight * 4];
+    private readonly byte[] _heavyBlurBuffer = new byte[HalfWidth * HalfHeight * 4];
 
     private readonly SystemMediaController _sysMedia = new();
     private string _lastTimeString = "";
@@ -2112,6 +2113,7 @@ internal sealed class OverlayForm : Form
         fixed (byte* pHalfRaw = _halfRawBuffer)
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
+        fixed (byte* pHeavyBlurred = _heavyBlurBuffer)
         {
             // 1. Box downsample (600x250 -> 300x125)
             for (int y = 0; y < HalfHeight; y++)
@@ -2138,7 +2140,7 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2. Single-pass 5-tap Gaussian Blur on 300x125
+            // 2a. Single-pass 5-tap Gaussian Blur on 300x125 (standard interior blur)
             for (int y = 0; y < HalfHeight; y++)
             {
                 int rowOffset = y * HalfWidth * 4;
@@ -2195,6 +2197,66 @@ internal sealed class OverlayForm : Form
                         pBlurred[off0 + c] = (byte)(sum >> 4);
                     }
                     pBlurred[off0 + 3] = 255;
+                }
+            }
+
+            // 2b. Second-pass cascade Gaussian Blur on 300x125 (deep, creamy edge frosting)
+            for (int y = 0; y < HalfHeight; y++)
+            {
+                int rowOffset = y * HalfWidth * 4;
+                for (int x = 0; x < HalfWidth; x++)
+                {
+                    int xm2 = Math.Max(0, x - 2);
+                    int xm1 = Math.Max(0, x - 1);
+                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
+                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
+
+                    int offM2 = rowOffset + xm2 * 4;
+                    int offM1 = rowOffset + xm1 * 4;
+                    int off0 = rowOffset + x * 4;
+                    int offP1 = rowOffset + xp1 * 4;
+                    int offP2 = rowOffset + xp2 * 4;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurred[offM2 + c] +
+                                  (pBlurred[offM1 + c] << 2) +
+                                  pBlurred[off0 + c] * 6 +
+                                  (pBlurred[offP1 + c] << 2) +
+                                  pBlurred[offP2 + c];
+                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurH[off0 + 3] = 255;
+                }
+            }
+
+            for (int y = 0; y < HalfHeight; y++)
+            {
+                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
+                int y0 = y * HalfWidth * 4;
+                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
+                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
+
+                for (int x = 0; x < HalfWidth; x++)
+                {
+                    int colOffset = x * 4;
+                    int offM2 = ym2 + colOffset;
+                    int offM1 = ym1 + colOffset;
+                    int off0 = y0 + colOffset;
+                    int offP1 = yp1 + colOffset;
+                    int offP2 = yp2 + colOffset;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurH[offM2 + c] +
+                                  (pBlurH[offM1 + c] << 2) +
+                                  pBlurH[off0 + c] * 6 +
+                                  (pBlurH[offP1 + c] << 2) +
+                                  pBlurH[offP2 + c];
+                        pHeavyBlurred[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pHeavyBlurred[off0 + 3] = 255;
                 }
             }
 
@@ -2274,9 +2336,21 @@ internal sealed class OverlayForm : Form
                     int off01 = ((iy + 1) * HalfWidth + ix) * 4;
                     int off11 = ((iy + 1) * HalfWidth + ix + 1) * 4;
 
-                    int b = (pBlurred[off00 + 0] * w00 + pBlurred[off10 + 0] * w10 + pBlurred[off01 + 0] * w01 + pBlurred[off11 + 0] * w11) >> 8;
-                    int g = (pBlurred[off00 + 1] * w00 + pBlurred[off10 + 1] * w10 + pBlurred[off01 + 1] * w01 + pBlurred[off11 + 1] * w11) >> 8;
-                    int r = (pBlurred[off00 + 2] * w00 + pBlurred[off10 + 2] * w10 + pBlurred[off01 + 2] * w01 + pBlurred[off11 + 2] * w11) >> 8;
+                    int bStd = (pBlurred[off00 + 0] * w00 + pBlurred[off10 + 0] * w10 + pBlurred[off01 + 0] * w01 + pBlurred[off11 + 0] * w11) >> 8;
+                    int gStd = (pBlurred[off00 + 1] * w00 + pBlurred[off10 + 1] * w10 + pBlurred[off01 + 1] * w01 + pBlurred[off11 + 1] * w11) >> 8;
+                    int rStd = (pBlurred[off00 + 2] * w00 + pBlurred[off10 + 2] * w10 + pBlurred[off01 + 2] * w01 + pBlurred[off11 + 2] * w11) >> 8;
+
+                    int bHvy = (pHeavyBlurred[off00 + 0] * w00 + pHeavyBlurred[off10 + 0] * w10 + pHeavyBlurred[off01 + 0] * w01 + pHeavyBlurred[off11 + 0] * w11) >> 8;
+                    int gHvy = (pHeavyBlurred[off00 + 1] * w00 + pHeavyBlurred[off10 + 1] * w10 + pHeavyBlurred[off01 + 1] * w01 + pHeavyBlurred[off11 + 1] * w11) >> 8;
+                    int rHvy = (pHeavyBlurred[off00 + 2] * w00 + pHeavyBlurred[off10 + 2] * w10 + pHeavyBlurred[off01 + 2] * w01 + pHeavyBlurred[off11 + 2] * w11) >> 8;
+
+                    // Edge Frosting Outline: smooth optical transition from clear/standard blur to dense milky blur at outer rim (within 8px)
+                    double frostFactor = Math.Clamp(1.0 - (edgeDistance * (1.0 / 8.0)), 0.0, 1.0);
+                    double frostSmooth = frostFactor * frostFactor * (3.0 - 2.0 * frostFactor);
+
+                    int b = (int)(bStd + (bHvy - bStd) * frostSmooth);
+                    int g = (int)(gStd + (gHvy - gStd) * frostSmooth);
+                    int r = (int)(rStd + (rHvy - rStd) * frostSmooth);
 
                     b = Math.Clamp(b, 0, 255);
                     g = Math.Clamp(g, 0, 255);
@@ -2286,8 +2360,7 @@ internal sealed class OverlayForm : Form
                     g = (g * 242 + 228 * 14) >> 8;
                     b = (b * 242 + 255 * 14) >> 8;
 
-                    // Pure, seamless dark liquid glass: outline completely removed
-                    // Natural edge definition is provided purely by the physical alpha anti-aliasing and lens refraction
+                    // Pure optical edge: defined naturally by heavy edge diffusion and refraction (no artificial white paint)
                     uint pR = (uint)((r * a) / 255);
                     uint pG = (uint)((g * a) / 255);
                     uint pB = (uint)((b * a) / 255);
