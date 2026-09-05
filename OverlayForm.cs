@@ -21,9 +21,10 @@ internal sealed class OverlayForm : Form
     private const int DefaultPillWidth = 500;
     private const int DefaultPillHeight = 180;
 
-    // Compact resting size bounds (150px paused -> 206px playing)
+    // Compact resting size bounds (150px paused/clock -> 206px playing with clock -> 96px playing without clock)
     private const int CompactPausedWidth = 150;
     private const int CompactPlayingWidth = 206;
+    private const int CompactMusicOnlyWidth = 96;
     private const int CompactPillHeight = 44;
 
     private const int TopPadding = 18;
@@ -718,6 +719,16 @@ internal sealed class OverlayForm : Form
     private double _playingExpandP = 0.0;
     private double _mediaElementsAlpha = 0.0;
 
+    // Dynamic visibility & sizing intelligence
+    private DateTime _musicTimeDisplayUntil = DateTime.MinValue;
+    private DateTime _unhoverShowTimeUntil = DateTime.MinValue;
+    private bool _lastWasPlaying = false;
+    private string _lastPlayingTrackTitle = string.Empty;
+    private double _compactTimeAlpha = 1.0;
+    private double _currentCompactWidth = CompactPausedWidth;
+    private double _lastRenderedTimeAlpha = -1.0;
+    private double _lastRenderedCompactWidth = -1.0;
+
     private uint[]? _expandedColors;
     private int _expandedWidth;
     private int _expandedHeight;
@@ -752,6 +763,8 @@ internal sealed class OverlayForm : Form
 
         Shown += async (_, _) =>
         {
+            // Initial spawn shows time briefly on launch
+            _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
             _frameStopwatch.Start();
             _renderThread = new Thread(RenderLoop)
             {
@@ -878,6 +891,9 @@ internal sealed class OverlayForm : Form
         {
             if (_sysMedia.HasActiveSession)
             {
+                bool prevPlaying = _isPlaying;
+                string prevTitle = _currentTrack.Title;
+
                 _isPlaying = _sysMedia.IsPlaying;
                 _hasActiveMedia = _sysMedia.HasActiveTrack;
                 _isShuffle = _sysMedia.IsShuffle;
@@ -887,6 +903,11 @@ internal sealed class OverlayForm : Form
                 _currentTrack.Artist = string.IsNullOrWhiteSpace(_sysMedia.Artist) ? "Audio" : _sysMedia.Artist;
                 _currentTrack.Album = _sysMedia.Album;
                 _currentTrack.DurationSeconds = _sysMedia.DurationSeconds;
+
+                if ((!prevPlaying && _isPlaying) || (_isPlaying && !string.IsNullOrEmpty(_currentTrack.Title) && _currentTrack.Title != prevTitle && _currentTrack.Title != "No Media Playing"))
+                {
+                    _musicTimeDisplayUntil = DateTime.UtcNow.AddMinutes(2);
+                }
             }
             else
             {
@@ -1927,7 +1948,9 @@ internal sealed class OverlayForm : Form
         double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
 
         bool isTransitioning = (_playingExpandP > 0.001 && _playingExpandP < 0.999) ||
-                               (_mediaElementsAlpha > 0.001 && _mediaElementsAlpha < 0.999);
+                               (_mediaElementsAlpha > 0.001 && _mediaElementsAlpha < 0.999) ||
+                               (Math.Abs(_currentCompactWidth - _lastRenderedCompactWidth) > 0.25) ||
+                               (Math.Abs(_compactTimeAlpha - _lastRenderedTimeAlpha) > 0.005);
 
         bool stateChanged = (_isPlaying != _lastRenderedIsPlaying);
 
@@ -1942,6 +1965,8 @@ internal sealed class OverlayForm : Form
             _lastRenderedIsPlaying = _isPlaying;
             _lastTimeMaskUpdateTime = nowSec;
             _lastTimeString = now.ToString("h:mm:ss tt");
+            _lastRenderedCompactWidth = _currentCompactWidth;
+            _lastRenderedTimeAlpha = _compactTimeAlpha;
 
             var (colors, w, h) = PrecomputeClockContent(
                 now,
@@ -1949,8 +1974,9 @@ internal sealed class OverlayForm : Form
                 _vinylRotationAngle,
                 _isPlaying,
                 _eqBarHeights,
-                _playingExpandP,
+                _currentCompactWidth,
                 _mediaElementsAlpha,
+                _compactTimeAlpha,
                 track.CoverAccentColor);
 
             lock (_timeLock)
@@ -1968,8 +1994,9 @@ internal sealed class OverlayForm : Form
         double vinylAngle,
         bool isPlaying,
         float[]? eqBarHeights,
-        double playingExpandP,
+        double currentCompactWidth,
         double mediaElementsAlpha,
+        double timeAlpha,
         Color trackAccent)
     {
         const float superScale = 4.0f;
@@ -1992,7 +2019,7 @@ internal sealed class OverlayForm : Form
         float spacingSub = 2.5f * superScale;
         float totalClockWidth = sizeMain.Width + spacingSub + subW;
 
-        int targetW = (int)Math.Round(150.0 + (206.0 - 150.0) * playingExpandP);
+        int targetW = Math.Max(40, (int)Math.Round(currentCompactWidth));
         int targetH = CompactPillHeight; // 44px
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
@@ -2009,8 +2036,8 @@ internal sealed class OverlayForm : Form
             {
                 float discAlpha = (float)Math.Clamp(mediaElementsAlpha, 0.0, 1.0);
                 float discScale = 0.85f + 0.15f * discAlpha;
-                float discCx = 23.0f * superScale;
-                float discCy = 23.0f * superScale;
+                float discCx = 22.0f * superScale;
+                float discCy = 22.0f * superScale;
                 float discR = 15.0f * superScale * discScale;
 
                 var state = g.Save();
@@ -2085,39 +2112,50 @@ internal sealed class OverlayForm : Form
                 g.Restore(state);
             }
 
-            // 2. Middle Section: Optical Clock Typography (Smooth Glide between expanded and paused center)
-            float leftBound = (23f + 15f + 8f) * superScale;
-            float rightBound = (targetW - 9f - 14f) * superScale;
-            float centerExpanded = (leftBound + rightBound) * 0.5f;
-            float centerPaused = superW * 0.5f;
-            float availCenter = centerPaused + (centerExpanded - centerPaused) * (float)playingExpandP;
-
-            float textStartX = availCenter - totalClockWidth * 0.5f;
-            float cy = superH * 0.5f;
-            float mainY = cy - sizeMain.Height * 0.5f - 1.25f * superScale;
-            float subTopY = cy - sizeSec.Height - 1.25f * superScale;
-            float subBotY = cy - 1.0f * superScale;
-
-            using (var brushMain = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+            // 2. Middle Section: Optical Clock Typography (Only when timeAlpha > 0.01)
+            if (timeAlpha > 0.01)
             {
-                g.DrawString(timeMain, fontMain, brushMain, textStartX, mainY, StringFormat.GenericTypographic);
-            }
+                float clockAlpha = (float)Math.Clamp(timeAlpha, 0.0, 1.0);
 
-            float subStartX = textStartX + sizeMain.Width + spacingSub;
-            using (var brushSec = new SolidBrush(Color.FromArgb(215, 255, 255, 255)))
-            {
-                g.DrawString(timeSec, fontSub, brushSec, subStartX, subTopY, StringFormat.GenericTypographic);
-            }
+                float availCenter;
+                if (mediaElementsAlpha > 0.01)
+                {
+                    float leftBound = (22f + 15f + 8f) * superScale;
+                    float rightBound = (targetW - 16f - 8f) * superScale;
+                    availCenter = (leftBound + rightBound) * 0.5f;
+                }
+                else
+                {
+                    availCenter = superW * 0.5f;
+                }
 
-            using (var brushAmPm = new SolidBrush(Color.FromArgb(185, 255, 255, 255)))
-            {
-                g.DrawString(timeAmPm, fontSub, brushAmPm, subStartX, subBotY, StringFormat.GenericTypographic);
+                float textStartX = availCenter - totalClockWidth * 0.5f;
+                float cy = superH * 0.5f;
+                float mainY = cy - sizeMain.Height * 0.5f - 1.25f * superScale;
+                float subTopY = cy - sizeSec.Height - 1.25f * superScale;
+                float subBotY = cy - 1.0f * superScale;
+
+                using (var brushMain = new SolidBrush(Color.FromArgb((int)(255 * clockAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(timeMain, fontMain, brushMain, textStartX, mainY, StringFormat.GenericTypographic);
+                }
+
+                float subStartX = textStartX + sizeMain.Width + spacingSub;
+                using (var brushSec = new SolidBrush(Color.FromArgb((int)(215 * clockAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(timeSec, fontSub, brushSec, subStartX, subTopY, StringFormat.GenericTypographic);
+                }
+
+                using (var brushAmPm = new SolidBrush(Color.FromArgb((int)(185 * clockAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(timeAmPm, fontSub, brushAmPm, subStartX, subBotY, StringFormat.GenericTypographic);
+                }
             }
 
             // 3. Right Section: Live 4-Bar Equalizer (Controlled by mediaElementsAlpha)
             if (mediaElementsAlpha > 0.01)
             {
-                float eqCx = (targetW - 15f) * superScale;
+                float eqCx = (targetW - 16f) * superScale;
                 float eqCy = 22f * superScale;
                 DrawEqualizerBars(g, eqCx, eqCy, 1.85f * superScale, 11.5f * superScale, eqBarHeights, trackAccent, (float)mediaElementsAlpha);
             }
@@ -2407,71 +2445,54 @@ internal sealed class OverlayForm : Form
             _frameStopwatch.Restart();
             dt = Math.Clamp(dt, 0.0, 0.05);
 
-            if (_animDirection != 0.0)
-            {
-                const double speed = 1.0 / AnimationDuration;
-                _progress += _animDirection * speed * dt;
+            DateTime now = DateTime.Now;
+            DateTime utcNow = DateTime.UtcNow;
 
-                if (_progress >= 1.0)
-                {
-                    _progress = 1.0;
-                    _animDirection = 0.0;
-                }
-                else if (_progress <= 0.0)
-                {
-                    _progress = 0.0;
-                    _animDirection = 0.0;
-                }
+            // Track music playback start and track change to trigger the 2-minute time display
+            bool justStartedPlaying = !_lastWasPlaying && _isPlaying;
+            bool trackChanged = _isPlaying && !string.IsNullOrEmpty(_currentTrack.Title) && _currentTrack.Title != _lastPlayingTrackTitle && _currentTrack.Title != "No Media Playing";
+            if (justStartedPlaying || trackChanged)
+            {
+                _musicTimeDisplayUntil = utcNow.AddMinutes(2);
             }
-
-            if (_hasActiveMedia)
+            _lastWasPlaying = _isPlaying;
+            if (_isPlaying)
             {
-                // Expand pill width smoothly (stays expanded at 206px whether playing or paused!)
-                _playingExpandP += (1.0 - _playingExpandP) * Math.Min(1.0, 10.0 * dt);
-                if (Math.Abs(1.0 - _playingExpandP) < 0.001) _playingExpandP = 1.0;
-
-                // Once pill has expanded sufficiently (> 0.45), smoothly fade in album art disc and visualizer
-                if (_playingExpandP > 0.45)
-                {
-                    _mediaElementsAlpha += (1.0 - _mediaElementsAlpha) * Math.Min(1.0, 14.0 * dt);
-                    if (Math.Abs(1.0 - _mediaElementsAlpha) < 0.001) _mediaElementsAlpha = 1.0;
-                }
-                else
-                {
-                    _mediaElementsAlpha = 0.0;
-                }
-            }
-            else
-            {
-                // When stopped/closed: Album art disc and visualizer disappear FIRST before the collapse
-                _mediaElementsAlpha = Math.Max(0.0, _mediaElementsAlpha - dt * 14.0);
-
-                // Only start collapsing the pill width after media elements have fully faded out
-                if (_mediaElementsAlpha <= 0.08)
-                {
-                    _playingExpandP += (0.0 - _playingExpandP) * Math.Min(1.0, 12.0 * dt);
-                    if (_playingExpandP < 0.001) _playingExpandP = 0.0;
-                }
+                _lastPlayingTrackTitle = _currentTrack.Title;
             }
 
             bool isHovered = false;
-            if (_progress > 0.10 && GetCursorPos(out var cursorPos))
+            if (GetCursorPos(out var cursorPos))
             {
-                double px = (cursorPos.x - rect.Left) - _currentGeometry.CenterX;
-                double py = (cursorPos.y - rect.Top) - _currentGeometry.CenterY;
-                double straightW = Math.Max(0.0, _currentGeometry.HalfWidth - _currentGeometry.Radius);
-                double straightH = Math.Max(0.0, _currentGeometry.HalfHeight - _currentGeometry.Radius);
-                double qx = Math.Abs(px) - straightW;
-                double qy = Math.Abs(py) - straightH;
-                double outX = Math.Max(0.0, qx);
-                double outY = Math.Max(0.0, qy);
-                double outDist = Math.Sqrt(outX * outX + outY * outY);
-                double insideDist = Math.Min(0.0, Math.Max(qx, qy));
-                double mouseSdf = outDist + insideDist - _currentGeometry.Radius;
+                int mouseSurfaceX = cursorPos.x - rect.Left;
+                int mouseSurfaceY = cursorPos.y - rect.Top;
 
-                if (mouseSdf <= 1.5)
+                if (_progress > 0.10)
                 {
-                    isHovered = true;
+                    double px = mouseSurfaceX - _currentGeometry.CenterX;
+                    double py = mouseSurfaceY - _currentGeometry.CenterY;
+                    double straightW = Math.Max(0.0, _currentGeometry.HalfWidth - _currentGeometry.Radius);
+                    double straightH = Math.Max(0.0, _currentGeometry.HalfHeight - _currentGeometry.Radius);
+                    double qx = Math.Abs(px) - straightW;
+                    double qy = Math.Abs(py) - straightH;
+                    double outX = Math.Max(0.0, qx);
+                    double outY = Math.Max(0.0, qy);
+                    double outDist = Math.Sqrt(outX * outX + outY * outY);
+                    double insideDist = Math.Min(0.0, Math.Max(qx, qy));
+                    double mouseSdf = outDist + insideDist - _currentGeometry.Radius;
+
+                    if (mouseSdf <= 1.5)
+                    {
+                        isHovered = true;
+                    }
+                }
+                else
+                {
+                    // Notch hover trigger to summon pill when despawned / hidden
+                    if (mouseSurfaceY >= 0 && mouseSurfaceY <= 26 && Math.Abs(mouseSurfaceX - 300) <= 60)
+                    {
+                        isHovered = true;
+                    }
                 }
 
                 // Intelligence: on hover expansion, auto-select Media Tab if active media, Home Tab if no media
@@ -2483,9 +2504,6 @@ internal sealed class OverlayForm : Form
 
                 if (_hoverPos > 0.6)
                 {
-                    int mouseSurfaceX = cursorPos.x - rect.Left;
-                    int mouseSurfaceY = cursorPos.y - rect.Top;
-
                     // 4 Tab Switcher Hover: Home [86, 108), Music [108, 130), Weather [130, 152), Chrono [152, 176]
                     if (mouseSurfaceY >= 24 && mouseSurfaceY <= 54)
                     {
@@ -2549,7 +2567,108 @@ internal sealed class OverlayForm : Form
                 UpdateExpandedMask();
             }
 
+            if (_wasHovered && !isHovered)
+            {
+                // Unhovered: time displays for 1 minute
+                _unhoverShowTimeUntil = utcNow.AddMinutes(1);
+            }
             _wasHovered = isHovered;
+
+            // Spawning Intelligence:
+            // 1. O'clocks: spawns and displays time for 3 minutes (e.g. HH:00:00 to HH:02:59)
+            // 2. Music active: spawns
+            // 3. Unhovered: stays spawned showing time for 1 minute
+            // 4. Hovered: stays spawned
+            // Otherwise: despawns and hides
+            bool isOClock = (now.Minute < 3);
+            bool isUnhoverActive = (utcNow < _unhoverShowTimeUntil);
+            bool shouldBeSpawned = isHovered || _hasActiveMedia || isOClock || isUnhoverActive;
+
+            if (shouldBeSpawned)
+            {
+                if (_animDirection < 0.0 || (_animDirection == 0.0 && _progress < 1.0))
+                {
+                    _animDirection = 1.0;
+                }
+            }
+            else
+            {
+                if (_progress > 0.0 && !isHovered && (_animDirection > 0.0 || _animDirection == 0.0))
+                {
+                    _animDirection = -1.0;
+                }
+            }
+
+            if (_animDirection != 0.0)
+            {
+                const double speed = 1.0 / AnimationDuration;
+                _progress += _animDirection * speed * dt;
+
+                if (_progress >= 1.0)
+                {
+                    _progress = 1.0;
+                    _animDirection = 0.0;
+                }
+                else if (_progress <= 0.0)
+                {
+                    _progress = 0.0;
+                    _animDirection = 0.0;
+                }
+            }
+
+            // Compact Time Visibility & Width Dynamics:
+            // Music playing: time displays for 2 minutes (or 1 min on unhover, or 3 mins on o'clock).
+            // Then time disappears, leaving only rotating disc + visualizer, and the pill gets shorter in length!
+            bool isMusicTimeActive = (utcNow < _musicTimeDisplayUntil);
+
+            bool shouldShowTime;
+            if (!_hasActiveMedia)
+            {
+                shouldShowTime = true;
+            }
+            else
+            {
+                shouldShowTime = isMusicTimeActive || isUnhoverActive || isOClock;
+            }
+
+            double targetTimeAlpha = shouldShowTime ? 1.0 : 0.0;
+            _compactTimeAlpha += (targetTimeAlpha - _compactTimeAlpha) * Math.Min(1.0, 8.0 * dt);
+
+            if (_hasActiveMedia)
+            {
+                // Smoothly expand pill for media
+                _playingExpandP += (1.0 - _playingExpandP) * Math.Min(1.0, 10.0 * dt);
+                if (Math.Abs(1.0 - _playingExpandP) < 0.001) _playingExpandP = 1.0;
+
+                // Once expanded sufficiently, smoothly fade in rotating album art disc and visualizer
+                if (_playingExpandP > 0.45)
+                {
+                    _mediaElementsAlpha += (1.0 - _mediaElementsAlpha) * Math.Min(1.0, 14.0 * dt);
+                    if (Math.Abs(1.0 - _mediaElementsAlpha) < 0.001) _mediaElementsAlpha = 1.0;
+                }
+                else
+                {
+                    _mediaElementsAlpha = 0.0;
+                }
+
+                // Shorter length (96px) when time disappears, full playing length (206px) when time is shown
+                double targetWidth = CompactMusicOnlyWidth + (CompactPlayingWidth - CompactMusicOnlyWidth) * _compactTimeAlpha;
+                _currentCompactWidth += (targetWidth - _currentCompactWidth) * Math.Min(1.0, 10.0 * dt);
+            }
+            else
+            {
+                // When stopped/closed: Album art disc and visualizer disappear FIRST before the collapse
+                _mediaElementsAlpha = Math.Max(0.0, _mediaElementsAlpha - dt * 14.0);
+
+                if (_mediaElementsAlpha <= 0.08)
+                {
+                    _playingExpandP += (0.0 - _playingExpandP) * Math.Min(1.0, 12.0 * dt);
+                    if (_playingExpandP < 0.001) _playingExpandP = 0.0;
+                }
+
+                double targetWidth = CompactPausedWidth;
+                _currentCompactWidth += (targetWidth - _currentCompactWidth) * Math.Min(1.0, 10.0 * dt);
+            }
 
             // Animate tactile button click bounce
             if (_clickAnimTimer > 0.0)
@@ -2620,7 +2739,7 @@ internal sealed class OverlayForm : Form
 
             UpdateTimeMaskIfNeeded();
 
-            PillGeometry geom = ComputeGeometry(_progress, _hoverPos, _playingExpandP);
+            PillGeometry geom = ComputeGeometry(_progress, _hoverPos, _currentCompactWidth);
             _currentGeometry = geom;
 
             ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
@@ -2632,12 +2751,11 @@ internal sealed class OverlayForm : Form
     }
 }
 
-    private static PillGeometry ComputeGeometry(double spawnP, double hoverP, double playingExpandP)
+    private static PillGeometry ComputeGeometry(double spawnP, double hoverP, double compactWidth)
     {
         double targetCenterX = SurfaceWidth * 0.5;
 
-        double activeCompactWidth = CompactPausedWidth + (CompactPlayingWidth - CompactPausedWidth) * playingExpandP;
-        double restingHalfWidth = (activeCompactWidth * 0.5) + ((DefaultPillWidth * 0.5) - (activeCompactWidth * 0.5)) * hoverP;
+        double restingHalfWidth = (compactWidth * 0.5) + ((DefaultPillWidth * 0.5) - (compactWidth * 0.5)) * hoverP;
         double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverP;
 
         restingHalfWidth = Math.Max(20.0, restingHalfWidth);
