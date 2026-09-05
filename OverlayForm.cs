@@ -2305,7 +2305,7 @@ internal sealed class OverlayForm : Form
                         {
                             double sNorm = Math.Clamp(shadowSdf / 14.0, 0.0, 1.0);
                             double sFalloff = (1.0 - sNorm) * (1.0 - sNorm);
-                            shadowA = (byte)(sFalloff * 80.0);
+                            shadowA = (byte)(sFalloff * 45.0);
                         }
                     }
 
@@ -2377,10 +2377,10 @@ internal sealed class OverlayForm : Form
                     g = Math.Clamp(g, 0, 255);
                     r = Math.Clamp(r, 0, 255);
 
-                    // Dark smoked liquid glass: noticeably decreased brightness while preserving colorful translucent blur
-                    r = (r * 110 + 14 * 146) >> 8;
-                    g = (g * 110 + 16 * 146) >> 8;
-                    b = (b * 110 + 24 * 146) >> 8;
+                    // Balanced liquid glass tint: gently dimmed (~76% brightness) without being dark or murky
+                    r = (r * 195 + 40 * 61) >> 8;
+                    g = (g * 195 + 44 * 61) >> 8;
+                    b = (b * 195 + 56 * 61) >> 8;
 
                     // Composite glass over ambient drop shadow
                     byte finalA = (shadowA > 0 && a < 255)
