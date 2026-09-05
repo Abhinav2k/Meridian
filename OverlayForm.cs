@@ -141,6 +141,82 @@ internal sealed class OverlayForm : Form
         public uint bmiColors;
     }
 
+    [ComImport]
+    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    private class MMDeviceEnumeratorComObject { }
+
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDeviceEnumerator
+    {
+        int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+        int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint);
+    }
+
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IMMDevice
+    {
+        int Activate(ref Guid id, int clsCtx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object interfacePointer);
+    }
+
+    [Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IAudioMeterInformation
+    {
+        int GetPeakValue(out float pfPeak);
+        int GetMeteringChannelCount(out int pnChannelCount);
+        int GetChannelsPeakValues(int u32ChannelCount, [In, Out] float[] afPeakValues);
+        int QueryHardwareSupport(out int pdwHardwareSupportMask);
+    }
+
+    private sealed class WindowsAudioMeter : IDisposable
+    {
+        private static readonly Guid MeterIid = new("C02216F6-8C67-4B5B-9D00-D008E73E0064");
+        private IAudioMeterInformation? _meter;
+        private DateTime _lastAttempt = DateTime.MinValue;
+
+        public float GetPeak()
+        {
+            try
+            {
+                if (_meter == null)
+                {
+                    if ((DateTime.UtcNow - _lastAttempt).TotalSeconds < 2.0)
+                        return 0f;
+
+                    _lastAttempt = DateTime.UtcNow;
+                    var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                    if (enumerator.GetDefaultAudioEndpoint(0, 1, out var device) == 0 && device != null)
+                    {
+                        var iid = MeterIid;
+                        if (device.Activate(ref iid, 1, IntPtr.Zero, out var meterObj) == 0 && meterObj is IAudioMeterInformation meter)
+                        {
+                            _meter = meter;
+                        }
+                    }
+                }
+
+                if (_meter != null)
+                {
+                    if (_meter.GetPeakValue(out float peak) == 0)
+                    {
+                        return Math.Clamp(peak, 0f, 1f);
+                    }
+                    _meter = null;
+                }
+            }
+            catch
+            {
+                _meter = null;
+            }
+
+            return 0f;
+        }
+
+        public void Dispose()
+        {
+            _meter = null;
+        }
+    }
+
     private sealed class FastSurface : IDisposable
     {
         public IntPtr MemDC { get; private set; }
@@ -576,11 +652,67 @@ internal sealed class OverlayForm : Form
     private bool _isShuffle = false;
     private double _vinylRotationAngle = 0.0;
     private double _visualizerTime = 0.0;
+    private readonly WindowsAudioMeter _audioMeter = new();
+    private readonly float[] _eqBarHeights = new float[4] { 0f, 0f, 0f, 0f };
     private double _lastExpandedMaskUpdateTime = 0.0;
     private int _hoveredButton = BtnNone;
     private int _clickedButton = BtnNone;
     private double _clickAnimTimer = 0.0;
     private bool _wasHovered = false;
+
+    private void UpdateEqualizerPhysics(double dt)
+    {
+        if (!_isPlaying)
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                _eqBarHeights[i] += (0.0f - _eqBarHeights[i]) * Math.Min(1.0f, 12.0f * (float)dt);
+                if (_eqBarHeights[i] < 0.001f) _eqBarHeights[i] = 0.0f;
+            }
+            return;
+        }
+
+        float livePeak = _audioMeter.GetPeak();
+        float rawEnergy = (float)Math.Clamp(Math.Pow(livePeak, 0.65), 0.0, 1.0);
+        float audioEnergy = rawEnergy >= 0.02f ? rawEnergy : 0.35f;
+
+        // Multi-band acoustic frequency distribution (Bass, Low-Mids, High-Mids, Treble)
+        double pulse0 = Math.Sin(_visualizerTime * 8.5) * 0.5 + 0.5;
+        float target0 = audioEnergy * (0.55f + 0.45f * (float)pulse0) * 1.15f;
+
+        double pulse1 = (Math.Sin(_visualizerTime * 13.0 + 1.2) * 0.5 + 0.5) * 0.7 + (Math.Cos(_visualizerTime * 6.5) * 0.5 + 0.5) * 0.3;
+        float target1 = audioEnergy * (0.50f + 0.50f * (float)pulse1) * 1.30f;
+
+        double pulse2 = (Math.Sin(_visualizerTime * 18.0 + 2.5) * 0.5 + 0.5) * 0.6 + (Math.Sin(_visualizerTime * 11.2) * 0.5 + 0.5) * 0.4;
+        float target2 = audioEnergy * (0.45f + 0.55f * (float)pulse2) * 1.10f;
+
+        double pulse3 = Math.Sin(_visualizerTime * 24.0 + 4.1) * 0.5 + 0.5;
+        float target3 = audioEnergy * (0.40f + 0.60f * (float)pulse3) * 0.95f;
+
+        float[] targets = new float[4]
+        {
+            Math.Clamp(target0, 0.08f, 1.0f),
+            Math.Clamp(target1, 0.08f, 1.0f),
+            Math.Clamp(target2, 0.08f, 0.95f),
+            Math.Clamp(target3, 0.08f, 0.88f)
+        };
+
+        for (int i = 0; i < 4; i++)
+        {
+            float target = targets[i];
+            if (target > _eqBarHeights[i])
+            {
+                // Fast Attack (< 20ms) for punchy transient response
+                _eqBarHeights[i] += (target - _eqBarHeights[i]) * Math.Min(1.0f, 36.0f * (float)dt);
+            }
+            else
+            {
+                // Smooth Gravity Decay with lower frequencies decaying slightly slower
+                float decaySpeed = 7.5f + i * 1.6f;
+                _eqBarHeights[i] += (target - _eqBarHeights[i]) * Math.Min(1.0f, decaySpeed * (float)dt);
+            }
+        }
+    }
 
     // Compact pill dynamic expansion when music plays (0.0 = paused/compact, 1.0 = playing/expanded)
     private double _playingExpandP = 0.0;
@@ -993,7 +1125,7 @@ internal sealed class OverlayForm : Form
             _isPlaying,
             _isShuffle,
             _vinylRotationAngle,
-            _visualizerTime,
+            _eqBarHeights,
             _hoveredButton,
             _clickedButton,
             _clickAnimTimer);
@@ -1045,7 +1177,7 @@ internal sealed class OverlayForm : Form
         Color accentColor,
         double rotationAngle,
         bool isPlaying,
-        double visualizerTime)
+        float[]? eqBarHeights)
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
 
@@ -1069,7 +1201,7 @@ internal sealed class OverlayForm : Form
                     g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     g.DrawImage(coverBmp, x, y, size, size);
 
-                    // Silky top glass highlight overlay
+                    // Dynamic specular light gleam on top half of album art
                     using var brushHighlight = new LinearGradientBrush(
                         new RectangleF(x, y, size, size * 0.5f),
                         Color.FromArgb(60, 255, 255, 255),
@@ -1112,9 +1244,10 @@ internal sealed class OverlayForm : Form
         // Live Equalizer Waveform on Bottom-Right of Album Card
         if (isPlaying)
         {
-            float eqCx = x + size - 14f;
-            float eqCy = y + size - 14f;
-            DrawEqualizerBars(g, eqCx, eqCy, 1.8f, 10f, visualizerTime);
+            float eqScale = size / 54f;
+            float eqCx = x + size - 14f * eqScale;
+            float eqCy = y + size - 14f * eqScale;
+            DrawEqualizerBars(g, eqCx, eqCy, 1.85f * eqScale, 11.5f * eqScale, eqBarHeights, accentColor, 1.0f);
         }
 
         g.Restore(state);
@@ -1126,31 +1259,43 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawEqualizerBars(Graphics g, float cx, float cy, float barWidth, float maxHeight, double time, bool isPlaying = true, float alpha = 1.0f)
+    private static void DrawEqualizerBars(
+        Graphics g,
+        float cx,
+        float cy,
+        float barWidth,
+        float maxHeight,
+        float[]? barHeights,
+        Color accentColor,
+        float alpha = 1.0f)
     {
         if (alpha <= 0.01f) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        int a = (int)Math.Clamp(245f * alpha, 0f, 255f);
-        using var brush = new SolidBrush(Color.FromArgb(a, 255, 255, 255));
 
         const int barCount = 4;
         float spacing = barWidth * 0.65f;
         float totalW = barCount * barWidth + (barCount - 1) * spacing;
         float startX = cx - totalW * 0.5f;
+        float minH = barWidth * 1.20f;
+
+        // Subtle Album Accent Tint:
+        // Blend luminous white with track album accent color
+        int baseA = (int)Math.Clamp(245f * alpha, 0f, 255f);
+        int rTop = (int)Math.Clamp(255f * 0.82f + accentColor.R * 0.18f, 0f, 255f);
+        int gTop = (int)Math.Clamp(255f * 0.82f + accentColor.G * 0.18f, 0f, 255f);
+        int bTop = (int)Math.Clamp(255f * 0.82f + accentColor.B * 0.18f, 0f, 255f);
+
+        int rBot = (int)Math.Clamp(255f * 0.58f + accentColor.R * 0.42f, 0f, 255f);
+        int gBot = (int)Math.Clamp(255f * 0.58f + accentColor.G * 0.42f, 0f, 255f);
+        int bBot = (int)Math.Clamp(255f * 0.58f + accentColor.B * 0.42f, 0f, 255f);
+
+        Color topColor = Color.FromArgb(baseA, rTop, gTop, bTop);
+        Color botColor = Color.FromArgb(baseA, rBot, gBot, bBot);
 
         for (int i = 0; i < barCount; i++)
         {
-            float h;
-            if (isPlaying)
-            {
-                double wave = (Math.Sin(time * 8.0 + i * 1.6) * 0.5 + 0.5) * 0.65 +
-                              (Math.Cos(time * 13.0 + i * 2.4) * 0.5 + 0.5) * 0.35;
-                h = (float)Math.Clamp(maxHeight * (0.25 + 0.75 * wave), barWidth, maxHeight);
-            }
-            else
-            {
-                h = barWidth * 1.25f;
-            }
+            float normVal = (barHeights != null && i < barHeights.Length) ? barHeights[i] : 0f;
+            float h = (float)Math.Clamp(minH + (maxHeight - minH) * normVal, minH, maxHeight);
 
             float bx = startX + i * (barWidth + spacing);
             float by = cy - h * 0.5f;
@@ -1160,7 +1305,21 @@ internal sealed class OverlayForm : Form
             path.AddArc(bx, by, barWidth, barWidth, 180, 180);
             path.AddArc(bx, by + h - barWidth, barWidth, barWidth, 0, 180);
             path.CloseFigure();
-            g.FillPath(brush, path);
+
+            if (h > minH + 0.5f)
+            {
+                using var brush = new LinearGradientBrush(
+                    new RectangleF(bx, by, barWidth, h),
+                    topColor,
+                    botColor,
+                    90f);
+                g.FillPath(brush, path);
+            }
+            else
+            {
+                using var brush = new SolidBrush(topColor);
+                g.FillPath(brush, path);
+            }
         }
     }
 
@@ -1394,7 +1553,7 @@ internal sealed class OverlayForm : Form
         bool isPlaying,
         bool isShuffle,
         double rotationAngle,
-        double visualizerTime,
+        float[]? eqBarHeights,
         int hoveredButton,
         int clickedButton,
         double clickAnimProgress)
@@ -1512,7 +1671,7 @@ internal sealed class OverlayForm : Form
                 float artY = 46f * superScale;
                 float artSize = 54f * superScale;
                 float artRadius = 12f * superScale;
-                DrawRoundedSquareCover(g, artX, artY, artSize, artRadius, coverBmp, track.CoverAccentColor, rotationAngle, isPlaying, visualizerTime);
+                DrawRoundedSquareCover(g, artX, artY, artSize, artRadius, coverBmp, track.CoverAccentColor, rotationAngle, isPlaying, eqBarHeights);
 
                 float textStartX = artX + artSize + 16f * superScale;
                 float rightEdge = (targetW - 16f) * superScale;
@@ -1772,9 +1931,11 @@ internal sealed class OverlayForm : Form
 
         bool stateChanged = (_isPlaying != _lastRenderedIsPlaying);
 
-        if (_isPlaying || isTransitioning || stateChanged || force || now.ToString("h:mm:ss tt") != _lastTimeString)
+        bool isEqDecaying = !_isPlaying && (_eqBarHeights[0] > 0.005f || _eqBarHeights[1] > 0.005f || _eqBarHeights[2] > 0.005f || _eqBarHeights[3] > 0.005f);
+
+        if (_isPlaying || isTransitioning || isEqDecaying || stateChanged || force || now.ToString("h:mm:ss tt") != _lastTimeString)
         {
-            if ((_isPlaying || isTransitioning) && !force && !stateChanged && nowSec - _lastTimeMaskUpdateTime < 0.016)
+            if ((_isPlaying || isTransitioning || isEqDecaying) && !force && !stateChanged && nowSec - _lastTimeMaskUpdateTime < 0.016)
             {
                 return;
             }
@@ -1787,7 +1948,7 @@ internal sealed class OverlayForm : Form
                 cover,
                 _vinylRotationAngle,
                 _isPlaying,
-                _visualizerTime,
+                _eqBarHeights,
                 _playingExpandP,
                 _mediaElementsAlpha,
                 track.CoverAccentColor);
@@ -1806,7 +1967,7 @@ internal sealed class OverlayForm : Form
         Bitmap? coverBmp,
         double vinylAngle,
         bool isPlaying,
-        double visualizerTime,
+        float[]? eqBarHeights,
         double playingExpandP,
         double mediaElementsAlpha,
         Color trackAccent)
@@ -1953,12 +2114,12 @@ internal sealed class OverlayForm : Form
                 g.DrawString(timeAmPm, fontSub, brushAmPm, subStartX, subBotY, StringFormat.GenericTypographic);
             }
 
-            // 3. Right Section: Live 3-Bar Equalizer (Controlled by mediaElementsAlpha)
+            // 3. Right Section: Live 4-Bar Equalizer (Controlled by mediaElementsAlpha)
             if (mediaElementsAlpha > 0.01)
             {
                 float eqCx = (targetW - 15f) * superScale;
                 float eqCy = 22f * superScale;
-                DrawEqualizerBars(g, eqCx, eqCy, 1.8f * superScale, 10f * superScale, visualizerTime, isPlaying, (float)mediaElementsAlpha);
+                DrawEqualizerBars(g, eqCx, eqCy, 1.85f * superScale, 11.5f * superScale, eqBarHeights, trackAccent, (float)mediaElementsAlpha);
             }
         }
 
@@ -2349,6 +2510,8 @@ internal sealed class OverlayForm : Form
                 _vinylRotationAngle = (_vinylRotationAngle + 45.0 * dt) % 360.0;
                 _visualizerTime += dt;
             }
+
+            UpdateEqualizerPhysics(dt);
 
             double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
             if (_hoverPos > 0.6 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.050))
@@ -2954,6 +3117,7 @@ internal sealed class OverlayForm : Form
             _renderSignal.Set();
             _renderThread?.Join(500);
 
+            _audioMeter.Dispose();
             _screenCapturer?.Dispose();
             _renderSurface?.Dispose();
             _renderSignal.Dispose();
