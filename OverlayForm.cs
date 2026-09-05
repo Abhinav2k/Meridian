@@ -685,11 +685,11 @@ internal sealed class OverlayForm : Form
         float cy = 120f;
         if (Math.Abs(my - cy) > 22f) return BtnNone;
 
-        if (Math.Abs(mx - 98f) <= 16f) return BtnShuffle;
-        if (Math.Abs(mx - 217f) <= 18f) return BtnPrev;
-        if (Math.Abs(mx - 265f) <= 22f) return BtnPlayPause;
-        if (Math.Abs(mx - 313f) <= 18f) return BtnNext;
-        if (Math.Abs(mx - 432f) <= 16f) return BtnAirPlay;
+        if (Math.Abs(mx - 98f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnShuffle;
+        if (Math.Abs(mx - 217f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnPrev;
+        if (Math.Abs(mx - 265f) <= 21f && Math.Abs(my - cy) <= 21f) return BtnPlayPause;
+        if (Math.Abs(mx - 313f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnNext;
+        if (Math.Abs(mx - 432f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnAirPlay;
 
         return BtnNone;
     }
@@ -1048,11 +1048,24 @@ internal sealed class OverlayForm : Form
         }
     }
 
+    private static GraphicsPath CreateRoundedRectanglePath(float x, float y, float w, float h, float r)
+    {
+        var path = new GraphicsPath();
+        float d = r * 2f;
+        path.AddArc(x, y, d, d, 180, 90);
+        path.AddArc(x + w - d, y, d, d, 270, 90);
+        path.AddArc(x + w - d, y + h - d, d, d, 0, 90);
+        path.AddArc(x, y + h - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
     private static void DrawProjectedButtonContainer(
         Graphics g,
         float cx,
         float cy,
-        float radius,
+        float halfSize,
+        float cornerRadius,
         bool isHovered,
         bool isClicked,
         double clickProgress,
@@ -1072,49 +1085,44 @@ internal sealed class OverlayForm : Form
             g.TranslateTransform(-cx, -cy);
         }
 
-        // 1. Projected 3D Bottom Drop Shadow (elevates button above glass surface)
+        float x = cx - halfSize;
+        float y = cy - halfSize;
+        float size = halfSize * 2f;
+
+        // 1. Soft Ambient Drop Shadow underneath the rounded square
         float shadowOffset = 2.0f * superScale;
-        using (var brushShadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
+        using (var shadowPath = CreateRoundedRectanglePath(x, y + shadowOffset, size, size, cornerRadius))
+        using (var brushShadow = new SolidBrush(Color.FromArgb(50, 0, 0, 0)))
         {
-            g.FillEllipse(brushShadow, cx - radius, cy - radius + shadowOffset, radius * 2f, radius * 2f);
+            g.FillPath(brushShadow, shadowPath);
         }
 
-        // 2. Tactile Button Body (Glass Fill)
-        if (isHovered)
+        // 2. Rounded Square Tactile Glass Body (Frosted Diffusion, Strictly NO OUTLINE)
+        using (var bodyPath = CreateRoundedRectanglePath(x, y, size, size, cornerRadius))
         {
-            // Darkened glass interaction on mouse hover as requested
-            using var brushBody = new LinearGradientBrush(
-                new RectangleF(cx - radius, cy - radius, radius * 2f, radius * 2f),
-                Color.FromArgb(145, 12, 18, 28),
-                Color.FromArgb(180, 6, 10, 18),
-                90f);
-            g.FillEllipse(brushBody, cx - radius, cy - radius, radius * 2f, radius * 2f);
-        }
-        else
-        {
-            // Projected tactile glass (raised appearance)
-            using var brushBody = new LinearGradientBrush(
-                new RectangleF(cx - radius, cy - radius, radius * 2f, radius * 2f),
-                Color.FromArgb(55, 255, 255, 255),
-                Color.FromArgb(18, 255, 255, 255),
-                90f);
-            g.FillEllipse(brushBody, cx - radius, cy - radius, radius * 2f, radius * 2f);
-        }
-
-        // 3. Crisp Glass Outer Rim
-        Color rimColor = isHovered ? Color.FromArgb(190, 255, 255, 255) : Color.FromArgb(130, 255, 255, 255);
-        using (var penRim = new Pen(rimColor, 1.1f * superScale))
-        {
-            g.DrawEllipse(penRim, cx - radius, cy - radius, radius * 2f, radius * 2f);
+            if (isHovered)
+            {
+                // Darkened glass interaction on mouse hover
+                using var brushBody = new LinearGradientBrush(
+                    new RectangleF(x, y, size, size),
+                    Color.FromArgb(160, 10, 15, 25),
+                    Color.FromArgb(195, 5, 8, 15),
+                    90f);
+                g.FillPath(brushBody, bodyPath);
+            }
+            else
+            {
+                // Distinct frosted diffusion glass fill (translucent frosted density, completely without outline)
+                using var brushBody = new LinearGradientBrush(
+                    new RectangleF(x, y, size, size),
+                    Color.FromArgb(50, 255, 255, 255),
+                    Color.FromArgb(18, 255, 255, 255),
+                    90f);
+                g.FillPath(brushBody, bodyPath);
+            }
         }
 
-        // 4. Top Specular Crescent Arc (3D Beveled Ridge)
-        using (var penSpec = new Pen(Color.FromArgb(220, 255, 255, 255), 1.3f * superScale))
-        {
-            g.DrawArc(penSpec, cx - radius + 0.5f * superScale, cy - radius + 0.5f * superScale, (radius - 0.5f * superScale) * 2f, (radius - 0.5f * superScale) * 2f, 200, 140);
-        }
-
-        // 5. Button Glyph
+        // 3. Button Glyph
         drawGlyph();
 
         g.Restore(state);
@@ -1457,24 +1465,24 @@ internal sealed class OverlayForm : Form
 
                 float ctrlY = 120f * superScale;
 
-                // Projected Tactile Glass Buttons with Dark Hover and Click Micro-Animation
-                DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 14f * superScale,
+                // Tactile Rounded Square Glass Buttons with Different Blur Intensity, Dark Hover, and Click Animation (NO OUTLINE)
+                DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
                     hoveredButton == BtnShuffle, clickedButton == BtnShuffle, clickAnimProgress, superScale,
                     () => DrawShuffleGlyph(g, 98f * superScale, ctrlY, 13f * superScale, isShuffle));
 
-                DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 16f * superScale,
+                DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
                     hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
                     () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false));
 
-                DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 18f * superScale,
+                DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
                     hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
                     () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying));
 
-                DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 16f * superScale,
+                DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
                     hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
                     () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true));
 
-                DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 14f * superScale,
+                DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 15f * superScale, 7f * superScale,
                     hoveredButton == BtnAirPlay, clickedButton == BtnAirPlay, clickAnimProgress, superScale,
                     () => DrawAirPlayGlyph(g, 432f * superScale, ctrlY, 12f * superScale));
             }
@@ -2414,6 +2422,12 @@ internal sealed class OverlayForm : Form
             double straightW = geom.HalfWidth - geom.Radius;
             double straightH = geom.HalfHeight - geom.Radius;
 
+            double spawnExpAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
+            double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
+            double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
+            double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
+            bool isMusicTabActive = (_activeTab == TabMusic) && (expAlpha > 0.01);
+
             for (int y = 0; y < SurfaceHeight; y++)
             {
                 int rowIdx = y * SurfaceWidth;
@@ -2519,9 +2533,39 @@ internal sealed class OverlayForm : Form
                     double frostFactor = Math.Clamp(1.0 - (edgeDistance * (1.0 / 8.0)), 0.0, 1.0);
                     double frostSmooth = frostFactor * frostFactor * (3.0 - 2.0 * frostFactor);
 
-                    int b = (int)(bStd + (bHvy - bStd) * frostSmooth);
-                    int g = (int)(gStd + (gHvy - gStd) * frostSmooth);
-                    int r = (int)(rStd + (rHvy - rStd) * frostSmooth);
+                    // Distinct Blur Intensity under Rounded Square Media Buttons
+                    double btnBlurFactor = 0.0;
+                    if (isMusicTabActive && y >= 124 && y <= 168)
+                    {
+                        float bcx = 0, bhs = 0, br = 0;
+                        if (x >= 152 && x <= 184) { bcx = 168f; bhs = 15f; br = 7f; }
+                        else if (x >= 269 && x <= 305) { bcx = 287f; bhs = 17f; br = 8.5f; }
+                        else if (x >= 313 && x <= 357) { bcx = 335f; bhs = 21f; br = 11f; }
+                        else if (x >= 365 && x <= 401) { bcx = 383f; bhs = 17f; br = 8.5f; }
+                        else if (x >= 486 && x <= 518) { bcx = 502f; bhs = 15f; br = 7f; }
+
+                        if (bhs > 0)
+                        {
+                            double bqx = Math.Abs(x - bcx) - (bhs - br);
+                            double bqy = Math.Abs(y - 146.0) - (bhs - br);
+                            double oX = Math.Max(0.0, bqx);
+                            double oY = Math.Max(0.0, bqy);
+                            double oDist = Math.Sqrt(oX * oX + oY * oY);
+                            double iDist = Math.Min(0.0, Math.Max(bqx, bqy));
+                            double btnSdf = oDist + iDist - br;
+
+                            if (btnSdf <= 1.0)
+                            {
+                                btnBlurFactor = Math.Clamp(-btnSdf + 0.5, 0.0, 1.0) * expAlpha;
+                            }
+                        }
+                    }
+
+                    double effectiveHeavyFactor = Math.Max(frostSmooth, btnBlurFactor * 0.95);
+
+                    int b = (int)(bStd + (bHvy - bStd) * effectiveHeavyFactor);
+                    int g = (int)(gStd + (gHvy - gStd) * effectiveHeavyFactor);
+                    int r = (int)(rStd + (rHvy - rStd) * effectiveHeavyFactor);
 
                     b = Math.Clamp(b, 0, 255);
                     g = Math.Clamp(g, 0, 255);
@@ -2620,10 +2664,7 @@ internal sealed class OverlayForm : Form
                 expH = _expandedHeight;
             }
 
-            double spawnExpAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
-            double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
-            double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
-            double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
+            // (expAlpha already precomputed before the glass rendering loop)
 
             if (expAlpha > 0.005 && expColors != null && expW > 0 && expH > 0)
             {
