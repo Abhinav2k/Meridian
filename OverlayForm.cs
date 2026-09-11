@@ -3143,63 +3143,52 @@ internal sealed class OverlayForm : Form
                         continue;
                     }
 
-                    // Continuous 2D surface distance gradient (pointing outward)
-                    double gx, gy;
-                    if (outsideDist > 1e-4)
+                    // Smooth, continuous C1 squircle dome model (Zero-crease, zero-triangle physical optics)
+                    double hw = Math.Max(1.0, geom.HalfWidth);
+                    double hh = Math.Max(1.0, geom.HalfHeight);
+                    double ux = px / hw;
+                    double uy = py / hh;
+                    double ux2 = ux * ux;
+                    double uy2 = uy * uy;
+                    double ux4 = ux2 * ux2;
+                    double uy4 = uy2 * uy2;
+
+                    // Apple squircle radial coordinate rNorm in [0, 1] with perfectly smooth contours
+                    double rNorm = Math.Clamp(Math.Pow(ux4 + uy4, 0.25), 0.0, 1.0);
+                    double r2 = rNorm * rNorm;
+                    double r4 = r2 * r2;
+
+                    // Outward surface gradient
+                    double vx = (ux2 * ux) / hw;
+                    double vy = (uy2 * uy) / hh;
+                    double vLen = Math.Sqrt(vx * vx + vy * vy);
+                    double gx = 0.0, gy = 0.0;
+                    if (vLen > 1e-7)
                     {
-                        gx = (outsideX / outsideDist) * Math.Sign(px);
-                        gy = (outsideY / outsideDist) * Math.Sign(py);
-                    }
-                    else
-                    {
-                        double signX = Math.Sign(px);
-                        double signY = Math.Sign(py);
-                        double diff = qx - qy;
-                        double blendW = Math.Clamp(diff * 0.25 + 0.5, 0.0, 1.0);
-                        blendW = blendW * blendW * (3.0 - 2.0 * blendW);
-                        gx = signX * blendW;
-                        gy = signY * (1.0 - blendW);
-                        double gLen = Math.Sqrt(gx * gx + gy * gy);
-                        if (gLen > 1e-4)
-                        {
-                            gx /= gLen;
-                            gy /= gLen;
-                        }
+                        gx = vx / vLen;
+                        gy = vy / vLen;
                     }
 
-                    // Two-tier Liquid Glass Profile: high-intensity edge meniscus decaying towards center, but non-zero baseline in center
-                    double edgeDist = Math.Max(0.0, -sdf);
-                    double maxDist = Math.Max(1.0, geom.Radius);
-
-                    // Body factor (broad scale across entire pill)
-                    double xi = Math.Clamp(edgeDist / maxDist, 0.0, 1.0);
-                    double fBody = 1.0 - xi; // 1.0 at edge, 0.0 at spine / center
-
-                    // Rim meniscus factor (focused high-intensity punch within outer 18px)
-                    double rimWidth = Math.Min(18.0, maxDist * 0.75);
-                    double normRim = Math.Clamp(edgeDist / Math.Max(1.0, rimWidth), 0.0, 1.0);
-                    double uRim = 1.0 - normRim;
-                    double fRim = uRim * uRim * (3.0 - 2.0 * uRim); // Hermite curve
-
-                    // Composite Intensity Factor K: peaks at 1.0 at edge, falls off toward center, but stays at 0.28 baseline
-                    double k = 0.28 + 0.32 * fBody + 0.40 * fRim;
-
-                    // Physical surface normal & slope proportional to K
-                    double sinTheta = Math.Min(0.92, 0.20 + 0.72 * k);
+                    // Physical surface slope sinTheta: zero at center, smoothly steepening to 0.90 at outer edge
+                    double slopeFactor = 0.30 * r2 + 0.70 * r4;
+                    double sinTheta = 0.90 * slopeFactor;
                     double nz = Math.Sqrt(Math.Max(0.01, 1.0 - sinTheta * sinTheta));
                     double nx = gx * sinTheta;
                     double ny = gy * sinTheta;
 
-                    // Pronounced Light Bending: high intensity at edges, smoothly decreasing toward center, non-zero in center
-                    double refractMag = 18.0 * k; // 18.0px at edge, decreasing to 5.0px in center
-                    double magShiftX = px * (0.040 + 0.035 * k);
-                    double magShiftY = py * (0.040 + 0.035 * k);
+                    // Continuous intensity factor: non-zero baseline in center (0.28), smooth peak at edges (1.0)
+                    double k = 0.28 + 0.72 * slopeFactor;
 
-                    double baseSx = Math.Clamp(x - gx * refractMag - magShiftX, 0.0, SurfaceWidth - 2.0);
-                    double baseSy = Math.Clamp(y - gy * refractMag - magShiftY, 0.0, SurfaceHeight - 2.0);
+                    // Symmetrical physical refraction displacement: vanishes at center, smoothly peaks at edges
+                    double refractMag = 16.0;
+                    double magShiftX = px * (0.040 + 0.030 * slopeFactor);
+                    double magShiftY = py * (0.040 + 0.030 * slopeFactor);
 
-                    // Chromatic Micro-Dispersion: sharp prism fringe at edges (2.0px), gentle shimmer in center (0.56px)
-                    double disp = 2.0 * k;
+                    double baseSx = Math.Clamp(x - nx * refractMag - magShiftX, 0.0, SurfaceWidth - 2.0);
+                    double baseSy = Math.Clamp(y - ny * refractMag - magShiftY, 0.0, SurfaceHeight - 2.0);
+
+                    // Chromatic Micro-Dispersion: sharp prism fringe at edges (1.8px), zero at center
+                    double disp = 1.8 * slopeFactor;
 
                     int rawR, rawG, rawB;
                     if (disp > 0.04)
@@ -3327,22 +3316,22 @@ internal sealed class OverlayForm : Form
                     int trG = (int)(rawG * (1.0 - diffusionMix) + blurG * diffusionMix);
                     int trB = (int)(rawB * (1.0 - diffusionMix) + blurB * diffusionMix);
 
-                    // Liquid glass smoky tint: 75% transmission of bent/blurred scene + 25% obsidian glass body
-                    int rGlass = (trR * 192 + 36 * 64) >> 8;
-                    int gGlass = (trG * 192 + 40 * 64) >> 8;
-                    int bGlass = (trB * 192 + 52 * 64) >> 8;
+                    // Liquid glass elegant smoked transmission: 78% transmission + refined obsidian body
+                    int rGlass = (trR * 200 + 40 * 56) >> 8;
+                    int gGlass = (trG * 200 + 44 * 56) >> 8;
+                    int bGlass = (trB * 200 + 56 * 56) >> 8;
 
                     // Specular Highlights & 3D Glass Illumination: sharpest at edges, tapering smoothly inward
                     double specKey = 0.0;
                     double specFill = 0.0;
 
-                    // Key light highlight along upper surface
+                    // Key light highlight along upper surface (subtle gleaming crystal reflection)
                     double ndoth1 = Math.Max(0.0, nx * H1x + ny * H1y + nz * H1z);
                     if (ndoth1 > H1z)
                     {
                         double tilt1 = (ndoth1 - H1z) * InvOneMinusH1z;
                         double t2 = tilt1 * tilt1;
-                        specKey = (t2 * t2) * (12.0 + 20.0 * k);
+                        specKey = (t2 * t2) * (18.0 + 32.0 * k);
                     }
 
                     // Ambient fill bounce along bottom surface
@@ -3350,17 +3339,26 @@ internal sealed class OverlayForm : Form
                     if (ndoth2 > H2z)
                     {
                         double tilt2 = (ndoth2 - H2z) * InvOneMinusH2z;
-                        specFill = (tilt2 * tilt2) * (4.0 + 8.0 * k);
+                        specFill = (tilt2 * tilt2) * (6.0 + 12.0 * k);
                     }
 
                     // Fresnel grazing rim sheen
                     double oneMinusNz = 1.0 - nz;
-                    double fresnelGlow = oneMinusNz * oneMinusNz * (6.0 + 16.0 * k);
+                    double fresnelGlow = oneMinusNz * oneMinusNz * (10.0 + 24.0 * k);
 
-                    // Composite liquid glass optics
-                    int finR = Math.Clamp(rGlass + (int)specKey + (int)specFill + (int)fresnelGlow, 0, 255);
-                    int finG = Math.Clamp(gGlass + (int)specKey + (int)specFill + (int)fresnelGlow, 0, 255);
-                    int finB = Math.Clamp(bGlass + (int)(specKey * 1.04) + (int)specFill + (int)(fresnelGlow * 1.08), 0, 255);
+                    // Gentle, tasteful upper meniscus edge light (subtle light presence)
+                    double topLight = 0.0;
+                    if (uy < 0.0 && rNorm > 0.65)
+                    {
+                        double topNorm = (-uy);
+                        double edgeCrest = Math.Pow((rNorm - 0.65) / 0.35, 2.0);
+                        topLight = topNorm * edgeCrest * 22.0;
+                    }
+
+                    // Composite liquid glass optics: balanced and tasteful
+                    int finR = Math.Clamp(rGlass + (int)specKey + (int)specFill + (int)fresnelGlow + (int)topLight, 0, 255);
+                    int finG = Math.Clamp(gGlass + (int)specKey + (int)specFill + (int)fresnelGlow + (int)topLight, 0, 255);
+                    int finB = Math.Clamp(bGlass + (int)(specKey * 1.04) + (int)specFill + (int)(fresnelGlow * 1.08) + (int)(topLight * 1.04), 0, 255);
 
                     // Composite over contact/ambient shadow
                     byte finalA = (shadowA > 0 && a < 255)
