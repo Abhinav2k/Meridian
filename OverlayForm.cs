@@ -3167,43 +3167,32 @@ internal sealed class OverlayForm : Form
                         }
                     }
 
-                    // 3D Liquid Meniscus Profile & Surface Normal (C2-continuous smootherstep)
+                    // 3D Liquid Lens Curvature & Continuous Surface Normal
                     double edgeDist = Math.Max(0.0, -sdf);
-                    double nx = 0.0, ny = 0.0, nz = 1.0;
-                    double sinTheta = 0.0;
-                    double uSmooth = 0.0;
+                    double maxDist = Math.Max(1.0, geom.Radius);
+                    double normDist = Math.Clamp(edgeDist / maxDist, 0.0, 1.0);
+                    double u = 1.0 - normDist; // 1.0 at outer edge, 0.0 at spine / center
+                    double u2 = u * u;
+                    double sinTheta = u * (0.45 + 0.45 * u2); // Smooth continuous slope across the entire body
+                    double nz = Math.Sqrt(Math.Max(0.01, 1.0 - sinTheta * sinTheta));
+                    double nx = gx * sinTheta;
+                    double ny = gy * sinTheta;
 
-                    if (edgeDist < bevelWidth)
-                    {
-                        double u = 1.0 - (edgeDist * invBevelWidth); // 1.0 at outer edge, 0.0 at interior
-                        // C2-smooth Hermite curve for slope: ensures zero derivative at interior transition
-                        double u2 = u * u;
-                        uSmooth = u2 * (3.0 - 2.0 * u);
-                        sinTheta = uSmooth * 0.88;
-                        nz = Math.Sqrt(Math.Max(0.01, 1.0 - sinTheta * sinTheta));
+                    // Pronounced Light Bending & Lens Distortion All Over the Blur
+                    // 1. Full-surface refraction displacement along the 3D surface gradient
+                    double refractMag = sinTheta * 16.0; // Bends up to 14.4px, active across the entire glass
+                    // 2. Continuous convex lens magnification
+                    double magShiftX = px * 0.065;
+                    double magShiftY = py * 0.065;
 
-                        nx = gx * sinTheta;
-                        ny = gy * sinTheta;
-                    }
+                    double baseSx = Math.Clamp(x - gx * refractMag - magShiftX, 0.0, SurfaceWidth - 2.0);
+                    double baseSy = Math.Clamp(y - gy * refractMag - magShiftY, 0.0, SurfaceHeight - 2.0);
 
-                    // Pronounced Light Bending & Convex Lens Magnification
-                    // 1. Edge Refraction: bends background elements along the curved perimeter
-                    double edgeRefract = sinTheta * 15.0; // Tangible 13.2px physical light deflection!
-
-                    // 2. Central Convex Lens Magnification: 5.5% zoom across the face
-                    double domeWeight = Math.Clamp(edgeDist * (1.0 / 22.0), 0.0, 1.0);
-                    domeWeight = domeWeight * domeWeight * (3.0 - 2.0 * domeWeight);
-                    double magShiftX = px * 0.055 * domeWeight;
-                    double magShiftY = py * 0.055 * domeWeight;
-
-                    double baseSx = Math.Clamp(x - gx * edgeRefract - magShiftX, 0.0, SurfaceWidth - 2.0);
-                    double baseSy = Math.Clamp(y - gy * edgeRefract - magShiftY, 0.0, SurfaceHeight - 2.0);
-
-                    // Micro-dispersion: subtle chromatic prism fringe along curved meniscus
-                    double disp = (edgeDist < bevelWidth) ? uSmooth * 1.6 : 0.0;
+                    // Micro-dispersion: chromatic prism fringe across the entire refracted glass
+                    double disp = sinTheta * 1.5;
 
                     int rawR, rawG, rawB;
-                    if (disp > 0.05)
+                    if (disp > 0.04)
                     {
                         // Chromatic dispersion
                         double sxR = Math.Clamp(baseSx + gx * disp, 0.0, SurfaceWidth - 2.0);
@@ -3285,11 +3274,11 @@ internal sealed class OverlayForm : Form
                     int gHvy = (pHeavyBlurred[bo00 + 1] * bw00 + pHeavyBlurred[bo10 + 1] * bw10 + pHeavyBlurred[bo01 + 1] * bw01 + pHeavyBlurred[bo11 + 1] * bw11) >> 8;
                     int rHvy = (pHeavyBlurred[bo00 + 2] * bw00 + pHeavyBlurred[bo10 + 2] * bw10 + pHeavyBlurred[bo01 + 2] * bw01 + pHeavyBlurred[bo11 + 2] * bw11) >> 8;
 
-                    // Deep silky blur interior with heavier edge frosting
-                    double frostFactor = (edgeDist < bevelWidth) ? uSmooth * 0.70 : 0.0;
-                    int blurB = (int)(bStd + (bHvy - bStd) * frostFactor);
-                    int blurG = (int)(gStd + (gHvy - gStd) * frostFactor);
-                    int blurR = (int)(rStd + (rHvy - rStd) * frostFactor);
+                    // Deep creamy cascade blur all over the blur area
+                    double heavyBlend = 0.85 + 0.15 * u;
+                    int blurB = (int)(bStd * (1.0 - heavyBlend) + bHvy * heavyBlend);
+                    int blurG = (int)(gStd * (1.0 - heavyBlend) + gHvy * heavyBlend);
+                    int blurR = (int)(rStd * (1.0 - heavyBlend) + rHvy * heavyBlend);
 
                     // Distinct blur under expanded music tab media buttons
                     double btnBlurFactor = 0.0;
@@ -3317,11 +3306,11 @@ internal sealed class OverlayForm : Form
                         }
                     }
 
-                    // Optical diffusion mix: creamy backdrop blur ("with the blur innit") combined with sharp bent background
-                    double diffusionMix = 0.62 + ((edgeDist < bevelWidth) ? uSmooth * 0.16 : 0.0);
+                    // Optical diffusion mix: creamy backdrop blur with the edge-style light bending all over
+                    double diffusionMix = 0.72 + 0.16 * u;
                     if (btnBlurFactor > 0.01)
                     {
-                        diffusionMix = Math.Max(diffusionMix, 0.70 + btnBlurFactor * 0.25);
+                        diffusionMix = Math.Max(diffusionMix, 0.82 + btnBlurFactor * 0.16);
                     }
 
                     int trR = (int)(rawR * (1.0 - diffusionMix) + blurR * diffusionMix);
@@ -3333,34 +3322,30 @@ internal sealed class OverlayForm : Form
                     int gGlass = (trG * 192 + 40 * 64) >> 8;
                     int bGlass = (trB * 192 + 52 * 64) >> 8;
 
-                    // Specular Highlights & Curved Rim Optics (active along curved meniscus)
+                    // Specular Highlights & 3D Glass Illumination across the continuous surface
                     double specKey = 0.0;
                     double specFill = 0.0;
-                    double fresnelGlow = 0.0;
 
-                    if (edgeDist < bevelWidth)
+                    // Key light highlight along the upper curved surface
+                    double ndoth1 = Math.Max(0.0, nx * H1x + ny * H1y + nz * H1z);
+                    if (ndoth1 > H1z)
                     {
-                        // Key light highlight along the upper curved bevel
-                        double ndoth1 = Math.Max(0.0, nx * H1x + ny * H1y + nz * H1z);
-                        if (ndoth1 > H1z)
-                        {
-                            double tilt1 = (ndoth1 - H1z) * InvOneMinusH1z;
-                            double t2 = tilt1 * tilt1;
-                            specKey = (t2 * t2) * 28.0;
-                        }
-
-                        // Ambient fill bounce along the bottom curved bevel
-                        double ndoth2 = Math.Max(0.0, nx * H2x + ny * H2y + nz * H2z);
-                        if (ndoth2 > H2z)
-                        {
-                            double tilt2 = (ndoth2 - H2z) * InvOneMinusH2z;
-                            specFill = (tilt2 * tilt2) * 10.0;
-                        }
-
-                        // Fresnel grazing rim sheen
-                        double oneMinusNz = 1.0 - nz;
-                        fresnelGlow = oneMinusNz * oneMinusNz * 16.0;
+                        double tilt1 = (ndoth1 - H1z) * InvOneMinusH1z;
+                        double t2 = tilt1 * tilt1;
+                        specKey = (t2 * t2) * 26.0;
                     }
+
+                    // Ambient fill bounce along the bottom curved surface
+                    double ndoth2 = Math.Max(0.0, nx * H2x + ny * H2y + nz * H2z);
+                    if (ndoth2 > H2z)
+                    {
+                        double tilt2 = (ndoth2 - H2z) * InvOneMinusH2z;
+                        specFill = (tilt2 * tilt2) * 10.0;
+                    }
+
+                    // Fresnel grazing rim sheen
+                    double oneMinusNz = 1.0 - nz;
+                    double fresnelGlow = oneMinusNz * oneMinusNz * 16.0;
 
                     // Composite liquid glass optics
                     int finR = Math.Clamp(rGlass + (int)specKey + (int)specFill + (int)fresnelGlow, 0, 255);
