@@ -776,7 +776,8 @@ internal sealed class OverlayForm : Form
     private double _progress = 0.0;
     private double _hoverPos = 0.0; // Spring position (0.0 to 1.0+)
     private double _hoverVel = 0.0; // Spring velocity
-    private volatile bool _suppressHoverUntilExit = false;
+    private volatile bool _userDismissed = false;
+    private volatile bool _cursorWasInsideNotch = false;
     private long _lastLeftClickTime = 0;
     private Point _lastLeftClickPos = Point.Empty;
     private double _animDirection = 1.0; // +1.0 = forward (expand), -1.0 = backward (retract)
@@ -913,7 +914,7 @@ internal sealed class OverlayForm : Form
         {
             if (e.Button == MouseButtons.Left)
             {
-                ToggleOrCollapseExpandedIsland();
+                CollapseAndDespawnIsland();
             }
         };
 
@@ -939,11 +940,11 @@ internal sealed class OverlayForm : Form
 
                 if (isDblClick)
                 {
-                    ToggleOrCollapseExpandedIsland();
+                    CollapseAndDespawnIsland();
                     return;
                 }
 
-                if (_hoverPos > 0.3 && !_suppressHoverUntilExit)
+                if (_hoverPos > 0.3 && !_userDismissed)
                 {
                     await HandleExpandedClickAsync(e.Location);
                 }
@@ -951,23 +952,18 @@ internal sealed class OverlayForm : Form
         };
     }
 
-    private void ToggleOrCollapseExpandedIsland()
+    private void CollapseAndDespawnIsland()
     {
-        if (_hoverPos > 0.25)
-        {
-            // Double click on expanded on hover island collapses it back to compact pill
-            _suppressHoverUntilExit = true;
-            _hoverVel = Math.Min(_hoverVel, -6.0);
-            _hoveredButton = BtnNone;
-            _clickedButton = BtnNone;
-            UpdateExpandedMask();
-        }
-        else if (_suppressHoverUntilExit)
-        {
-            // Double click on collapsed pill while still hovering re-expands it
-            _suppressHoverUntilExit = false;
-            _hoverVel = Math.Max(_hoverVel, 6.0);
-        }
+        // Double clicking collapses the island and despawns it completely off-screen
+        _userDismissed = true;
+        _cursorWasInsideNotch = true;
+        _unhoverShowTimeUntil = DateTime.MinValue;
+        _musicTimeDisplayUntil = DateTime.MinValue;
+        _hoverVel = Math.Min(_hoverVel, -8.0);
+        _animDirection = -1.0;
+        _hoveredButton = BtnNone;
+        _clickedButton = BtnNone;
+        UpdateExpandedMask();
     }
 
     private void OnSystemMediaUpdated()
@@ -2550,7 +2546,7 @@ internal sealed class OverlayForm : Form
 
         if (m.Msg == WmLButtonDblClk)
         {
-            ToggleOrCollapseExpandedIsland();
+            CollapseAndDespawnIsland();
             m.Result = IntPtr.Zero;
             return;
         }
@@ -2605,6 +2601,7 @@ internal sealed class OverlayForm : Form
             if (justStartedPlaying || trackChanged)
             {
                 _musicTimeDisplayUntil = utcNow.AddMinutes(2);
+                _userDismissed = false;
             }
             _lastWasPlaying = _isPlaying;
             if (_isPlaying)
@@ -2648,16 +2645,26 @@ internal sealed class OverlayForm : Form
                     }
                 }
 
-                // If hover is suppressed (e.g. collapsed by double-click), reset once cursor leaves pill area
-                if (_suppressHoverUntilExit)
+                // If user dismissed the island, keep it despawned until cursor moves away and re-enters notch
+                if (_userDismissed)
                 {
                     if (!cursorInPill)
                     {
-                        _suppressHoverUntilExit = false;
+                        _cursorWasInsideNotch = false;
+                    }
+                    else if (!_cursorWasInsideNotch)
+                    {
+                        // Cursor re-entered the notch from outside! Summon pill back!
+                        _userDismissed = false;
+                        _cursorWasInsideNotch = true;
                     }
                 }
+                else
+                {
+                    _cursorWasInsideNotch = cursorInPill;
+                }
 
-                if (cursorInPill && !_suppressHoverUntilExit)
+                if (cursorInPill && !_userDismissed)
                 {
                     isHovered = true;
                 }
@@ -2669,7 +2676,7 @@ internal sealed class OverlayForm : Form
                     UpdateExpandedMask();
                 }
 
-                if (_hoverPos > 0.6 && !_suppressHoverUntilExit)
+                if (_hoverPos > 0.6 && !_userDismissed)
                 {
                     // 4 Tab Switcher Hover: Home [86, 108), Music [108, 130), Weather [130, 152), Chrono [152, 176]
                     if (mouseSurfaceY >= 24 && mouseSurfaceY <= 54)
@@ -2749,7 +2756,7 @@ internal sealed class OverlayForm : Form
             // Otherwise: despawns and hides
             bool isOClock = (now.Minute < 3);
             bool isUnhoverActive = (utcNow < _unhoverShowTimeUntil);
-            bool shouldBeSpawned = isHovered || _hasActiveMedia || isOClock || isUnhoverActive;
+            bool shouldBeSpawned = !_userDismissed && (isHovered || _hasActiveMedia || isOClock || isUnhoverActive);
 
             if (shouldBeSpawned)
             {
@@ -2760,7 +2767,7 @@ internal sealed class OverlayForm : Form
             }
             else
             {
-                if (_progress > 0.0 && !isHovered && (_animDirection > 0.0 || _animDirection == 0.0))
+                if (_progress > 0.0 && (_animDirection > 0.0 || _animDirection == 0.0))
                 {
                     _animDirection = -1.0;
                 }
