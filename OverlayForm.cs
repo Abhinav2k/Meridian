@@ -2421,6 +2421,20 @@ internal sealed class OverlayForm : Form
                 SaveDesktopScreenshotWithPill("screenshot.png");
                 File.Delete(triggerPath);
             }
+
+            string expTriggerPath = Path.Combine(rootDir, "take_screenshot_expanded.trigger");
+            if (File.Exists(expTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _activeTab = TabHome;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_expanded.png");
+                File.Delete(expTriggerPath);
+            }
         }
         catch { }
     }
@@ -2550,7 +2564,8 @@ internal sealed class OverlayForm : Form
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
                     double mouseSdf = outDist + insideDist - _currentGeometry.Radius;
 
-                    if (mouseSdf <= 1.5)
+                    // Allow hover either directly inside/near the pill OR in the top notch summoning strip above the pill
+                    if (mouseSdf <= 2.0 || (mouseSurfaceY >= 0 && mouseSurfaceY <= TopPadding + 8 && Math.Abs(mouseSurfaceX - _currentGeometry.CenterX) <= _currentGeometry.HalfWidth))
                     {
                         isHovered = true;
                     }
@@ -2558,7 +2573,7 @@ internal sealed class OverlayForm : Form
                 else
                 {
                     // Notch hover trigger to summon pill when despawned / hidden
-                    if (mouseSurfaceY >= 0 && mouseSurfaceY <= 26 && Math.Abs(mouseSurfaceX - 300) <= 60)
+                    if (mouseSurfaceY >= 0 && mouseSurfaceY <= 26 && Math.Abs(mouseSurfaceX - 300) <= 70)
                     {
                         isHovered = true;
                     }
@@ -2891,7 +2906,6 @@ internal sealed class OverlayForm : Form
         fixed (byte* pHalfRaw = _halfRawBuffer)
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
-        fixed (byte* pHeavyBlurred = _heavyBlurBuffer)
         {
             // 1. Box downsample (600x250 -> 300x125)
             for (int y = 0; y < HalfHeight; y++)
@@ -2978,75 +2992,31 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            // 2b. Second-pass cascade Gaussian Blur on 300x125 (deep, creamy edge frosting)
-            for (int y = 0; y < HalfHeight; y++)
-            {
-                int rowOffset = y * HalfWidth * 4;
-                for (int x = 0; x < HalfWidth; x++)
-                {
-                    int xm2 = Math.Max(0, x - 2);
-                    int xm1 = Math.Max(0, x - 1);
-                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
-                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
 
-                    int offM2 = rowOffset + xm2 * 4;
-                    int offM1 = rowOffset + xm1 * 4;
-                    int off0 = rowOffset + x * 4;
-                    int offP1 = rowOffset + xp1 * 4;
-                    int offP2 = rowOffset + xp2 * 4;
-
-                    for (int c = 0; c < 3; c++)
-                    {
-                        int sum = pBlurred[offM2 + c] +
-                                  (pBlurred[offM1 + c] << 2) +
-                                  pBlurred[off0 + c] * 6 +
-                                  (pBlurred[offP1 + c] << 2) +
-                                  pBlurred[offP2 + c];
-                        pBlurH[off0 + c] = (byte)(sum >> 4);
-                    }
-                    pBlurH[off0 + 3] = 255;
-                }
-            }
-
-            for (int y = 0; y < HalfHeight; y++)
-            {
-                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
-                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
-                int y0 = y * HalfWidth * 4;
-                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
-                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
-
-                for (int x = 0; x < HalfWidth; x++)
-                {
-                    int colOffset = x * 4;
-                    int offM2 = ym2 + colOffset;
-                    int offM1 = ym1 + colOffset;
-                    int off0 = y0 + colOffset;
-                    int offP1 = yp1 + colOffset;
-                    int offP2 = yp2 + colOffset;
-
-                    for (int c = 0; c < 3; c++)
-                    {
-                        int sum = pBlurH[offM2 + c] +
-                                  (pBlurH[offM1 + c] << 2) +
-                                  pBlurH[off0 + c] * 6 +
-                                  (pBlurH[offP1 + c] << 2) +
-                                  pBlurH[offP2 + c];
-                        pHeavyBlurred[off0 + c] = (byte)(sum >> 4);
-                    }
-                    pHeavyBlurred[off0 + 3] = 255;
-                }
-            }
-
-            // 3. Liquid Glass Refraction & Specular Lighting
-            double straightW = geom.HalfWidth - geom.Radius;
-            double straightH = geom.HalfHeight - geom.Radius;
+            // 3. Apple-Grade Liquid Glass Physical Optics Engine
+            double straightW = Math.Max(0.0, geom.HalfWidth - geom.Radius);
+            double straightH = Math.Max(0.0, geom.HalfHeight - geom.Radius);
+            double bevelWidth = Math.Min(7.0, geom.Radius * 0.38);
+            double invBevelWidth = 1.0 / Math.Max(1.0, bevelWidth);
 
             double spawnExpAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
             double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
             double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
             double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
             bool isMusicTabActive = (_activeTab == TabMusic) && (expAlpha > 0.01);
+
+            // Virtual illumination vectors (normalized half-vectors with view ray V = (0, 0, 1))
+            // Primary key light from top-left (elevation ~65°)
+            const double H1x = -0.175;
+            const double H1y = -0.496;
+            const double H1z = 0.8505;
+            const double InvOneMinusH1z = 1.0 / (1.0 - H1z);
+
+            // Ambient fill light bounce from bottom edge
+            const double H2x = 0.06;
+            const double H2y = 0.54;
+            const double H2z = 0.84;
+            const double InvOneMinusH2z = 1.0 / (1.0 - H2z);
 
             for (int y = 0; y < SurfaceHeight; y++)
             {
@@ -3068,15 +3038,16 @@ internal sealed class OverlayForm : Form
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
                     double sdf = outsideDist + insideDist - geom.Radius;
 
-                    double edgeFactor = Math.Clamp((-sdf + 0.8) / 1.6, 0.0, 1.0);
+                    // Subpixel Hermite anti-aliased edge alpha (C1-smooth transition)
+                    double edgeFactor = Math.Clamp((-sdf + 0.75) * (1.0 / 1.5), 0.0, 1.0);
                     double alphaVal = edgeFactor * edgeFactor * (3.0 - 2.0 * edgeFactor);
                     byte a = (byte)Math.Round(alphaVal * 255.0);
 
-                    // Soft ambient drop shadow computation (evaluated in the outer penumbra band)
+                    // Dual-component physical elevation shadow (contact + ambient penumbra)
                     byte shadowA = 0;
-                    if (sdf >= -1.5 && sdf <= 22.0)
+                    if (sdf >= -1.0 && sdf <= 20.0)
                     {
-                        double spy = py - 4.0;
+                        double spy = py - 3.0;
                         double absSpy = Math.Abs(spy);
                         double sqy = absSpy - straightH;
                         double sOutX = Math.Max(0.0, qx);
@@ -3085,12 +3056,17 @@ internal sealed class OverlayForm : Form
                         double sInDist = Math.Min(0.0, Math.Max(qx, sqy));
                         double shadowSdf = sOutDist + sInDist - geom.Radius;
 
-                        if (shadowSdf < 16.0)
-                        {
-                            double sNorm = Math.Clamp(shadowSdf / 14.0, 0.0, 1.0);
-                            double sFalloff = (1.0 - sNorm) * (1.0 - sNorm);
-                            shadowA = (byte)(sFalloff * 45.0);
-                        }
+                        // Contact shadow (hugs edge within 5px)
+                        double cNorm = Math.Clamp((shadowSdf + 1.0) * (1.0 / 6.0), 0.0, 1.0);
+                        double cFalloff = (1.0 - cNorm) * (1.0 - cNorm);
+                        double cAlpha = cFalloff * 20.0;
+
+                        // Ambient depth penumbra (soft falloff up to 15px)
+                        double pNorm = Math.Clamp(shadowSdf * (1.0 / 15.0), 0.0, 1.0);
+                        double pFalloff = (1.0 - pNorm) * (1.0 - pNorm);
+                        double pAlpha = pFalloff * 12.0;
+
+                        shadowA = (byte)Math.Clamp(Math.Round(Math.Max(cAlpha, pAlpha)), 0.0, 255.0);
                     }
 
                     if (a == 0)
@@ -3099,61 +3075,144 @@ internal sealed class OverlayForm : Form
                         continue;
                     }
 
-                    double nx = 0.0, ny = 0.0;
+                    // Continuous 2D surface distance gradient (pointing outward)
+                    double gx, gy;
                     if (outsideDist > 1e-4)
                     {
-                        nx = (outsideX / outsideDist) * Math.Sign(px);
-                        ny = (outsideY / outsideDist) * Math.Sign(py);
-                    }
-                    else if (insideDist > -1e-4)
-                    {
-                        if (qx > qy) nx = Math.Sign(px);
-                        else ny = Math.Sign(py);
+                        gx = (outsideX / outsideDist) * Math.Sign(px);
+                        gy = (outsideY / outsideDist) * Math.Sign(py);
                     }
                     else
                     {
-                        if (qx > qy) nx = Math.Sign(px) * Math.Clamp(1.0 + qx / geom.Radius, 0.0, 1.0);
-                        else ny = Math.Sign(py) * Math.Clamp(1.0 + qy / geom.Radius, 0.0, 1.0);
+                        double signX = Math.Sign(px);
+                        double signY = Math.Sign(py);
+                        double diff = qx - qy;
+                        double blendW = Math.Clamp(diff * 0.25 + 0.5, 0.0, 1.0);
+                        blendW = blendW * blendW * (3.0 - 2.0 * blendW);
+                        gx = signX * blendW;
+                        gy = signY * (1.0 - blendW);
+                        double gLen = Math.Sqrt(gx * gx + gy * gy);
+                        if (gLen > 1e-4)
+                        {
+                            gx /= gLen;
+                            gy /= gLen;
+                        }
                     }
 
-                    double edgeDistance = Math.Max(0.0, -sdf);
-                    double u = Math.Clamp(1.0 - (edgeDistance * (1.0 / 14.0)), 0.0, 1.0);
-                    double bend = (u * u * Math.Sqrt(u)) * 6.5;
+                    // 3D Liquid Meniscus Profile & Surface Normal (C2-continuous smootherstep)
+                    double edgeDist = Math.Max(0.0, -sdf);
+                    double nx = 0.0, ny = 0.0, nz = 1.0;
+                    double sinTheta = 0.0;
+                    double u = 0.0;
 
-                    double sx = Math.Clamp(x - nx * bend, 0.0, SurfaceWidth - 2.0);
-                    double sy = Math.Clamp(y - ny * bend, 0.0, SurfaceHeight - 2.0);
+                    if (edgeDist < bevelWidth)
+                    {
+                        u = 1.0 - (edgeDist * invBevelWidth); // 1.0 at outer edge, 0.0 at interior
+                        // C2-smooth Hermite curve for slope: ensures zero derivative at interior transition
+                        double u2 = u * u;
+                        double uSmooth = u2 * (3.0 - 2.0 * u);
+                        sinTheta = uSmooth * 0.70;
+                        nz = Math.Sqrt(Math.Max(0.01, 1.0 - sinTheta * sinTheta));
 
-                    double hx = Math.Clamp(sx * 0.5, 0.0, HalfWidth - 2.0);
-                    double hy = Math.Clamp(sy * 0.5, 0.0, HalfHeight - 2.0);
+                        nx = gx * sinTheta;
+                        ny = gy * sinTheta;
+                    }
 
-                    int ix = (int)hx;
-                    int iy = (int)hy;
-                    double fx = hx - ix;
-                    double fy = hy - iy;
+                    // Refraction Displacement & Central Lens Magnification
+                    double refractMag = sinTheta * 3.8;
 
-                    int w00 = (int)((1.0 - fx) * (1.0 - fy) * 256.0);
-                    int w10 = (int)(fx * (1.0 - fy) * 256.0);
-                    int w01 = (int)((1.0 - fx) * fy * 256.0);
-                    int w11 = Math.Max(0, 256 - (w00 + w10 + w01));
+                    // Central convex lens magnification (1.5% zoom)
+                    double magWeight = Math.Clamp(edgeDist * (1.0 / 20.0), 0.0, 1.0);
+                    magWeight = magWeight * magWeight * (3.0 - 2.0 * magWeight);
+                    double magShiftX = px * 0.015 * magWeight;
+                    double magShiftY = py * 0.015 * magWeight;
 
-                    int off00 = (iy * HalfWidth + ix) * 4;
-                    int off10 = (iy * HalfWidth + ix + 1) * 4;
-                    int off01 = ((iy + 1) * HalfWidth + ix) * 4;
-                    int off11 = ((iy + 1) * HalfWidth + ix + 1) * 4;
+                    double baseSx = Math.Clamp(x - gx * refractMag - magShiftX, 0.0, SurfaceWidth - 2.0);
+                    double baseSy = Math.Clamp(y - gy * refractMag - magShiftY, 0.0, SurfaceHeight - 2.0);
 
-                    int bStd = (pBlurred[off00 + 0] * w00 + pBlurred[off10 + 0] * w10 + pBlurred[off01 + 0] * w01 + pBlurred[off11 + 0] * w11) >> 8;
-                    int gStd = (pBlurred[off00 + 1] * w00 + pBlurred[off10 + 1] * w10 + pBlurred[off01 + 1] * w01 + pBlurred[off11 + 1] * w11) >> 8;
-                    int rStd = (pBlurred[off00 + 2] * w00 + pBlurred[off10 + 2] * w10 + pBlurred[off01 + 2] * w01 + pBlurred[off11 + 2] * w11) >> 8;
+                    // Micro-dispersion: subtle chromatic fringe right at curved outer rim
+                    double disp = (edgeDist < bevelWidth) ? u * u * 0.40 : 0.0;
 
-                    int bHvy = (pHeavyBlurred[off00 + 0] * w00 + pHeavyBlurred[off10 + 0] * w10 + pHeavyBlurred[off01 + 0] * w01 + pHeavyBlurred[off11 + 0] * w11) >> 8;
-                    int gHvy = (pHeavyBlurred[off00 + 1] * w00 + pHeavyBlurred[off10 + 1] * w10 + pHeavyBlurred[off01 + 1] * w01 + pHeavyBlurred[off11 + 1] * w11) >> 8;
-                    int rHvy = (pHeavyBlurred[off00 + 2] * w00 + pHeavyBlurred[off10 + 2] * w10 + pHeavyBlurred[off01 + 2] * w01 + pHeavyBlurred[off11 + 2] * w11) >> 8;
+                    int rawR, rawG, rawB;
+                    if (disp > 0.05)
+                    {
+                        // Chromatic dispersion
+                        double sxR = Math.Clamp(baseSx + gx * disp, 0.0, SurfaceWidth - 2.0);
+                        double syR = Math.Clamp(baseSy + gy * disp, 0.0, SurfaceHeight - 2.0);
+                        double sxB = Math.Clamp(baseSx - gx * disp, 0.0, SurfaceWidth - 2.0);
+                        double syB = Math.Clamp(baseSy - gy * disp, 0.0, SurfaceHeight - 2.0);
 
-                    // Edge Frosting Outline: smooth optical transition from clear/standard blur to dense milky blur at outer rim (within 8px)
-                    double frostFactor = Math.Clamp(1.0 - (edgeDistance * (1.0 / 8.0)), 0.0, 1.0);
-                    double frostSmooth = frostFactor * frostFactor * (3.0 - 2.0 * frostFactor);
+                        int ixR = (int)sxR, iyR = (int)syR;
+                        double fxR = sxR - ixR, fyR = syR - iyR;
+                        int w00R = (int)((1.0 - fxR) * (1.0 - fyR) * 256.0);
+                        int w10R = (int)(fxR * (1.0 - fyR) * 256.0);
+                        int w01R = (int)((1.0 - fxR) * fyR * 256.0);
+                        int w11R = Math.Max(0, 256 - (w00R + w10R + w01R));
+                        int r0R = iyR * SurfaceWidth * 4, r1R = (iyR + 1) * SurfaceWidth * 4;
+                        rawR = (pRaw[r0R + (ixR << 2) + 2] * w00R + pRaw[r0R + ((ixR + 1) << 2) + 2] * w10R +
+                                pRaw[r1R + (ixR << 2) + 2] * w01R + pRaw[r1R + ((ixR + 1) << 2) + 2] * w11R) >> 8;
 
-                    // Distinct Blur Intensity under Rounded Square Media Buttons
+                        int ixG = (int)baseSx, iyG = (int)baseSy;
+                        double fxG = baseSx - ixG, fyG = baseSy - iyG;
+                        int w00G = (int)((1.0 - fxG) * (1.0 - fyG) * 256.0);
+                        int w10G = (int)(fxG * (1.0 - fyG) * 256.0);
+                        int w01G = (int)((1.0 - fxG) * fyG * 256.0);
+                        int w11G = Math.Max(0, 256 - (w00G + w10G + w01G));
+                        int r0G = iyG * SurfaceWidth * 4, r1G = (iyG + 1) * SurfaceWidth * 4;
+                        rawG = (pRaw[r0G + (ixG << 2) + 1] * w00G + pRaw[r0G + ((ixG + 1) << 2) + 1] * w10G +
+                                pRaw[r1G + (ixG << 2) + 1] * w01G + pRaw[r1R + ((ixG + 1) << 2) + 1] * w11G) >> 8;
+
+                        int ixB = (int)sxB, iyB = (int)syB;
+                        double fxB = sxB - ixB, fyB = syB - iyB;
+                        int w00B = (int)((1.0 - fxB) * (1.0 - fyB) * 256.0);
+                        int w10B = (int)(fxB * (1.0 - fyB) * 256.0);
+                        int w01B = (int)((1.0 - fxB) * fyB * 256.0);
+                        int w11B = Math.Max(0, 256 - (w00B + w10B + w01B));
+                        int r0B = iyB * SurfaceWidth * 4, r1B = (iyB + 1) * SurfaceWidth * 4;
+                        rawB = (pRaw[r0B + (ixB << 2)] * w00B + pRaw[r0B + ((ixB + 1) << 2)] * w10B +
+                                pRaw[r1B + (ixB << 2)] * w01B + pRaw[r1B + ((ixB + 1) << 2)] * w11B) >> 8;
+                    }
+                    else
+                    {
+                        // Crystal-clear direct bilinear sample from full-res captured background
+                        int ix = (int)baseSx, iy = (int)baseSy;
+                        double fx = baseSx - ix, fy = baseSy - iy;
+                        int w00 = (int)((1.0 - fx) * (1.0 - fy) * 256.0);
+                        int w10 = (int)(fx * (1.0 - fy) * 256.0);
+                        int w01 = (int)((1.0 - fx) * fy * 256.0);
+                        int w11 = Math.Max(0, 256 - (w00 + w10 + w01));
+
+                        int r0 = iy * SurfaceWidth * 4;
+                        int r1 = (iy + 1) * SurfaceWidth * 4;
+                        int o00 = r0 + (ix << 2);
+                        int o10 = r0 + ((ix + 1) << 2);
+                        int o01 = r1 + (ix << 2);
+                        int o11 = r1 + ((ix + 1) << 2);
+
+                        rawB = (pRaw[o00] * w00 + pRaw[o10] * w10 + pRaw[o01] * w01 + pRaw[o11] * w11) >> 8;
+                        rawG = (pRaw[o00 + 1] * w00 + pRaw[o10 + 1] * w10 + pRaw[o01 + 1] * w01 + pRaw[o11 + 1] * w11) >> 8;
+                        rawR = (pRaw[o00 + 2] * w00 + pRaw[o10 + 2] * w10 + pRaw[o01 + 2] * w01 + pRaw[o11 + 2] * w11) >> 8;
+                    }
+
+                    // Velvet micro-dispersion sample from half-res blurred buffer
+                    double hx = Math.Clamp(baseSx * 0.5, 0.0, HalfWidth - 2.0);
+                    double hy = Math.Clamp(baseSy * 0.5, 0.0, HalfHeight - 2.0);
+                    int bix = (int)hx, biy = (int)hy;
+                    double bfx = hx - bix, bfy = hy - biy;
+                    int bw00 = (int)((1.0 - bfx) * (1.0 - bfy) * 256.0);
+                    int bw10 = (int)(bfx * (1.0 - bfy) * 256.0);
+                    int bw01 = (int)((1.0 - bfx) * bfy * 256.0);
+                    int bw11 = Math.Max(0, 256 - (bw00 + bw10 + bw01));
+                    int bo00 = (biy * HalfWidth + bix) * 4;
+                    int bo10 = (biy * HalfWidth + bix + 1) * 4;
+                    int bo01 = ((biy + 1) * HalfWidth + bix) * 4;
+                    int bo11 = ((biy + 1) * HalfWidth + bix + 1) * 4;
+
+                    int blurB = (pBlurred[bo00] * bw00 + pBlurred[bo10] * bw10 + pBlurred[bo01] * bw01 + pBlurred[bo11] * bw11) >> 8;
+                    int blurG = (pBlurred[bo00 + 1] * bw00 + pBlurred[bo10 + 1] * bw10 + pBlurred[bo01 + 1] * bw01 + pBlurred[bo11 + 1] * bw11) >> 8;
+                    int blurR = (pBlurred[bo00 + 2] * bw00 + pBlurred[bo10 + 2] * bw10 + pBlurred[bo01 + 2] * bw01 + pBlurred[bo11 + 2] * bw11) >> 8;
+
+                    // Distinct blur under expanded music tab media buttons
                     double btnBlurFactor = 0.0;
                     if (isMusicTabActive && y >= 124 && y <= 168)
                     {
@@ -3168,9 +3227,7 @@ internal sealed class OverlayForm : Form
                         {
                             double bqx = Math.Abs(x - bcx) - (bhs - br);
                             double bqy = Math.Abs(y - 146.0) - (bhs - br);
-                            double oX = Math.Max(0.0, bqx);
-                            double oY = Math.Max(0.0, bqy);
-                            double oDist = Math.Sqrt(oX * oX + oY * oY);
+                            double oDist = Math.Sqrt(Math.Max(0.0, bqx) * Math.Max(0.0, bqx) + Math.Max(0.0, bqy) * Math.Max(0.0, bqy));
                             double iDist = Math.Min(0.0, Math.Max(bqx, bqy));
                             double btnSdf = oDist + iDist - br;
 
@@ -3181,29 +3238,64 @@ internal sealed class OverlayForm : Form
                         }
                     }
 
-                    double effectiveHeavyFactor = Math.Max(frostSmooth, btnBlurFactor * 0.95);
+                    // Optical diffusion mix: 100% sharp raw in center, subtle micro-dispersion at perimeter
+                    double diffusionMix = (edgeDist < bevelWidth) ? u * u * 0.08 : 0.0;
+                    if (btnBlurFactor > 0.01)
+                    {
+                        diffusionMix = Math.Max(diffusionMix, btnBlurFactor * 0.70);
+                    }
 
-                    int b = (int)(bStd + (bHvy - bStd) * effectiveHeavyFactor);
-                    int g = (int)(gStd + (gHvy - gStd) * effectiveHeavyFactor);
-                    int r = (int)(rStd + (rHvy - rStd) * effectiveHeavyFactor);
+                    int trR = (diffusionMix > 0.001) ? (int)(rawR * (1.0 - diffusionMix) + blurR * diffusionMix) : rawR;
+                    int trG = (diffusionMix > 0.001) ? (int)(rawG * (1.0 - diffusionMix) + blurG * diffusionMix) : rawG;
+                    int trB = (diffusionMix > 0.001) ? (int)(rawB * (1.0 - diffusionMix) + blurB * diffusionMix) : rawB;
 
-                    b = Math.Clamp(b, 0, 255);
-                    g = Math.Clamp(g, 0, 255);
-                    r = Math.Clamp(r, 0, 255);
+                    // Neutral-cool high-transmittance optical glass body (97.6% transmission)
+                    int rGlass = (trR * 250) >> 8;
+                    int gGlass = (trG * 251) >> 8;
+                    int bGlass = (trB * 252) >> 8;
 
-                    // Balanced liquid glass tint: gently dimmed (~76% brightness) without being dark or murky
-                    r = (r * 195 + 40 * 61) >> 8;
-                    g = (g * 195 + 44 * 61) >> 8;
-                    b = (b * 195 + 56 * 61) >> 8;
+                    // Specular Highlights & Curved Rim Optics (seamlessly active on curved meniscus)
+                    double specKey = 0.0;
+                    double specFill = 0.0;
+                    double fresnelGlow = 0.0;
 
-                    // Composite glass over ambient drop shadow
+                    if (edgeDist < bevelWidth)
+                    {
+                        // Key light highlight along the upper curved bevel
+                        double ndoth1 = Math.Max(0.0, nx * H1x + ny * H1y + nz * H1z);
+                        if (ndoth1 > H1z)
+                        {
+                            double tilt1 = (ndoth1 - H1z) * InvOneMinusH1z;
+                            double t2 = tilt1 * tilt1;
+                            specKey = (t2 * t2) * 24.0;
+                        }
+
+                        // Ambient fill bounce along the bottom curved bevel
+                        double ndoth2 = Math.Max(0.0, nx * H2x + ny * H2y + nz * H2z);
+                        if (ndoth2 > H2z)
+                        {
+                            double tilt2 = (ndoth2 - H2z) * InvOneMinusH2z;
+                            specFill = (tilt2 * tilt2) * 8.0;
+                        }
+
+                        // Fresnel grazing rim sheen
+                        double oneMinusNz = 1.0 - nz;
+                        fresnelGlow = oneMinusNz * oneMinusNz * 14.0;
+                    }
+
+                    // Composite liquid glass optics
+                    int finR = Math.Clamp(rGlass + (int)specKey + (int)specFill + (int)fresnelGlow, 0, 255);
+                    int finG = Math.Clamp(gGlass + (int)specKey + (int)specFill + (int)fresnelGlow, 0, 255);
+                    int finB = Math.Clamp(bGlass + (int)(specKey * 1.04) + (int)specFill + (int)(fresnelGlow * 1.08), 0, 255);
+
+                    // Composite over contact/ambient shadow
                     byte finalA = (shadowA > 0 && a < 255)
                         ? (byte)Math.Min(255, a + ((shadowA * (255 - a)) >> 8))
                         : a;
 
-                    uint pR = (uint)((r * a) / 255);
-                    uint pG = (uint)((g * a) / 255);
-                    uint pB = (uint)((b * a) / 255);
+                    uint pR = (uint)((finR * a) / 255);
+                    uint pG = (uint)((finG * a) / 255);
+                    uint pB = (uint)((finB * a) / 255);
                     pDst[idx] = ((uint)finalA << 24) | (pR << 16) | (pG << 8) | pB;
                 }
             }
