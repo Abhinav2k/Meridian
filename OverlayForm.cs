@@ -38,9 +38,11 @@ internal sealed class OverlayForm : Form
     private const int WsExToolWindow = 0x00000080;
     private const int WsExLayered = 0x00080000;
     private const int WsExNoActivate = 0x08000000;
+    private const int CsDblClks = 0x0008;
 
     private const int WmMouseActivate = 0x0021;
     private const int MaNoActivate = 3;
+    private const int WmLButtonDblClk = 0x0203;
 
     private const uint GW_HWNDPREV = 3;
 
@@ -774,6 +776,9 @@ internal sealed class OverlayForm : Form
     private double _progress = 0.0;
     private double _hoverPos = 0.0; // Spring position (0.0 to 1.0+)
     private double _hoverVel = 0.0; // Spring velocity
+    private volatile bool _suppressHoverUntilExit = false;
+    private long _lastLeftClickTime = 0;
+    private Point _lastLeftClickPos = Point.Empty;
     private double _animDirection = 1.0; // +1.0 = forward (expand), -1.0 = backward (retract)
     private readonly Stopwatch _totalStopwatch = Stopwatch.StartNew();
     private readonly Stopwatch _frameStopwatch = new();
@@ -902,6 +907,16 @@ internal sealed class OverlayForm : Form
             }
         };
 
+        SetStyle(ControlStyles.StandardClick | ControlStyles.StandardDoubleClick, true);
+
+        MouseDoubleClick += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                ToggleOrCollapseExpandedIsland();
+            }
+        };
+
         MouseClick += async (_, e) =>
         {
             if (e.Button == MouseButtons.Right)
@@ -910,12 +925,49 @@ internal sealed class OverlayForm : Form
             }
             else if (e.Button == MouseButtons.Left)
             {
-                if (_hoverPos > 0.3)
+                long nowTicks = Environment.TickCount64;
+                int dcTime = SystemInformation.DoubleClickTime;
+                int dcDistX = SystemInformation.DoubleClickSize.Width;
+                int dcDistY = SystemInformation.DoubleClickSize.Height;
+
+                bool isDblClick = (nowTicks - _lastLeftClickTime <= dcTime) &&
+                                  Math.Abs(e.X - _lastLeftClickPos.X) <= dcDistX &&
+                                  Math.Abs(e.Y - _lastLeftClickPos.Y) <= dcDistY;
+
+                _lastLeftClickTime = nowTicks;
+                _lastLeftClickPos = e.Location;
+
+                if (isDblClick)
+                {
+                    ToggleOrCollapseExpandedIsland();
+                    return;
+                }
+
+                if (_hoverPos > 0.3 && !_suppressHoverUntilExit)
                 {
                     await HandleExpandedClickAsync(e.Location);
                 }
             }
         };
+    }
+
+    private void ToggleOrCollapseExpandedIsland()
+    {
+        if (_hoverPos > 0.25)
+        {
+            // Double click on expanded on hover island collapses it back to compact pill
+            _suppressHoverUntilExit = true;
+            _hoverVel = Math.Min(_hoverVel, -6.0);
+            _hoveredButton = BtnNone;
+            _clickedButton = BtnNone;
+            UpdateExpandedMask();
+        }
+        else if (_suppressHoverUntilExit)
+        {
+            // Double click on collapsed pill while still hovering re-expands it
+            _suppressHoverUntilExit = false;
+            _hoverVel = Math.Max(_hoverVel, 6.0);
+        }
     }
 
     private void OnSystemMediaUpdated()
@@ -2454,6 +2506,7 @@ internal sealed class OverlayForm : Form
         get
         {
             var parameters = base.CreateParams;
+            parameters.ClassStyle |= CsDblClks;
             parameters.ExStyle |= WsExLayered;
             parameters.ExStyle |= WsExToolWindow;
             parameters.ExStyle |= WsExTopMost;
@@ -2492,6 +2545,13 @@ internal sealed class OverlayForm : Form
         {
             // Do not activate or steal focus from active windows on click
             m.Result = (IntPtr)MaNoActivate;
+            return;
+        }
+
+        if (m.Msg == WmLButtonDblClk)
+        {
+            ToggleOrCollapseExpandedIsland();
+            m.Result = IntPtr.Zero;
             return;
         }
 
@@ -2553,6 +2613,7 @@ internal sealed class OverlayForm : Form
             }
 
             bool isHovered = false;
+            bool cursorInPill = false;
             if (GetCursorPos(out var cursorPos))
             {
                 int mouseSurfaceX = cursorPos.x - rect.Left;
@@ -2575,7 +2636,7 @@ internal sealed class OverlayForm : Form
                     // Allow hover either directly inside/near the pill OR in the top notch summoning strip above the pill
                     if (mouseSdf <= 2.0 || (mouseSurfaceY >= 0 && mouseSurfaceY <= TopPadding + 8 && Math.Abs(mouseSurfaceX - _currentGeometry.CenterX) <= _currentGeometry.HalfWidth))
                     {
-                        isHovered = true;
+                        cursorInPill = true;
                     }
                 }
                 else
@@ -2583,8 +2644,22 @@ internal sealed class OverlayForm : Form
                     // Notch hover trigger to summon pill when despawned / hidden
                     if (mouseSurfaceY >= 0 && mouseSurfaceY <= 26 && Math.Abs(mouseSurfaceX - 300) <= 70)
                     {
-                        isHovered = true;
+                        cursorInPill = true;
                     }
+                }
+
+                // If hover is suppressed (e.g. collapsed by double-click), reset once cursor leaves pill area
+                if (_suppressHoverUntilExit)
+                {
+                    if (!cursorInPill)
+                    {
+                        _suppressHoverUntilExit = false;
+                    }
+                }
+
+                if (cursorInPill && !_suppressHoverUntilExit)
+                {
+                    isHovered = true;
                 }
 
                 // Intelligence: on hover expansion, auto-select Media Tab if active media, Home Tab if no media
@@ -2594,7 +2669,7 @@ internal sealed class OverlayForm : Form
                     UpdateExpandedMask();
                 }
 
-                if (_hoverPos > 0.6)
+                if (_hoverPos > 0.6 && !_suppressHoverUntilExit)
                 {
                     // 4 Tab Switcher Hover: Home [86, 108), Music [108, 130), Weather [130, 152), Chrono [152, 176]
                     if (mouseSurfaceY >= 24 && mouseSurfaceY <= 54)
