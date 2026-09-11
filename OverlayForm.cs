@@ -2418,6 +2418,14 @@ internal sealed class OverlayForm : Form
             string triggerPath = Path.Combine(rootDir, "take_screenshot.trigger");
             if (File.Exists(triggerPath))
             {
+                if (_progress <= 0.01)
+                {
+                    _progress = 1.0;
+                    _hoverPos = 0.0;
+                    _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                    var compGeom = ComputeGeometry(1.0, 0.0, _currentCompactWidth);
+                    ProcessAndPresent(new Point(Location.X, Location.Y), compGeom);
+                }
                 SaveDesktopScreenshotWithPill("screenshot.png");
                 File.Delete(triggerPath);
             }
@@ -2906,6 +2914,7 @@ internal sealed class OverlayForm : Form
         fixed (byte* pHalfRaw = _halfRawBuffer)
         fixed (byte* pBlurH = _blurHBuffer)
         fixed (byte* pBlurred = _blurredBuffer)
+        fixed (byte* pHeavyBlurred = _heavyBlurBuffer)
         {
             // 1. Box downsample (600x250 -> 300x125)
             for (int y = 0; y < HalfHeight; y++)
@@ -2992,11 +3001,70 @@ internal sealed class OverlayForm : Form
                 }
             }
 
+            // 2b. Second-pass cascade Gaussian Blur on 300x125 (deep, creamy frosted glass blur)
+            for (int y = 0; y < HalfHeight; y++)
+            {
+                int rowOffset = y * HalfWidth * 4;
+                for (int x = 0; x < HalfWidth; x++)
+                {
+                    int xm2 = Math.Max(0, x - 2);
+                    int xm1 = Math.Max(0, x - 1);
+                    int xp1 = Math.Min(HalfWidth - 1, x + 1);
+                    int xp2 = Math.Min(HalfWidth - 1, x + 2);
+
+                    int offM2 = rowOffset + xm2 * 4;
+                    int offM1 = rowOffset + xm1 * 4;
+                    int off0 = rowOffset + x * 4;
+                    int offP1 = rowOffset + xp1 * 4;
+                    int offP2 = rowOffset + xp2 * 4;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurred[offM2 + c] +
+                                  (pBlurred[offM1 + c] << 2) +
+                                  pBlurred[off0 + c] * 6 +
+                                  (pBlurred[offP1 + c] << 2) +
+                                  pBlurred[offP2 + c];
+                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pBlurH[off0 + 3] = 255;
+                }
+            }
+
+            for (int y = 0; y < HalfHeight; y++)
+            {
+                int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
+                int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
+                int y0 = y * HalfWidth * 4;
+                int yp1 = Math.Min(HalfHeight - 1, y + 1) * HalfWidth * 4;
+                int yp2 = Math.Min(HalfHeight - 1, y + 2) * HalfWidth * 4;
+
+                for (int x = 0; x < HalfWidth; x++)
+                {
+                    int colOffset = x * 4;
+                    int offM2 = ym2 + colOffset;
+                    int offM1 = ym1 + colOffset;
+                    int off0 = y0 + colOffset;
+                    int offP1 = yp1 + colOffset;
+                    int offP2 = yp2 + colOffset;
+
+                    for (int c = 0; c < 3; c++)
+                    {
+                        int sum = pBlurH[offM2 + c] +
+                                  (pBlurH[offM1 + c] << 2) +
+                                  pBlurH[off0 + c] * 6 +
+                                  (pBlurH[offP1 + c] << 2) +
+                                  pBlurH[offP2 + c];
+                        pHeavyBlurred[off0 + c] = (byte)(sum >> 4);
+                    }
+                    pHeavyBlurred[off0 + 3] = 255;
+                }
+            }
 
             // 3. Apple-Grade Liquid Glass Physical Optics Engine
             double straightW = Math.Max(0.0, geom.HalfWidth - geom.Radius);
             double straightH = Math.Max(0.0, geom.HalfHeight - geom.Radius);
-            double bevelWidth = Math.Min(7.0, geom.Radius * 0.38);
+            double bevelWidth = Math.Min(16.0, geom.Radius * 0.72);
             double invBevelWidth = 1.0 / Math.Max(1.0, bevelWidth);
 
             double spawnExpAlpha = Math.Clamp((_progress - 0.50) / 0.50, 0.0, 1.0);
@@ -3103,35 +3171,36 @@ internal sealed class OverlayForm : Form
                     double edgeDist = Math.Max(0.0, -sdf);
                     double nx = 0.0, ny = 0.0, nz = 1.0;
                     double sinTheta = 0.0;
-                    double u = 0.0;
+                    double uSmooth = 0.0;
 
                     if (edgeDist < bevelWidth)
                     {
-                        u = 1.0 - (edgeDist * invBevelWidth); // 1.0 at outer edge, 0.0 at interior
+                        double u = 1.0 - (edgeDist * invBevelWidth); // 1.0 at outer edge, 0.0 at interior
                         // C2-smooth Hermite curve for slope: ensures zero derivative at interior transition
                         double u2 = u * u;
-                        double uSmooth = u2 * (3.0 - 2.0 * u);
-                        sinTheta = uSmooth * 0.70;
+                        uSmooth = u2 * (3.0 - 2.0 * u);
+                        sinTheta = uSmooth * 0.88;
                         nz = Math.Sqrt(Math.Max(0.01, 1.0 - sinTheta * sinTheta));
 
                         nx = gx * sinTheta;
                         ny = gy * sinTheta;
                     }
 
-                    // Refraction Displacement & Central Lens Magnification
-                    double refractMag = sinTheta * 3.8;
+                    // Pronounced Light Bending & Convex Lens Magnification
+                    // 1. Edge Refraction: bends background elements along the curved perimeter
+                    double edgeRefract = sinTheta * 15.0; // Tangible 13.2px physical light deflection!
 
-                    // Central convex lens magnification (1.5% zoom)
-                    double magWeight = Math.Clamp(edgeDist * (1.0 / 20.0), 0.0, 1.0);
-                    magWeight = magWeight * magWeight * (3.0 - 2.0 * magWeight);
-                    double magShiftX = px * 0.015 * magWeight;
-                    double magShiftY = py * 0.015 * magWeight;
+                    // 2. Central Convex Lens Magnification: 5.5% zoom across the face
+                    double domeWeight = Math.Clamp(edgeDist * (1.0 / 22.0), 0.0, 1.0);
+                    domeWeight = domeWeight * domeWeight * (3.0 - 2.0 * domeWeight);
+                    double magShiftX = px * 0.055 * domeWeight;
+                    double magShiftY = py * 0.055 * domeWeight;
 
-                    double baseSx = Math.Clamp(x - gx * refractMag - magShiftX, 0.0, SurfaceWidth - 2.0);
-                    double baseSy = Math.Clamp(y - gy * refractMag - magShiftY, 0.0, SurfaceHeight - 2.0);
+                    double baseSx = Math.Clamp(x - gx * edgeRefract - magShiftX, 0.0, SurfaceWidth - 2.0);
+                    double baseSy = Math.Clamp(y - gy * edgeRefract - magShiftY, 0.0, SurfaceHeight - 2.0);
 
-                    // Micro-dispersion: subtle chromatic fringe right at curved outer rim
-                    double disp = (edgeDist < bevelWidth) ? u * u * 0.40 : 0.0;
+                    // Micro-dispersion: subtle chromatic prism fringe along curved meniscus
+                    double disp = (edgeDist < bevelWidth) ? uSmooth * 1.6 : 0.0;
 
                     int rawR, rawG, rawB;
                     if (disp > 0.05)
@@ -3174,7 +3243,7 @@ internal sealed class OverlayForm : Form
                     }
                     else
                     {
-                        // Crystal-clear direct bilinear sample from full-res captured background
+                        // Direct bilinear sample from full-res captured background
                         int ix = (int)baseSx, iy = (int)baseSy;
                         double fx = baseSx - ix, fy = baseSy - iy;
                         int w00 = (int)((1.0 - fx) * (1.0 - fy) * 256.0);
@@ -3194,7 +3263,7 @@ internal sealed class OverlayForm : Form
                         rawR = (pRaw[o00 + 2] * w00 + pRaw[o10 + 2] * w10 + pRaw[o01 + 2] * w01 + pRaw[o11 + 2] * w11) >> 8;
                     }
 
-                    // Velvet micro-dispersion sample from half-res blurred buffer
+                    // Velvet Refracted Blur sample from half-res blurred buffers
                     double hx = Math.Clamp(baseSx * 0.5, 0.0, HalfWidth - 2.0);
                     double hy = Math.Clamp(baseSy * 0.5, 0.0, HalfHeight - 2.0);
                     int bix = (int)hx, biy = (int)hy;
@@ -3208,9 +3277,19 @@ internal sealed class OverlayForm : Form
                     int bo01 = ((biy + 1) * HalfWidth + bix) * 4;
                     int bo11 = ((biy + 1) * HalfWidth + bix + 1) * 4;
 
-                    int blurB = (pBlurred[bo00] * bw00 + pBlurred[bo10] * bw10 + pBlurred[bo01] * bw01 + pBlurred[bo11] * bw11) >> 8;
-                    int blurG = (pBlurred[bo00 + 1] * bw00 + pBlurred[bo10 + 1] * bw10 + pBlurred[bo01 + 1] * bw01 + pBlurred[bo11 + 1] * bw11) >> 8;
-                    int blurR = (pBlurred[bo00 + 2] * bw00 + pBlurred[bo10 + 2] * bw10 + pBlurred[bo01 + 2] * bw01 + pBlurred[bo11 + 2] * bw11) >> 8;
+                    int bStd = (pBlurred[bo00] * bw00 + pBlurred[bo10] * bw10 + pBlurred[bo01] * bw01 + pBlurred[bo11] * bw11) >> 8;
+                    int gStd = (pBlurred[bo00 + 1] * bw00 + pBlurred[bo10 + 1] * bw10 + pBlurred[bo01 + 1] * bw01 + pBlurred[bo11 + 1] * bw11) >> 8;
+                    int rStd = (pBlurred[bo00 + 2] * bw00 + pBlurred[bo10 + 2] * bw10 + pBlurred[bo01 + 2] * bw01 + pBlurred[bo11 + 2] * bw11) >> 8;
+
+                    int bHvy = (pHeavyBlurred[bo00] * bw00 + pHeavyBlurred[bo10] * bw10 + pHeavyBlurred[bo01] * bw01 + pHeavyBlurred[bo11] * bw11) >> 8;
+                    int gHvy = (pHeavyBlurred[bo00 + 1] * bw00 + pHeavyBlurred[bo10 + 1] * bw10 + pHeavyBlurred[bo01 + 1] * bw01 + pHeavyBlurred[bo11 + 1] * bw11) >> 8;
+                    int rHvy = (pHeavyBlurred[bo00 + 2] * bw00 + pHeavyBlurred[bo10 + 2] * bw10 + pHeavyBlurred[bo01 + 2] * bw01 + pHeavyBlurred[bo11 + 2] * bw11) >> 8;
+
+                    // Deep silky blur interior with heavier edge frosting
+                    double frostFactor = (edgeDist < bevelWidth) ? uSmooth * 0.70 : 0.0;
+                    int blurB = (int)(bStd + (bHvy - bStd) * frostFactor);
+                    int blurG = (int)(gStd + (gHvy - gStd) * frostFactor);
+                    int blurR = (int)(rStd + (rHvy - rStd) * frostFactor);
 
                     // Distinct blur under expanded music tab media buttons
                     double btnBlurFactor = 0.0;
@@ -3238,23 +3317,23 @@ internal sealed class OverlayForm : Form
                         }
                     }
 
-                    // Optical diffusion mix: 100% sharp raw in center, subtle micro-dispersion at perimeter
-                    double diffusionMix = (edgeDist < bevelWidth) ? u * u * 0.08 : 0.0;
+                    // Optical diffusion mix: creamy backdrop blur ("with the blur innit") combined with sharp bent background
+                    double diffusionMix = 0.62 + ((edgeDist < bevelWidth) ? uSmooth * 0.16 : 0.0);
                     if (btnBlurFactor > 0.01)
                     {
-                        diffusionMix = Math.Max(diffusionMix, btnBlurFactor * 0.70);
+                        diffusionMix = Math.Max(diffusionMix, 0.70 + btnBlurFactor * 0.25);
                     }
 
-                    int trR = (diffusionMix > 0.001) ? (int)(rawR * (1.0 - diffusionMix) + blurR * diffusionMix) : rawR;
-                    int trG = (diffusionMix > 0.001) ? (int)(rawG * (1.0 - diffusionMix) + blurG * diffusionMix) : rawG;
-                    int trB = (diffusionMix > 0.001) ? (int)(rawB * (1.0 - diffusionMix) + blurB * diffusionMix) : rawB;
+                    int trR = (int)(rawR * (1.0 - diffusionMix) + blurR * diffusionMix);
+                    int trG = (int)(rawG * (1.0 - diffusionMix) + blurG * diffusionMix);
+                    int trB = (int)(rawB * (1.0 - diffusionMix) + blurB * diffusionMix);
 
-                    // Neutral-cool high-transmittance optical glass body (97.6% transmission)
-                    int rGlass = (trR * 250) >> 8;
-                    int gGlass = (trG * 251) >> 8;
-                    int bGlass = (trB * 252) >> 8;
+                    // Liquid glass smoky tint: 75% transmission of bent/blurred scene + 25% obsidian glass body
+                    int rGlass = (trR * 192 + 36 * 64) >> 8;
+                    int gGlass = (trG * 192 + 40 * 64) >> 8;
+                    int bGlass = (trB * 192 + 52 * 64) >> 8;
 
-                    // Specular Highlights & Curved Rim Optics (seamlessly active on curved meniscus)
+                    // Specular Highlights & Curved Rim Optics (active along curved meniscus)
                     double specKey = 0.0;
                     double specFill = 0.0;
                     double fresnelGlow = 0.0;
@@ -3267,7 +3346,7 @@ internal sealed class OverlayForm : Form
                         {
                             double tilt1 = (ndoth1 - H1z) * InvOneMinusH1z;
                             double t2 = tilt1 * tilt1;
-                            specKey = (t2 * t2) * 24.0;
+                            specKey = (t2 * t2) * 28.0;
                         }
 
                         // Ambient fill bounce along the bottom curved bevel
@@ -3275,12 +3354,12 @@ internal sealed class OverlayForm : Form
                         if (ndoth2 > H2z)
                         {
                             double tilt2 = (ndoth2 - H2z) * InvOneMinusH2z;
-                            specFill = (tilt2 * tilt2) * 8.0;
+                            specFill = (tilt2 * tilt2) * 10.0;
                         }
 
                         // Fresnel grazing rim sheen
                         double oneMinusNz = 1.0 - nz;
-                        fresnelGlow = oneMinusNz * oneMinusNz * 14.0;
+                        fresnelGlow = oneMinusNz * oneMinusNz * 16.0;
                     }
 
                     // Composite liquid glass optics
