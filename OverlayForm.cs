@@ -702,7 +702,7 @@ internal sealed class OverlayForm : Form
 
     private readonly TrackInfo _currentTrack = new();
     private bool _isPlaying = false; // Only true when real music is playing!
-    private bool _hasActiveMedia = false; // True when active media track exists (playing or paused)
+    private static bool _hasActiveMedia = false; // True when active media track exists (playing or paused)
     private bool _lastRenderedIsPlaying = false;
     private volatile bool _needExpandedUpdate = false;
     private double _trackProgressSeconds = 0.0;
@@ -718,10 +718,29 @@ internal sealed class OverlayForm : Form
     private bool _wasHovered = false;
     private bool _wasCursorInPill = false;
 
+    // Home Tab Sleep Timer Widget State
+    private const int HomeSleepBtnNone = 0;
+    private const int HomeSleepBtn15m = 1;
+    private const int HomeSleepBtn30m = 2;
+    private const int HomeSleepBtn45m = 3;
+    private const int HomeSleepBtnCancel = 4;
+    private const int HomeSleepBtnMoon = 5;
+
+    private static bool _sleepTimerActive = false;
+    private static DateTime _sleepTimerTargetUtc = DateTime.MinValue;
+    private static int _sleepTimerDurationMinutes = 0;
+    private static bool _homeSleepPickerOpen = false;
+    private static double _homeSleepExpandP = 0.0;
+    private static int _hoveredHomeSleepBtn = HomeSleepBtnNone;
+
     private void SwitchTab(int newTab, bool immediate = false)
     {
         if (newTab < TabHome || newTab > TabChrono) return;
         if (_activeTab == newTab && !immediate) return;
+
+        _homeSleepPickerOpen = false;
+        _homeSleepExpandP = 0.0;
+        _tabBufferCache[TabHome] = null;
 
         if (immediate)
         {
@@ -1177,11 +1196,84 @@ internal sealed class OverlayForm : Form
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
 
-            // Card 1: Music Quick-Glance (mx in [216, 444], my in [36, 80])
-            if (mx >= 216 && mx <= 444 && my >= 36 && my <= 80)
+            bool isSplit = _isPlaying || _hasActiveMedia || _sleepTimerActive || _homeSleepPickerOpen || (_homeSleepExpandP > 0.001);
+
+            // Card 1: Media Widget & Sleep Timer (mx in [216, 444], my in [36, 80])
+            if (my >= 36 && my <= 80 && mx >= 216 && mx <= 444)
             {
-                SwitchTab(TabMusic);
-                return true;
+                if (_homeSleepExpandP > 0.4)
+                {
+                    // Joined Sleep Timer Template Buttons: [15m], [30m], [45m], [Cancel]
+                    if (mx >= 224 && mx < 274)
+                    {
+                        _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(15);
+                        _sleepTimerDurationMinutes = 15;
+                        _sleepTimerActive = true;
+                        _homeSleepPickerOpen = false;
+                        _tabBufferCache[TabHome] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+                    }
+                    else if (mx >= 274 && mx < 323)
+                    {
+                        _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(30);
+                        _sleepTimerDurationMinutes = 30;
+                        _sleepTimerActive = true;
+                        _homeSleepPickerOpen = false;
+                        _tabBufferCache[TabHome] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+                    }
+                    else if (mx >= 323 && mx < 372)
+                    {
+                        _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(45);
+                        _sleepTimerDurationMinutes = 45;
+                        _sleepTimerActive = true;
+                        _homeSleepPickerOpen = false;
+                        _tabBufferCache[TabHome] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+                    }
+                    else if (mx >= 372 && mx <= 438)
+                    {
+                        _sleepTimerActive = false;
+                        _sleepTimerTargetUtc = DateTime.MinValue;
+                        _sleepTimerDurationMinutes = 0;
+                        _homeSleepPickerOpen = false;
+                        _tabBufferCache[TabHome] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+                    }
+                }
+                else if (isSplit)
+                {
+                    // Split Piece 2: Smaller square-type sleep timer end (moon with stars)
+                    if (mx >= 398 && mx <= 444)
+                    {
+                        _homeSleepPickerOpen = true;
+                        _tabBufferCache[TabHome] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+                    }
+                    else if (mx >= 216 && mx < 398)
+                    {
+                        // Split Piece 1: Bigger media end -> opens player
+                        SwitchTab(TabMusic);
+                        return true;
+                    }
+                }
+                else
+                {
+                    SwitchTab(TabMusic);
+                    return true;
+                }
+            }
+            else if (_homeSleepPickerOpen)
+            {
+                // Clicking outside the sleep picker closes it
+                _homeSleepPickerOpen = false;
+                _tabBufferCache[TabHome] = null;
+                _needExpandedUpdate = true;
             }
 
             // Card 2: Weather Quick-Glance (mx in [216, 444], my in [87, 132])
@@ -2451,94 +2543,270 @@ internal sealed class OverlayForm : Form
         float cardR = 12f * superScale;
 
         // ----------------------------------------------------
-        // Card 1: Now Playing Quick-Glance (Top-Right)
+        // Card 1: Now Playing Quick-Glance & Sleep Timer Widget
         // ----------------------------------------------------
         float c1Y = 36f * superScale;
         float c1H = 43f * superScale;
-        using (var pathC1 = new GraphicsPath())
-        {
-            pathC1.AddArc(cardX, c1Y, cardR * 2, cardR * 2, 180, 90);
-            pathC1.AddArc(cardX + cardW - cardR * 2, c1Y, cardR * 2, cardR * 2, 270, 90);
-            pathC1.AddArc(cardX + cardW - cardR * 2, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
-            pathC1.AddArc(cardX, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
-            pathC1.CloseFigure();
 
+        bool isSplit = isPlaying || _hasActiveMedia || _sleepTimerActive || _homeSleepPickerOpen || (_homeSleepExpandP > 0.001);
+
+        float sleepP = (float)Math.Clamp(_homeSleepExpandP, 0.0, 1.0);
+
+        if (isSplit)
+        {
+            // ====================================================
+            // FLUID JOIN / SPLIT MEDIA & SLEEP TIMER WIDGET
+            // ====================================================
+            float timerW0 = c1H; // 43px square at 1x
+            float fullGap = 6f * superScale;
+            float mediaW0 = cardW - timerW0 - fullGap; // ~179px at 1x
+
+            // As sleepP goes from 0.0 (split) to 1.0 (joined):
+            float curGap = fullGap * (1f - sleepP);
+            float curMediaW = mediaW0 + (fullGap - curGap) * 0.5f;
+            float curTimerX = cardX + curMediaW + curGap;
+            float curTimerW = (cardX + cardW) - curTimerX;
+            float innerR = cardR * (1f - sleepP);
+
+            // Piece 1: Left media end (inner corners round at 12px when split, sharpen to 0px as joined)
+            using var pathMedia = CreateRoundedRectPath(cardX, c1Y, curMediaW, c1H, cardR, innerR, innerR, cardR);
+            using var brushMedia = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+            g.FillPath(brushMedia, pathMedia);
+
+            // Piece 2: Right sleep timer end
+            using var pathTimer = CreateRoundedRectPath(curTimerX, c1Y, curTimerW, c1H, innerR, cardR, cardR, innerR);
+            bool isHovMoon = _hoveredHomeSleepBtn == HomeSleepBtnMoon;
+
+            if (_sleepTimerActive)
+            {
+                // INVERTED COLOURS TO INDICATE SLEEP TIMER ACTIVE
+                int invFillA = (int)(32 + (235 - 32) * (1f - sleepP));
+                using var brushActiveTimer = new SolidBrush(Color.FromArgb(invFillA, 255, 255, 255));
+                g.FillPath(brushActiveTimer, pathTimer);
+            }
+            else
+            {
+                int fillA = (isHovMoon && sleepP < 0.3f) ? 52 : 32;
+                using var brushNormalTimer = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
+                g.FillPath(brushNormalTimer, pathTimer);
+            }
+
+            // Separate piece borders only when split (fades out as they join together)
+            float splitBorderAlpha = 1f - sleepP;
+            if (splitBorderAlpha > 0.02f)
+            {
+                using var penMedia = new Pen(Color.FromArgb((int)(70 * splitBorderAlpha), 255, 255, 255), 1.0f * superScale);
+                g.DrawPath(penMedia, pathMedia);
+
+                int borderA = _sleepTimerActive ? 255 : ((isHovMoon && sleepP < 0.3f) ? 110 : 70);
+                using var penTimer = new Pen(Color.FromArgb((int)(borderA * splitBorderAlpha), 255, 255, 255), (_sleepTimerActive ? 1.2f : 1.0f) * superScale);
+                g.DrawPath(penTimer, pathTimer);
+            }
+
+            // Unified joined card path overlay when joining (ensures zero subpixel seam and clean continuous outer border)
+            if (sleepP > 0.01f)
+            {
+                using var pathJoined = CreateRoundedRectPath(cardX, c1Y, cardW, c1H, cardR, cardR, cardR, cardR);
+                using var brushJoined = new SolidBrush(Color.FromArgb((int)(34 * sleepP), 255, 255, 255));
+                g.FillPath(brushJoined, pathJoined);
+                using var penJoined = new Pen(Color.FromArgb((int)(75 * sleepP), 255, 255, 255), 1.0f * superScale);
+                g.DrawPath(penJoined, pathJoined);
+            }
+
+            // --- SPLIT CONTENT: Fades out as sleepP increases from 0 to 1 ---
+            float splitAlpha = 1f - sleepP;
+            if (splitAlpha > 0.01f)
+            {
+                // Media Piece Thumbnail
+                float thumbX = cardX + 7f * superScale;
+                float thumbY = c1Y + 7f * superScale;
+                float thumbSize = 29f * superScale;
+                float thumbR = 7f * superScale;
+
+                if (coverBmp != null)
+                {
+                    using var pathThumb = CreateRoundedRectPath(thumbX, thumbY, thumbSize, thumbSize, thumbR, thumbR, thumbR, thumbR);
+                    var state = g.Save();
+                    g.SetClip(pathThumb);
+                    using var ia = new ImageAttributes();
+                    ColorMatrix cm = new ColorMatrix();
+                    cm.Matrix33 = splitAlpha;
+                    ia.SetColorMatrix(cm);
+                    g.DrawImage(coverBmp, new Rectangle((int)thumbX, (int)thumbY, (int)thumbSize, (int)thumbSize), 0, 0, coverBmp.Width, coverBmp.Height, GraphicsUnit.Pixel, ia);
+                    g.Restore(state);
+                }
+                else
+                {
+                    using (var brushDisc = new SolidBrush(Color.FromArgb((int)(45 * splitAlpha), 255, 255, 255)))
+                    {
+                        g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+                    }
+                    using (var brushNote = new SolidBrush(Color.FromArgb((int)(200 * splitAlpha), 255, 255, 255)))
+                    {
+                        var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                    }
+                }
+
+                // Media Piece Text
+                float text1X = thumbX + thumbSize + 8f * superScale;
+                string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
+                    ? "Audio Idle"
+                    : (track.Title.Length > 15 ? track.Title.Substring(0, 13) + "…" : track.Title);
+
+                string musicSub = isPlaying
+                    ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : (track.Artist.Length > 16 ? track.Artist.Substring(0, 14) + "…" : track.Artist))
+                    : "Tap to open";
+
+                using (var brushMTitle = new SolidBrush(Color.FromArgb((int)(255 * splitAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
+                }
+                using (var brushMSub = new SolidBrush(Color.FromArgb((int)(160 * splitAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
+                }
+
+                // Media Piece EQ Bars
+                if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
+                {
+                    float eqStartX = cardX + mediaW0 - 24f * superScale;
+                    float eqCy = c1Y + c1H * 0.5f;
+                    using var brushEq = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 255, 255, 255));
+                    for (int b = 0; b < 4; b++)
+                    {
+                        float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
+                        float bx = eqStartX + b * 4.2f * superScale;
+                        g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.3f * superScale, barH);
+                    }
+                }
+
+                // Right Piece: Moon with Stars (subtly scales down as it disappears on click)
+                float moonR = 8.8f * superScale * (1f - 0.2f * sleepP);
+                float moonCx = curTimerX + curTimerW * 0.5f - 2.5f * superScale;
+                float moonCy = c1Y + c1H * 0.5f;
+
+                if (_sleepTimerActive)
+                {
+                    using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 25, 28, 35));
+                    DrawMoonWithStars(g, brushDarkMoon, moonCx, moonCy, moonR);
+                }
+                else
+                {
+                    using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * splitAlpha), 255, 255, 255));
+                    DrawMoonWithStars(g, brushLightMoon, moonCx, moonCy, moonR);
+                }
+            }
+
+            // --- JOINED CONTENT: Fades in as sleepP increases from 0 to 1 ---
+            if (sleepP > 0.01f)
+            {
+                float btnH = 29f * superScale;
+                float btnY = c1Y + (c1H - btnH) * 0.5f;
+                float btnR = 8f * superScale;
+                float gap = 5f * superScale;
+                float bW = 44f * superScale;
+                float cancelW = 58f * superScale;
+                float padX = (cardW - (bW * 3f + cancelW + gap * 3f)) * 0.5f;
+
+                using var fontTimerBtn = GetPremiumFont(7.8f * superScale, FontStyle.Bold);
+                using var fontCancelBtn = GetPremiumFont(7.2f * superScale, FontStyle.Bold);
+
+                // Button 1: 15m
+                float b1X = cardX + padX;
+                DrawSleepOptionPill(g, superScale, b1X, btnY, bW, btnH, btnR, "15m", fontTimerBtn,
+                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 15,
+                    isHovered: _hoveredHomeSleepBtn == HomeSleepBtn15m,
+                    isCancel: false,
+                    alphaMul: sleepP);
+
+                // Button 2: 30m
+                float b2X = b1X + bW + gap;
+                DrawSleepOptionPill(g, superScale, b2X, btnY, bW, btnH, btnR, "30m", fontTimerBtn,
+                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 30,
+                    isHovered: _hoveredHomeSleepBtn == HomeSleepBtn30m,
+                    isCancel: false,
+                    alphaMul: sleepP);
+
+                // Button 3: 45m
+                float b3X = b2X + bW + gap;
+                DrawSleepOptionPill(g, superScale, b3X, btnY, bW, btnH, btnR, "45m", fontTimerBtn,
+                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 45,
+                    isHovered: _hoveredHomeSleepBtn == HomeSleepBtn45m,
+                    isCancel: false,
+                    alphaMul: sleepP);
+
+                // Button 4: Cancel
+                float b4X = b3X + bW + gap;
+                DrawSleepOptionPill(g, superScale, b4X, btnY, cancelW, btnH, btnR, "Cancel", fontCancelBtn,
+                    isActive: false,
+                    isHovered: _hoveredHomeSleepBtn == HomeSleepBtnCancel,
+                    isCancel: true,
+                    timerActive: _sleepTimerActive,
+                    alphaMul: sleepP);
+            }
+        }
+        else
+        {
+            // Default full unified card when audio is completely idle and no timer
+            using var pathC1 = CreateRoundedRectPath(cardX, c1Y, cardW, c1H, cardR, cardR, cardR, cardR);
             using var brushC1 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
             g.FillPath(brushC1, pathC1);
             using var penC1 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
             g.DrawPath(penC1, pathC1);
-        }
 
-        // Card 1 Thumbnail
-        float thumbX = cardX + 8f * superScale;
-        float thumbY = c1Y + 7f * superScale;
-        float thumbSize = 29f * superScale;
-        float thumbR = 7f * superScale;
+            float thumbX = cardX + 8f * superScale;
+            float thumbY = c1Y + 7f * superScale;
+            float thumbSize = 29f * superScale;
+            float thumbR = 7f * superScale;
 
-        if (coverBmp != null)
-        {
-            using var pathThumb = new GraphicsPath();
-            pathThumb.AddArc(thumbX, thumbY, thumbR * 2, thumbR * 2, 180, 90);
-            pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY, thumbR * 2, thumbR * 2, 270, 90);
-            pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 0, 90);
-            pathThumb.AddArc(thumbX, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 90, 90);
-            pathThumb.CloseFigure();
-
-            var state = g.Save();
-            g.SetClip(pathThumb);
-            g.DrawImage(coverBmp, thumbX, thumbY, thumbSize, thumbSize);
-            g.Restore(state);
-        }
-        else
-        {
-            using (var brushDisc = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
+            if (coverBmp != null)
             {
-                g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+                using var pathThumb = new GraphicsPath();
+                pathThumb.AddArc(thumbX, thumbY, thumbR * 2, thumbR * 2, 180, 90);
+                pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY, thumbR * 2, thumbR * 2, 270, 90);
+                pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 0, 90);
+                pathThumb.AddArc(thumbX, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 90, 90);
+                pathThumb.CloseFigure();
+
+                var state = g.Save();
+                g.SetClip(pathThumb);
+                g.DrawImage(coverBmp, thumbX, thumbY, thumbSize, thumbSize);
+                g.Restore(state);
             }
-            using (var brushNote = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+            else
             {
-                var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
-                g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                using (var brushDisc = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
+                {
+                    g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+                }
+                using (var brushNote = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                {
+                    var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
+                    g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                }
             }
-        }
 
-        // Card 1 Text
-        float text1X = thumbX + thumbSize + 9f * superScale;
+            float text1X = thumbX + thumbSize + 9f * superScale;
+            string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
+                ? "Audio Idle"
+                : (track.Title.Length > 20 ? track.Title.Substring(0, 18) + "…" : track.Title);
 
-        string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
-            ? "Audio Idle"
-            : (track.Title.Length > 20 ? track.Title.Substring(0, 18) + "…" : track.Title);
+            string musicSub = isPlaying
+                ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : track.Artist)
+                : "Tap to open player";
 
-        string musicSub = isPlaying
-            ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : track.Artist)
-            : "Tap to open player";
+            if (musicSub.Length > 24) musicSub = musicSub.Substring(0, 22) + "…";
 
-        if (musicSub.Length > 24) musicSub = musicSub.Substring(0, 22) + "…";
-
-        using (var brushMTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-        {
-            g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
-        }
-        using (var brushMSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
-        {
-            g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
-        }
-
-        // Card 1 Right side: animated EQ bars if playing, else glyph
-        if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
-        {
-            float eqStartX = cardX + cardW - 28f * superScale;
-            float eqCy = c1Y + c1H * 0.5f;
-            using var brushEq = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
-            for (int b = 0; b < 4; b++)
+            using (var brushMTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
             {
-                float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
-                float bx = eqStartX + b * 4.5f * superScale;
-                g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.5f * superScale, barH);
+                g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
             }
-        }
-        else
-        {
+            using (var brushMSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
+            {
+                g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
+            }
+
             using var brushArrow = new SolidBrush(Color.FromArgb(120, 255, 255, 255));
             g.DrawString("›", fontCardTitle, brushArrow, cardX + cardW - 16f * superScale, c1Y + c1H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
         }
@@ -2588,6 +2856,137 @@ internal sealed class OverlayForm : Form
         {
             g.DrawString("›", fontCardTitle, brushArrow2, cardX + cardW - 16f * superScale, c2Y + c2H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
         }
+    }
+
+    private static GraphicsPath CreateRoundedRectPath(float x, float y, float w, float h, float rtl, float rtr, float rbr, float rbl)
+    {
+        var path = new GraphicsPath();
+        if (rtl > 0.5f) path.AddArc(x, y, rtl * 2, rtl * 2, 180, 90);
+        else path.AddLine(x, y, x, y);
+
+        if (rtr > 0.5f) path.AddArc(x + w - rtr * 2, y, rtr * 2, rtr * 2, 270, 90);
+        else path.AddLine(x + w, y, x + w, y);
+
+        if (rbr > 0.5f) path.AddArc(x + w - rbr * 2, y + h - rbr * 2, rbr * 2, rbr * 2, 0, 90);
+        else path.AddLine(x + w, y + h, x + w, y + h);
+
+        if (rbl > 0.5f) path.AddArc(x, y + h - rbl * 2, rbl * 2, rbl * 2, 90, 90);
+        else path.AddLine(x, y + h, x, y + h);
+
+        path.CloseFigure();
+        return path;
+    }
+
+    private static void DrawSleepOptionPill(
+        Graphics g,
+        float superScale,
+        float x, float y, float w, float h, float r,
+        string label,
+        Font font,
+        bool isActive,
+        bool isHovered,
+        bool isCancel,
+        bool timerActive = false,
+        float alphaMul = 1.0f)
+    {
+        if (alphaMul <= 0.001f) return;
+        alphaMul = Math.Clamp(alphaMul, 0.0f, 1.0f);
+
+        using var path = CreateRoundedRectPath(x, y, w, h, r, r, r, r);
+
+        if (isActive)
+        {
+            using var brushActive = new SolidBrush(Color.FromArgb((int)(235 * alphaMul), 255, 255, 255));
+            g.FillPath(brushActive, path);
+            using var penActive = new Pen(Color.FromArgb((int)(255 * alphaMul), 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penActive, path);
+
+            var strSize = g.MeasureString(label, font, PointF.Empty, StringFormat.GenericTypographic);
+            using var brushText = new SolidBrush(Color.FromArgb((int)(240 * alphaMul), 25, 28, 35));
+            g.DrawString(label, font, brushText, x + (w - strSize.Width) * 0.5f, y + (h - strSize.Height) * 0.5f, StringFormat.GenericTypographic);
+        }
+        else if (isCancel)
+        {
+            int fillA = isHovered ? (timerActive ? 75 : 60) : (timerActive ? 40 : 28);
+            Color fillC = timerActive 
+                ? Color.FromArgb((int)(fillA * alphaMul), 255, 90, 90) 
+                : Color.FromArgb((int)(fillA * alphaMul), 255, 255, 255);
+            using var brushCancel = new SolidBrush(fillC);
+            g.FillPath(brushCancel, path);
+
+            int borderA = isHovered ? (timerActive ? 140 : 110) : (timerActive ? 80 : 60);
+            Color borderC = timerActive 
+                ? Color.FromArgb((int)(borderA * alphaMul), 255, 120, 120) 
+                : Color.FromArgb((int)(borderA * alphaMul), 255, 255, 255);
+            using var penCancel = new Pen(borderC, 1.0f * superScale);
+            g.DrawPath(penCancel, path);
+
+            var strSize = g.MeasureString(label, font, PointF.Empty, StringFormat.GenericTypographic);
+            Color textC = timerActive 
+                ? Color.FromArgb((int)(255 * alphaMul), 255, 215, 215) 
+                : Color.FromArgb((int)(210 * alphaMul), 255, 255, 255);
+            using var brushText = new SolidBrush(textC);
+            g.DrawString(label, font, brushText, x + (w - strSize.Width) * 0.5f, y + (h - strSize.Height) * 0.5f, StringFormat.GenericTypographic);
+        }
+        else
+        {
+            int fillA = isHovered ? 65 : 34;
+            using var brushPill = new SolidBrush(Color.FromArgb((int)(fillA * alphaMul), 255, 255, 255));
+            g.FillPath(brushPill, path);
+
+            int borderA = isHovered ? 120 : 65;
+            using var penPill = new Pen(Color.FromArgb((int)(borderA * alphaMul), 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penPill, path);
+
+            var strSize = g.MeasureString(label, font, PointF.Empty, StringFormat.GenericTypographic);
+            using var brushText = new SolidBrush(Color.FromArgb((int)(235 * alphaMul), 255, 255, 255));
+            g.DrawString(label, font, brushText, x + (w - strSize.Width) * 0.5f, y + (h - strSize.Height) * 0.5f, StringFormat.GenericTypographic);
+        }
+    }
+
+    private static void DrawMoonWithStars(Graphics g, Brush brush, float cx, float cy, float r)
+    {
+        // Outer circle
+        using var pathOuter = new GraphicsPath();
+        pathOuter.AddEllipse(cx - r, cy - r, r * 2f, r * 2f);
+
+        // Inner cutout circle shifted to the right to carve crescent
+        float inR = r * 0.88f;
+        float inX = cx + r * 0.42f;
+        float inY = cy - r * 0.08f;
+        using var pathInner = new GraphicsPath();
+        pathInner.AddEllipse(inX - inR, inY - inR, inR * 2f, inR * 2f);
+
+        using var reg = new Region(pathOuter);
+        reg.Exclude(pathInner);
+        g.FillRegion(brush, reg);
+
+        // 4-Point Sparkle Star 1 (upper-right inside crescent cove)
+        float s1X = cx + r * 0.72f;
+        float s1Y = cy - r * 0.50f;
+        DrawSparkleStar(g, brush, s1X, s1Y, r * 0.32f);
+
+        // 4-Point Sparkle Star 2 (lower-right companion)
+        float s2X = cx + r * 1.06f;
+        float s2Y = cy + r * 0.26f;
+        DrawSparkleStar(g, brush, s2X, s2Y, r * 0.20f);
+    }
+
+    private static void DrawSparkleStar(Graphics g, Brush brush, float cx, float cy, float r)
+    {
+        float ir = r * 0.22f;
+        PointF[] pts = new[]
+        {
+            new PointF(cx, cy - r),
+            new PointF(cx + ir, cy - ir),
+            new PointF(cx + r, cy),
+            new PointF(cx + ir, cy + ir),
+            new PointF(cx, cy + r),
+            new PointF(cx - ir, cy + ir),
+            new PointF(cx - r, cy),
+            new PointF(cx - ir, cy - ir)
+        };
+        g.FillPolygon(brush, pts);
     }
 
     private static void DrawTabMusicContent(
@@ -3330,6 +3729,110 @@ internal sealed class OverlayForm : Form
                 SaveDesktopScreenshotWithPill("screenshot_transition.png");
                 File.Delete(transTriggerPath);
             }
+
+            string splitTriggerPath = Path.Combine(rootDir, "take_home_split.trigger");
+            if (File.Exists(splitTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                _sleepTimerActive = false;
+                _homeSleepPickerOpen = false;
+                _homeSleepExpandP = 0.0;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_home_split.png");
+                File.Delete(splitTriggerPath);
+            }
+
+            string sleepTriggerPath = Path.Combine(rootDir, "take_home_sleep.trigger");
+            if (File.Exists(sleepTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _sleepTimerActive = false;
+                _homeSleepPickerOpen = true;
+                _homeSleepExpandP = 1.0;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_home_sleep.png");
+                File.Delete(sleepTriggerPath);
+            }
+
+            string sleepSelTriggerPath = Path.Combine(rootDir, "take_home_sleep_selected.trigger");
+            if (File.Exists(sleepSelTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _sleepTimerActive = true;
+                _sleepTimerDurationMinutes = 30;
+                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(30);
+                _homeSleepPickerOpen = true;
+                _homeSleepExpandP = 1.0;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_home_sleep_selected.png");
+                File.Delete(sleepSelTriggerPath);
+            }
+
+            string activeTriggerPath = Path.Combine(rootDir, "take_home_active.trigger");
+            if (File.Exists(activeTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                _sleepTimerActive = true;
+                _sleepTimerDurationMinutes = 30;
+                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(30);
+                _homeSleepPickerOpen = false;
+                _homeSleepExpandP = 0.0;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_home_active.png");
+                File.Delete(activeTriggerPath);
+            }
         }
         catch { }
     }
@@ -3422,7 +3925,8 @@ internal sealed class OverlayForm : Form
                                    (Math.Abs(_tabIndicatorVel) > 0.002) ||
                                    (_clickAnimTimer > 0.0) ||
                                    (_progress > 0.001 && _progress < 0.999) ||
-                                   (Math.Abs(_hoverVel) > 0.001);
+                                   (Math.Abs(_hoverVel) > 0.001) ||
+                                   (Math.Abs(_homeSleepExpandP - (_homeSleepPickerOpen ? 1.0 : 0.0)) > 0.001);
             int sleepTimeout = isFastAnimating ? 1 : (_hoverPos > 0.6 ? 4 : 10);
             _renderSignal.WaitOne(sleepTimeout);
             if (!_running) break;
@@ -3582,12 +4086,51 @@ internal sealed class OverlayForm : Form
                         _hoveredButton = BtnNone;
                         UpdateExpandedMask();
                     }
+
+                    // Home Tab Sleep Timer Buttons Hover Interaction
+                    if (_activeTab == TabHome)
+                    {
+                        float mx = mouseSurfaceX - 70f;
+                        float my = mouseSurfaceY - 26f;
+                        int newSleepBtn = HomeSleepBtnNone;
+                        bool isSplit = _isPlaying || _hasActiveMedia || _sleepTimerActive || _homeSleepPickerOpen || (_homeSleepExpandP > 0.001);
+
+                        if (my >= 36 && my <= 80 && mx >= 216 && mx <= 444)
+                        {
+                            if (_homeSleepExpandP > 0.4)
+                            {
+                                if (mx >= 224 && mx < 274) newSleepBtn = HomeSleepBtn15m;
+                                else if (mx >= 274 && mx < 323) newSleepBtn = HomeSleepBtn30m;
+                                else if (mx >= 323 && mx < 372) newSleepBtn = HomeSleepBtn45m;
+                                else if (mx >= 372 && mx <= 438) newSleepBtn = HomeSleepBtnCancel;
+                            }
+                            else if (isSplit && mx >= 398 && mx <= 444)
+                            {
+                                newSleepBtn = HomeSleepBtnMoon;
+                            }
+                        }
+
+                        if (newSleepBtn != _hoveredHomeSleepBtn)
+                        {
+                            _hoveredHomeSleepBtn = newSleepBtn;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
+                    }
+                    else if (_hoveredHomeSleepBtn != HomeSleepBtnNone)
+                    {
+                        _hoveredHomeSleepBtn = HomeSleepBtnNone;
+                        _tabBufferCache[TabHome] = null;
+                        _needExpandedUpdate = true;
+                    }
                 }
             }
 
-            if (!cursorInPill && _hoveredButton != BtnNone)
+            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone))
             {
                 _hoveredButton = BtnNone;
+                _hoveredHomeSleepBtn = HomeSleepBtnNone;
+                _tabBufferCache[TabHome] = null;
                 UpdateExpandedMask();
             }
 
@@ -3749,6 +4292,42 @@ internal sealed class OverlayForm : Form
 
             UpdateEqualizerPhysics(dt);
             UpdateTabTransitionPhysics(dt);
+
+            // Smoothly animate sleep timer picker expand / collapse progress
+            double targetSleepP = _homeSleepPickerOpen ? 1.0 : 0.0;
+            if (Math.Abs(_homeSleepExpandP - targetSleepP) > 0.001)
+            {
+                _homeSleepExpandP += (targetSleepP - _homeSleepExpandP) * Math.Min(1.0, 16.0 * dt);
+                if (Math.Abs(_homeSleepExpandP - targetSleepP) < 0.001)
+                {
+                    _homeSleepExpandP = targetSleepP;
+                }
+                _tabBufferCache[TabHome] = null;
+                _needExpandedUpdate = true;
+            }
+
+            // Sleep timer expiration check: automatically pauses playback when countdown finishes
+            if (_sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && utcNow >= _sleepTimerTargetUtc)
+            {
+                _sleepTimerActive = false;
+                _sleepTimerTargetUtc = DateTime.MinValue;
+                _sleepTimerDurationMinutes = 0;
+                if (_isPlaying)
+                {
+                    if (_sysMedia.HasActiveSession)
+                    {
+                        _ = _sysMedia.TogglePlayPauseAsync();
+                    }
+                    else
+                    {
+                        _isPlaying = false;
+                        _hasActiveMedia = false;
+                    }
+                }
+                _tabBufferCache[TabHome] = null;
+                _tabBufferCache[TabMusic] = null;
+                _needExpandedUpdate = true;
+            }
 
             double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
             if (_hoverPos > 0.6 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.050))
