@@ -679,6 +679,14 @@ internal sealed class OverlayForm : Form
     private const int BtnAirPlay = 5;
 
     private int _activeTab = TabHome;
+    private int _prevTab = TabHome;
+    private double _tabIndicatorPos = TabHome;
+    private double _tabIndicatorVel = 0.0;
+    private double _tabTransitionP = 1.0;
+    private static Bitmap? _tabLayerPrev = null;
+    private static Bitmap? _tabLayerCurr = null;
+    private static readonly object _expandedRenderLock = new();
+
     private readonly TrackInfo _currentTrack = new();
     private bool _isPlaying = false; // Only true when real music is playing!
     private bool _hasActiveMedia = false; // True when active media track exists (playing or paused)
@@ -696,6 +704,84 @@ internal sealed class OverlayForm : Form
     private double _clickAnimTimer = 0.0;
     private bool _wasHovered = false;
     private bool _wasCursorInPill = false;
+
+    private void SwitchTab(int newTab, bool immediate = false)
+    {
+        if (newTab < TabHome || newTab > TabChrono) return;
+        if (_activeTab == newTab && !immediate) return;
+
+        if (immediate)
+        {
+            _activeTab = newTab;
+            _prevTab = newTab;
+            _tabIndicatorPos = newTab;
+            _tabIndicatorVel = 0.0;
+            _tabTransitionP = 1.0;
+            _needExpandedUpdate = true;
+            return;
+        }
+
+        _prevTab = _activeTab;
+        _activeTab = newTab;
+        _tabTransitionP = 0.0;
+        _needExpandedUpdate = true;
+    }
+
+    private void UpdateTabTransitionPhysics(double dt)
+    {
+        if (_hoverPos < 0.1)
+        {
+            _tabIndicatorPos = _activeTab;
+            _tabIndicatorVel = 0.0;
+            _tabTransitionP = 1.0;
+            _prevTab = _activeTab;
+            return;
+        }
+
+        bool animating = false;
+
+        // Content transition progress
+        if (_tabTransitionP < 1.0)
+        {
+            _tabTransitionP += dt * 4.2; // ~0.24s transition
+            if (_tabTransitionP >= 1.0)
+            {
+                _tabTransitionP = 1.0;
+                _prevTab = _activeTab;
+            }
+            animating = true;
+        }
+
+        // Sub-stepped spring physics for the tab indicator capsule
+        double targetPos = _activeTab;
+        const double stiffness = 280.0;
+        const double damping = 24.0;
+        int subSteps = 4;
+        double subDt = dt / subSteps;
+        for (int s = 0; s < subSteps; s++)
+        {
+            double springForce = -stiffness * (_tabIndicatorPos - targetPos);
+            double dampingForce = -damping * _tabIndicatorVel;
+            double totalAccel = springForce + dampingForce;
+            _tabIndicatorVel += totalAccel * subDt;
+            _tabIndicatorPos += _tabIndicatorVel * subDt;
+        }
+
+        if (Math.Abs(_tabIndicatorPos - targetPos) < 0.0005 && Math.Abs(_tabIndicatorVel) < 0.001)
+        {
+            _tabIndicatorPos = targetPos;
+            _tabIndicatorVel = 0.0;
+        }
+        else
+        {
+            animating = true;
+        }
+
+        if (animating)
+        {
+            _needExpandedUpdate = true;
+        }
+    }
 
     private void UpdateEqualizerPhysics(double dt)
     {
@@ -878,23 +964,19 @@ internal sealed class OverlayForm : Form
             }
             else if (e.KeyCode == Keys.D1)
             {
-                _activeTab = TabHome;
-                UpdateExpandedMask();
+                SwitchTab(TabHome);
             }
             else if (e.KeyCode == Keys.D2)
             {
-                _activeTab = TabMusic;
-                UpdateExpandedMask();
+                SwitchTab(TabMusic);
             }
             else if (e.KeyCode == Keys.D3)
             {
-                _activeTab = TabWeather;
-                UpdateExpandedMask();
+                SwitchTab(TabWeather);
             }
             else if (e.KeyCode == Keys.D4)
             {
-                _activeTab = TabChrono;
-                UpdateExpandedMask();
+                SwitchTab(TabChrono);
             }
             else if (e.KeyCode is Keys.F or Keys.Down)
             {
@@ -1030,26 +1112,22 @@ internal sealed class OverlayForm : Form
         {
             if (pt.X >= 86 && pt.X < 108)
             {
-                _activeTab = TabHome;
-                UpdateExpandedMask();
+                SwitchTab(TabHome);
                 return true;
             }
             if (pt.X >= 108 && pt.X < 130)
             {
-                _activeTab = TabMusic;
-                UpdateExpandedMask();
+                SwitchTab(TabMusic);
                 return true;
             }
             if (pt.X >= 130 && pt.X < 152)
             {
-                _activeTab = TabWeather;
-                UpdateExpandedMask();
+                SwitchTab(TabWeather);
                 return true;
             }
             if (pt.X >= 152 && pt.X <= 176)
             {
-                _activeTab = TabChrono;
-                UpdateExpandedMask();
+                SwitchTab(TabChrono);
                 return true;
             }
         }
@@ -1062,16 +1140,14 @@ internal sealed class OverlayForm : Form
             // Card 1: Music Quick-Glance (mx in [216, 444], my in [36, 80])
             if (mx >= 216 && mx <= 444 && my >= 36 && my <= 80)
             {
-                _activeTab = TabMusic;
-                UpdateExpandedMask();
+                SwitchTab(TabMusic);
                 return true;
             }
 
             // Card 2: Weather Quick-Glance (mx in [216, 444], my in [87, 132])
             if (mx >= 216 && mx <= 444 && my >= 87 && my <= 132)
             {
-                _activeTab = TabWeather;
-                UpdateExpandedMask();
+                SwitchTab(TabWeather);
                 return true;
             }
         }
@@ -1242,26 +1318,33 @@ internal sealed class OverlayForm : Form
 
     private void UpdateExpandedMask()
     {
-        var track = _currentTrack;
-        var cover = GetCurrentCoverArt(track);
-        var (colors, w, h) = PrecomputeExpandedContent(
-            _activeTab,
-            track,
-            cover,
-            _trackProgressSeconds,
-            _isPlaying,
-            _isShuffle,
-            _vinylRotationAngle,
-            _eqBarHeights,
-            _hoveredButton,
-            _clickedButton,
-            _clickAnimTimer);
-
-        lock (_expandedLock)
+        lock (_expandedRenderLock)
         {
-            _expandedColors = colors;
-            _expandedWidth = w;
-            _expandedHeight = h;
+            var track = _currentTrack;
+            var cover = GetCurrentCoverArt(track);
+            var (colors, w, h) = PrecomputeExpandedContent(
+                _activeTab,
+                _prevTab,
+                _tabTransitionP,
+                _tabIndicatorPos,
+                _tabIndicatorVel,
+                track,
+                cover,
+                _trackProgressSeconds,
+                _isPlaying,
+                _isShuffle,
+                _vinylRotationAngle,
+                _eqBarHeights,
+                _hoveredButton,
+                _clickedButton,
+                _clickAnimTimer);
+
+            lock (_expandedLock)
+            {
+                _expandedColors = colors;
+                _expandedWidth = w;
+                _expandedHeight = h;
+            }
         }
     }
 
@@ -1774,8 +1857,38 @@ internal sealed class OverlayForm : Form
         g.FillPolygon(brush, tri);
     }
 
+    private static void DrawBitmapWithAlpha(Graphics g, Bitmap bmp, float x, float y, float alpha)
+    {
+        if (alpha <= 0.005f) return;
+        if (alpha >= 0.995f && Math.Abs(x) < 0.1f && Math.Abs(y) < 0.1f)
+        {
+            g.DrawImage(bmp, 0, 0);
+            return;
+        }
+
+        var colorMatrix = new ColorMatrix
+        {
+            Matrix33 = alpha
+        };
+        using var imageAttributes = new ImageAttributes();
+        imageAttributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+
+        int ix = (int)Math.Round(x);
+        int iy = (int)Math.Round(y);
+        g.DrawImage(
+            bmp,
+            new Rectangle(ix, iy, bmp.Width, bmp.Height),
+            0, 0, bmp.Width, bmp.Height,
+            GraphicsUnit.Pixel,
+            imageAttributes);
+    }
+
     private static (uint[] colors, int width, int height) PrecomputeExpandedContent(
         int activeTab,
+        int prevTab,
+        double transitionP,
+        double tabIndicatorPos,
+        double tabIndicatorVel,
         TrackInfo track,
         Bitmap? coverBmp,
         double progressSeconds,
@@ -1800,12 +1913,6 @@ internal sealed class OverlayForm : Form
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            using var fontTab = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
-            using var fontTitle = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
-            using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
-            using var fontTime = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
-            using var fontLarge = GetPremiumFont(22.0f * superScale, FontStyle.Bold);
-            using var fontMedium = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
             using var fontClockHeader = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
 
             // ==========================================
@@ -1840,13 +1947,14 @@ internal sealed class OverlayForm : Form
                 g.DrawPath(penBar, pathBar);
             }
 
-            // Active Tab Sliding Indicator Pill
-            float activeX = tabStartX + activeTab * tabItemW;
+            // Active Tab Sliding Indicator Pill (Fluid Mercury Capsule with Velocity Stretch)
+            float stretch = (float)Math.Clamp(Math.Abs(tabIndicatorVel) * 1.5 * superScale, 0.0, 8.0 * superScale);
+            float activeX = tabStartX + (float)tabIndicatorPos * tabItemW - stretch * 0.5f;
             using (var pathActive = new GraphicsPath())
             {
                 float ax = activeX;
                 float ay = tabBarCy - tabHeight * 0.5f;
-                float aw = tabItemW;
+                float aw = tabItemW + stretch;
                 float ah = tabHeight;
                 float ar = ah * 0.5f;
 
@@ -1856,13 +1964,16 @@ internal sealed class OverlayForm : Form
                 pathActive.AddArc(ax, ay + ah - ar * 2, ar * 2, ar * 2, 90, 90);
                 pathActive.CloseFigure();
 
-                using var brushActive = new SolidBrush(Color.FromArgb(65, 255, 255, 255));
+                int fillAlpha = (int)Math.Clamp(65 + Math.Abs(tabIndicatorVel) * 10.0, 65, 95);
+                using var brushActive = new SolidBrush(Color.FromArgb(fillAlpha, 255, 255, 255));
                 g.FillPath(brushActive, pathActive);
-                using var penActive = new Pen(Color.FromArgb(160, 255, 255, 255), 1.0f * superScale);
+
+                int borderAlpha = (int)Math.Clamp(160 + Math.Abs(tabIndicatorVel) * 15.0, 160, 215);
+                using var penActive = new Pen(Color.FromArgb(borderAlpha, 255, 255, 255), 1.0f * superScale);
                 g.DrawPath(penActive, pathActive);
             }
 
-            // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱)
+            // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱) with Proximity Illuminance
             string[] tabIcons = new[] { "⌂", "♫", "☀", "⏱" };
             using var fontIconTab = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
             for (int t = 0; t < 4; t++)
@@ -1872,7 +1983,11 @@ internal sealed class OverlayForm : Form
                 float labelX = tx + (tabItemW - strSize.Width) * 0.5f;
                 float labelY = tabBarCy - strSize.Height * 0.5f;
 
-                Color tabColor = (t == activeTab) ? Color.FromArgb(255, 255, 255, 255) : Color.FromArgb(150, 255, 255, 255);
+                float dist = Math.Abs(t - (float)tabIndicatorPos);
+                float activeWeight = Math.Clamp(1.0f - dist, 0.0f, 1.0f);
+                int iconAlpha = (int)Math.Round(140f + 115f * activeWeight);
+
+                Color tabColor = Color.FromArgb(iconAlpha, 255, 255, 255);
                 using var brushTab = new SolidBrush(tabColor);
                 g.DrawString(tabIcons[t], fontIconTab, brushTab, labelX, labelY, StringFormat.GenericTypographic);
             }
@@ -1886,390 +2001,57 @@ internal sealed class OverlayForm : Form
             }
 
             // ==========================================
-            // CONTENT AREA
+            // CONTENT AREA (Fluid Transition Engine)
             // ==========================================
-            if (activeTab == TabHome)
+            if (transitionP >= 1.0 || prevTab == activeTab)
             {
-                // TAB 0: HOME TAB (Executive Liquid Glass Dashboard)
-                var now = DateTime.Now;
-
-                // 1. Top-Left: "Welcome" in Eternalo luxury serif font
-                float welcomeX = 18f * superScale;
-                float welcomeY = 33f * superScale;
-
-                using var fontWelcome = GetEternaloFont(28.0f * superScale, FontStyle.Regular);
-                using var fontHomeSub = GetPremiumFont(9.0f * superScale, FontStyle.Regular);
-                using var fontCardTitle = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
-                using var fontCardSub = GetPremiumFont(7.5f * superScale, FontStyle.Regular);
-
-                // Subtle soft shadow behind "Welcome" for glass depth
-                using (var brushShadow = new SolidBrush(Color.FromArgb(70, 0, 0, 0)))
-                {
-                    g.DrawString("Welcome", fontWelcome, brushShadow, welcomeX + 1.0f * superScale, welcomeY + 1.5f * superScale, StringFormat.GenericTypographic);
-                }
-                using (var brushWelcome = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                {
-                    g.DrawString("Welcome", fontWelcome, brushWelcome, welcomeX, welcomeY, StringFormat.GenericTypographic);
-                }
-
-                // Greeting & Date Line
-                string timeGreeting = now.Hour < 12 ? "Good morning" : (now.Hour < 17 ? "Good afternoon" : "Good evening");
-                string dateStr = $"{timeGreeting}  •  {now:dddd, MMM d}";
-                using (var brushDateShadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
-                {
-                    g.DrawString(dateStr, fontHomeSub, brushDateShadow, welcomeX + 0.8f * superScale, welcomeY + 38f * superScale, StringFormat.GenericDefault);
-                }
-                using (var brushDate = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
-                {
-                    g.DrawString(dateStr, fontHomeSub, brushDate, welcomeX, welcomeY + 37f * superScale, StringFormat.GenericDefault);
-                }
-
-                // 2. Right Column Cards: Now Playing & Weather Quick-Glances
-                float cardX = 216f * superScale;
-                float cardW = (targetW - 16f) * superScale - cardX; // ~228px at 1x
-                float cardR = 12f * superScale;
-
-                // ----------------------------------------------------
-                // Card 1: Now Playing Quick-Glance (Top-Right)
-                // ----------------------------------------------------
-                float c1Y = 36f * superScale;
-                float c1H = 43f * superScale;
-                using (var pathC1 = new GraphicsPath())
-                {
-                    pathC1.AddArc(cardX, c1Y, cardR * 2, cardR * 2, 180, 90);
-                    pathC1.AddArc(cardX + cardW - cardR * 2, c1Y, cardR * 2, cardR * 2, 270, 90);
-                    pathC1.AddArc(cardX + cardW - cardR * 2, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
-                    pathC1.AddArc(cardX, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
-                    pathC1.CloseFigure();
-
-                    using var brushC1 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
-                    g.FillPath(brushC1, pathC1);
-                    using var penC1 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
-                    g.DrawPath(penC1, pathC1);
-                }
-
-                // Card 1 Thumbnail
-                float thumbX = cardX + 8f * superScale;
-                float thumbY = c1Y + 7f * superScale;
-                float thumbSize = 29f * superScale;
-                float thumbR = 7f * superScale;
-
-                if (coverBmp != null)
-                {
-                    using var pathThumb = new GraphicsPath();
-                    pathThumb.AddArc(thumbX, thumbY, thumbR * 2, thumbR * 2, 180, 90);
-                    pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY, thumbR * 2, thumbR * 2, 270, 90);
-                    pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 0, 90);
-                    pathThumb.AddArc(thumbX, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 90, 90);
-                    pathThumb.CloseFigure();
-
-                    var state = g.Save();
-                    g.SetClip(pathThumb);
-                    g.DrawImage(coverBmp, thumbX, thumbY, thumbSize, thumbSize);
-                    g.Restore(state);
-                }
-                else
-                {
-                    // Stylized dark gradient disc with music note
-                    using (var brushDisc = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
-                    {
-                        g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
-                    }
-                    using (var brushNote = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
-                    {
-                        var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
-                        g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
-                    }
-                }
-
-                // Card 1 Text
-                float text1X = thumbX + thumbSize + 9f * superScale;
-
-                string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
-                    ? "Audio Idle"
-                    : (track.Title.Length > 20 ? track.Title.Substring(0, 18) + "…" : track.Title);
-
-                string musicSub = isPlaying
-                    ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : track.Artist)
-                    : "Tap to open player";
-
-                if (musicSub.Length > 24) musicSub = musicSub.Substring(0, 22) + "…";
-
-                using (var brushMTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                {
-                    g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
-                }
-                using (var brushMSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
-                {
-                    g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
-                }
-
-                // Card 1 Right side: animated EQ bars if playing, else glyph
-                if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
-                {
-                    float eqStartX = cardX + cardW - 28f * superScale;
-                    float eqCy = c1Y + c1H * 0.5f;
-                    using var brushEq = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
-                    for (int b = 0; b < 4; b++)
-                    {
-                        float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
-                        float bx = eqStartX + b * 4.5f * superScale;
-                        g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.5f * superScale, barH);
-                    }
-                }
-                else
-                {
-                    using var brushArrow = new SolidBrush(Color.FromArgb(120, 255, 255, 255));
-                    g.DrawString("›", fontCardTitle, brushArrow, cardX + cardW - 16f * superScale, c1Y + c1H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
-                }
-
-                // ----------------------------------------------------
-                // Card 2: Weather & Environment Glance (Bottom-Right)
-                // ----------------------------------------------------
-                float c2Y = 87f * superScale;
-                float c2H = 43f * superScale;
-                using (var pathC2 = new GraphicsPath())
-                {
-                    pathC2.AddArc(cardX, c2Y, cardR * 2, cardR * 2, 180, 90);
-                    pathC2.AddArc(cardX + cardW - cardR * 2, c2Y, cardR * 2, cardR * 2, 270, 90);
-                    pathC2.AddArc(cardX + cardW - cardR * 2, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
-                    pathC2.AddArc(cardX, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
-                    pathC2.CloseFigure();
-
-                    using var brushC2 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
-                    g.FillPath(brushC2, pathC2);
-                    using var penC2 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
-                    g.DrawPath(penC2, pathC2);
-                }
-
-                // Card 2 Icon: Sun + cloud
-                float iconX = cardX + 10f * superScale;
-                float iconY = c2Y + 11f * superScale;
-                using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
-                {
-                    g.FillEllipse(brushSun, iconX + 4f * superScale, iconY, 14f * superScale, 14f * superScale);
-                }
-                using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
-                {
-                    g.FillEllipse(brushCloud, iconX, iconY + 5f * superScale, 14f * superScale, 11f * superScale);
-                    g.FillEllipse(brushCloud, iconX + 8f * superScale, iconY + 5f * superScale, 12f * superScale, 9f * superScale);
-                }
-
-                float text2X = cardX + 38f * superScale;
-                using (var brushWTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                {
-                    g.DrawString("24°C  •  Partly Cloudy", fontCardTitle, brushWTitle, text2X, c2Y + 7f * superScale, StringFormat.GenericDefault);
-                }
-                using (var brushWSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
-                {
-                    g.DrawString("High 28°  Low 19°  •  San Francisco", fontCardSub, brushWSub, text2X, c2Y + 23f * superScale, StringFormat.GenericDefault);
-                }
-                using (var brushArrow2 = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
-                {
-                    g.DrawString("›", fontCardTitle, brushArrow2, cardX + cardW - 16f * superScale, c2Y + c2H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
-                }
-            }
-            else if (activeTab == TabMusic)
-            {
-                // TAB 1: MUSIC PLAYER
-                float artX = 16f * superScale;
-                float artY = 46f * superScale;
-                float artSize = 54f * superScale;
-                float artRadius = 12f * superScale;
-                DrawRoundedSquareCover(g, artX, artY, artSize, artRadius, coverBmp, track.CoverAccentColor, rotationAngle, isPlaying, eqBarHeights);
-
-                float textStartX = artX + artSize + 16f * superScale;
-                float rightEdge = (targetW - 16f) * superScale;
-                float barW = rightEdge - textStartX;
-
-                using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                {
-                    g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 44f * superScale, StringFormat.GenericDefault);
-                }
-
-                using (var brushArtist = new SolidBrush(Color.FromArgb(195, 255, 255, 255)))
-                {
-                    g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 63f * superScale, StringFormat.GenericDefault);
-                }
-
-                float barY = 86f * superScale;
-                float barH = 2.5f * superScale;
-                double progressRatio = (track.DurationSeconds > 0)
-                    ? Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0)
-                    : 0.0;
-
-                using (var penRail = new Pen(Color.FromArgb(50, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    g.DrawLine(penRail, textStartX + barH * 0.5f, barY, rightEdge - barH * 0.5f, barY);
-                }
-
-                float fillEnd = textStartX + (float)(progressRatio * barW);
-                if (fillEnd > textStartX + barH)
-                {
-                    using var penFill = new Pen(Color.FromArgb(250, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-                    g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
-                }
-
-                float beadR = 3.5f * superScale;
-                using (var brushBead = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                {
-                    g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
-                }
-
-                string elStr;
-                string remStr;
-                if (track.DurationSeconds > 0)
-                {
-                    int elMin = (int)(progressSeconds / 60);
-                    int elSec = (int)(progressSeconds % 60);
-                    elStr = $"{elMin}:{elSec:D2}";
-
-                    double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
-                    int remMin = (int)(remSeconds / 60);
-                    int remSec = (int)(remSeconds % 60);
-                    remStr = $"-{remMin}:{remSec:D2}";
-                }
-                else
-                {
-                    elStr = "0:00";
-                    remStr = "--:--";
-                }
-
-                float timeLabelY = 92f * superScale;
-                using (var brushTime = new SolidBrush(Color.FromArgb(165, 255, 255, 255)))
-                {
-                    g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
-                    var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
-                    g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
-                }
-
-                float ctrlY = 120f * superScale;
-
-                // Tactile Rounded Square Glass Buttons with Different Blur Intensity, Dark Hover, and Click Animation (NO OUTLINE)
-                DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
-                    hoveredButton == BtnShuffle, clickedButton == BtnShuffle, clickAnimProgress, superScale,
-                    () => DrawShuffleGlyph(g, 98f * superScale, ctrlY, 13f * superScale, isShuffle));
-
-                DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
-                    hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
-                    () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false));
-
-                DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
-                    hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
-                    () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying));
-
-                DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
-                    hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
-                    () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true));
-
-                DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 15f * superScale, 7f * superScale,
-                    hoveredButton == BtnAirPlay, clickedButton == BtnAirPlay, clickAnimProgress, superScale,
-                    () => DrawAirPlayGlyph(g, 432f * superScale, ctrlY, 12f * superScale));
-            }
-            else if (activeTab == TabWeather)
-            {
-                // TAB 2: LUXURY WEATHER
-                float wX = 24f * superScale;
-                float wY = 46f * superScale;
-
-                float sunX = wX + 22f * superScale;
-                float sunY = wY + 22f * superScale;
-                using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
-                {
-                    g.FillEllipse(brushSun, sunX - 14f * superScale, sunY - 14f * superScale, 28f * superScale, 28f * superScale);
-                }
-                using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
-                {
-                    g.FillEllipse(brushCloud, sunX - 8f * superScale, sunY - 2f * superScale, 22f * superScale, 18f * superScale);
-                    g.FillEllipse(brushCloud, sunX + 4f * superScale, sunY + 2f * superScale, 18f * superScale, 14f * superScale);
-                    g.FillEllipse(brushCloud, sunX - 16f * superScale, sunY + 4f * superScale, 16f * superScale, 12f * superScale);
-                }
-
-                float tempX = wX + 68f * superScale;
-                using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                {
-                    g.DrawString("24°", fontLarge, brushTemp, tempX, wY - 2f * superScale, StringFormat.GenericDefault);
-                }
-
-                using (var brushCond = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
-                {
-                    g.DrawString("Partly Cloudy", fontMedium, brushCond, tempX + 58f * superScale, wY + 2f * superScale, StringFormat.GenericDefault);
-                }
-                using (var brushLoc = new SolidBrush(Color.FromArgb(170, 255, 255, 255)))
-                {
-                    g.DrawString("San Francisco • High: 28° Low: 19°", fontArtist, brushLoc, tempX + 58f * superScale, wY + 20f * superScale, StringFormat.GenericDefault);
-                }
-
-                string[] metrics = new[] { "HUMIDITY  62%", "WIND  14 km/h", "UV INDEX  3 Mod" };
-                float badgeStartX = wX + 8f * superScale;
-                float badgeW = 126f * superScale;
-                float badgeY = wY + 52f * superScale;
-                float badgeH = 22f * superScale;
-
-                for (int m = 0; m < 3; m++)
-                {
-                    float bx = badgeStartX + m * (badgeW + 12f * superScale);
-                    using var pathBadge = new GraphicsPath();
-                    float br = badgeH * 0.5f;
-                    pathBadge.AddArc(bx, badgeY, br * 2, br * 2, 180, 90);
-                    pathBadge.AddArc(bx + badgeW - br * 2, badgeY, br * 2, br * 2, 270, 90);
-                    pathBadge.AddArc(bx + badgeW - br * 2, badgeY + badgeH - br * 2, br * 2, br * 2, 0, 90);
-                    pathBadge.AddArc(bx, badgeY + badgeH - br * 2, br * 2, br * 2, 90, 90);
-                    pathBadge.CloseFigure();
-
-                    using var brushBadgeBg = new SolidBrush(Color.FromArgb(30, 255, 255, 255));
-                    g.FillPath(brushBadgeBg, pathBadge);
-                    using var penBadge = new Pen(Color.FromArgb(80, 255, 255, 255), 1.0f * superScale);
-                    g.DrawPath(penBadge, pathBadge);
-
-                    using var brushMetric = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
-                    var mSize = g.MeasureString(metrics[m], fontTab, PointF.Empty, StringFormat.GenericDefault);
-                    g.DrawString(metrics[m], fontTab, brushMetric, bx + (badgeW - mSize.Width) * 0.5f, badgeY + (badgeH - mSize.Height) * 0.5f, StringFormat.GenericDefault);
-                }
+                DrawSingleTabContent(g, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
             }
             else
             {
-                // TAB 3: SWISS CHRONO & CLOCK
-                var now = DateTime.Now;
-                string grandTime = now.ToString("hh:mm:ss tt");
-                string grandDate = now.ToString("dddd, MMMM dd, yyyy");
-
-                float cX = (targetW * 0.5f) * superScale;
-                float cY = 46f * superScale;
-
-                var timeSize = g.MeasureString(grandTime, fontLarge, PointF.Empty, StringFormat.GenericDefault);
-                using (var brushGrand = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                if (_tabLayerPrev == null || _tabLayerPrev.Width != superW || _tabLayerPrev.Height != superH)
                 {
-                    g.DrawString(grandTime, fontLarge, brushGrand, cX - timeSize.Width * 0.5f, cY, StringFormat.GenericDefault);
+                    _tabLayerPrev?.Dispose();
+                    _tabLayerCurr?.Dispose();
+                    _tabLayerPrev = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+                    _tabLayerCurr = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
                 }
 
-                var dateSize = g.MeasureString(grandDate, fontArtist, PointF.Empty, StringFormat.GenericDefault);
-                using (var brushDate = new SolidBrush(Color.FromArgb(185, 255, 255, 255)))
+                using (var gPrev = Graphics.FromImage(_tabLayerPrev!))
                 {
-                    g.DrawString(grandDate, fontArtist, brushDate, cX - dateSize.Width * 0.5f, cY + 34f * superScale, StringFormat.GenericDefault);
+                    gPrev.Clear(Color.Transparent);
+                    gPrev.SmoothingMode = SmoothingMode.AntiAlias;
+                    gPrev.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                    DrawSingleTabContent(gPrev, prevTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
                 }
 
-                float timerW = 180f * superScale;
-                float timerH = 24f * superScale;
-                float timerX = cX - timerW * 0.5f;
-                float timerY = cY + 54f * superScale;
-                using var pathTimer = new GraphicsPath();
-                float tr = timerH * 0.5f;
-                pathTimer.AddArc(timerX, timerY, tr * 2, tr * 2, 180, 90);
-                pathTimer.AddArc(timerX + timerW - tr * 2, timerY, tr * 2, tr * 2, 270, 90);
-                pathTimer.AddArc(timerX + timerW - tr * 2, timerY + timerH - tr * 2, tr * 2, tr * 2, 0, 90);
-                pathTimer.AddArc(timerX, timerY + timerH - tr * 2, tr * 2, tr * 2, 90, 90);
-                pathTimer.CloseFigure();
+                using (var gCurr = Graphics.FromImage(_tabLayerCurr!))
+                {
+                    gCurr.Clear(Color.Transparent);
+                    gCurr.SmoothingMode = SmoothingMode.AntiAlias;
+                    gCurr.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                    DrawSingleTabContent(gCurr, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
+                }
 
-                using var brushTimerBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
-                g.FillPath(brushTimerBg, pathTimer);
-                using var penTimer = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penTimer, pathTimer);
+                double t = Math.Clamp(transitionP, 0.0, 1.0);
+                float ease = (float)(1.0 - Math.Pow(1.0 - t, 3.0));
 
-                string timerStr = isPlaying ? "⏱ CHRONO: RUNNING (01:28.45)" : "⏱ CHRONO: PAUSED";
-                var tSize = g.MeasureString(timerStr, fontTab, PointF.Empty, StringFormat.GenericDefault);
-                using var brushTimerText = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
-                g.DrawString(timerStr, fontTab, brushTimerText, timerX + (timerW - tSize.Width) * 0.5f, timerY + (timerH - tSize.Height) * 0.5f, StringFormat.GenericDefault);
+                float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
+                float maxSlide = 20.0f * superScale;
+
+                float prevOffset = -dir * ease * maxSlide;
+                float prevAlpha = Math.Clamp(1.0f - ease, 0.0f, 1.0f);
+
+                float currOffset = dir * (1.0f - ease) * maxSlide;
+                float currAlpha = Math.Clamp(ease, 0.0f, 1.0f);
+
+                var contentClip = new RectangleF(0, 26f * superScale, superW, superH - 26f * superScale);
+                g.SetClip(contentClip);
+
+                DrawBitmapWithAlpha(g, _tabLayerPrev!, prevOffset, 0, prevAlpha);
+                DrawBitmapWithAlpha(g, _tabLayerCurr!, currOffset, 0, currAlpha);
+
+                g.ResetClip();
             }
         }
 
@@ -2322,6 +2104,462 @@ internal sealed class OverlayForm : Form
         }
         superBmp.UnlockBits(data);
         return (colorBuffer, targetW, targetH);
+    }
+
+    private static void DrawSingleTabContent(
+        Graphics g,
+        int tabIndex,
+        float superScale,
+        int targetW,
+        TrackInfo track,
+        Bitmap? coverBmp,
+        double progressSeconds,
+        bool isPlaying,
+        bool isShuffle,
+        double rotationAngle,
+        float[]? eqBarHeights,
+        int hoveredButton,
+        int clickedButton,
+        double clickAnimProgress)
+    {
+        switch (tabIndex)
+        {
+            case TabHome:
+                DrawTabHomeContent(g, superScale, targetW, track, coverBmp, isPlaying, eqBarHeights);
+                break;
+            case TabMusic:
+                DrawTabMusicContent(g, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
+                break;
+            case TabWeather:
+                DrawTabWeatherContent(g, superScale, targetW);
+                break;
+            case TabChrono:
+            default:
+                DrawTabChronoContent(g, superScale, targetW, isPlaying);
+                break;
+        }
+    }
+
+    private static void DrawTabHomeContent(
+        Graphics g,
+        float superScale,
+        int targetW,
+        TrackInfo track,
+        Bitmap? coverBmp,
+        bool isPlaying,
+        float[]? eqBarHeights)
+    {
+        var now = DateTime.Now;
+
+        // 1. Top-Left: "Welcome" in Eternalo luxury serif font
+        float welcomeX = 18f * superScale;
+        float welcomeY = 33f * superScale;
+
+        using var fontWelcome = GetEternaloFont(28.0f * superScale, FontStyle.Regular);
+        using var fontHomeSub = GetPremiumFont(9.0f * superScale, FontStyle.Regular);
+        using var fontCardTitle = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+        using var fontCardSub = GetPremiumFont(7.5f * superScale, FontStyle.Regular);
+
+        // Subtle soft shadow behind "Welcome" for glass depth
+        using (var brushShadow = new SolidBrush(Color.FromArgb(70, 0, 0, 0)))
+        {
+            g.DrawString("Welcome", fontWelcome, brushShadow, welcomeX + 1.0f * superScale, welcomeY + 1.5f * superScale, StringFormat.GenericTypographic);
+        }
+        using (var brushWelcome = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString("Welcome", fontWelcome, brushWelcome, welcomeX, welcomeY, StringFormat.GenericTypographic);
+        }
+
+        // Greeting & Date Line
+        string timeGreeting = now.Hour < 12 ? "Good morning" : (now.Hour < 17 ? "Good afternoon" : "Good evening");
+        string dateStr = $"{timeGreeting}  •  {now:dddd, MMM d}";
+        using (var brushDateShadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
+        {
+            g.DrawString(dateStr, fontHomeSub, brushDateShadow, welcomeX + 0.8f * superScale, welcomeY + 38f * superScale, StringFormat.GenericDefault);
+        }
+        using (var brushDate = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
+        {
+            g.DrawString(dateStr, fontHomeSub, brushDate, welcomeX, welcomeY + 37f * superScale, StringFormat.GenericDefault);
+        }
+
+        // 2. Right Column Cards: Now Playing & Weather Quick-Glances
+        float cardX = 216f * superScale;
+        float cardW = (targetW - 16f) * superScale - cardX; // ~228px at 1x
+        float cardR = 12f * superScale;
+
+        // ----------------------------------------------------
+        // Card 1: Now Playing Quick-Glance (Top-Right)
+        // ----------------------------------------------------
+        float c1Y = 36f * superScale;
+        float c1H = 43f * superScale;
+        using (var pathC1 = new GraphicsPath())
+        {
+            pathC1.AddArc(cardX, c1Y, cardR * 2, cardR * 2, 180, 90);
+            pathC1.AddArc(cardX + cardW - cardR * 2, c1Y, cardR * 2, cardR * 2, 270, 90);
+            pathC1.AddArc(cardX + cardW - cardR * 2, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
+            pathC1.AddArc(cardX, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
+            pathC1.CloseFigure();
+
+            using var brushC1 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+            g.FillPath(brushC1, pathC1);
+            using var penC1 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penC1, pathC1);
+        }
+
+        // Card 1 Thumbnail
+        float thumbX = cardX + 8f * superScale;
+        float thumbY = c1Y + 7f * superScale;
+        float thumbSize = 29f * superScale;
+        float thumbR = 7f * superScale;
+
+        if (coverBmp != null)
+        {
+            using var pathThumb = new GraphicsPath();
+            pathThumb.AddArc(thumbX, thumbY, thumbR * 2, thumbR * 2, 180, 90);
+            pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY, thumbR * 2, thumbR * 2, 270, 90);
+            pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 0, 90);
+            pathThumb.AddArc(thumbX, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 90, 90);
+            pathThumb.CloseFigure();
+
+            var state = g.Save();
+            g.SetClip(pathThumb);
+            g.DrawImage(coverBmp, thumbX, thumbY, thumbSize, thumbSize);
+            g.Restore(state);
+        }
+        else
+        {
+            using (var brushDisc = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
+            {
+                g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+            }
+            using (var brushNote = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+            {
+                var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
+                g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+            }
+        }
+
+        // Card 1 Text
+        float text1X = thumbX + thumbSize + 9f * superScale;
+
+        string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
+            ? "Audio Idle"
+            : (track.Title.Length > 20 ? track.Title.Substring(0, 18) + "…" : track.Title);
+
+        string musicSub = isPlaying
+            ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : track.Artist)
+            : "Tap to open player";
+
+        if (musicSub.Length > 24) musicSub = musicSub.Substring(0, 22) + "…";
+
+        using (var brushMTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
+        }
+        using (var brushMSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
+        {
+            g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
+        }
+
+        // Card 1 Right side: animated EQ bars if playing, else glyph
+        if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
+        {
+            float eqStartX = cardX + cardW - 28f * superScale;
+            float eqCy = c1Y + c1H * 0.5f;
+            using var brushEq = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
+            for (int b = 0; b < 4; b++)
+            {
+                float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
+                float bx = eqStartX + b * 4.5f * superScale;
+                g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.5f * superScale, barH);
+            }
+        }
+        else
+        {
+            using var brushArrow = new SolidBrush(Color.FromArgb(120, 255, 255, 255));
+            g.DrawString("›", fontCardTitle, brushArrow, cardX + cardW - 16f * superScale, c1Y + c1H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
+        }
+
+        // ----------------------------------------------------
+        // Card 2: Weather & Environment Glance (Bottom-Right)
+        // ----------------------------------------------------
+        float c2Y = 87f * superScale;
+        float c2H = 43f * superScale;
+        using (var pathC2 = new GraphicsPath())
+        {
+            pathC2.AddArc(cardX, c2Y, cardR * 2, cardR * 2, 180, 90);
+            pathC2.AddArc(cardX + cardW - cardR * 2, c2Y, cardR * 2, cardR * 2, 270, 90);
+            pathC2.AddArc(cardX + cardW - cardR * 2, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
+            pathC2.AddArc(cardX, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
+            pathC2.CloseFigure();
+
+            using var brushC2 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+            g.FillPath(brushC2, pathC2);
+            using var penC2 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penC2, pathC2);
+        }
+
+        // Card 2 Icon: Sun + cloud
+        float iconX = cardX + 10f * superScale;
+        float iconY = c2Y + 11f * superScale;
+        using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
+        {
+            g.FillEllipse(brushSun, iconX + 4f * superScale, iconY, 14f * superScale, 14f * superScale);
+        }
+        using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+        {
+            g.FillEllipse(brushCloud, iconX, iconY + 5f * superScale, 14f * superScale, 11f * superScale);
+            g.FillEllipse(brushCloud, iconX + 8f * superScale, iconY + 5f * superScale, 12f * superScale, 9f * superScale);
+        }
+
+        float text2X = cardX + 38f * superScale;
+        using (var brushWTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString("24°C  •  Partly Cloudy", fontCardTitle, brushWTitle, text2X, c2Y + 7f * superScale, StringFormat.GenericDefault);
+        }
+        using (var brushWSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
+        {
+            g.DrawString("High 28°  Low 19°  •  San Francisco", fontCardSub, brushWSub, text2X, c2Y + 23f * superScale, StringFormat.GenericDefault);
+        }
+        using (var brushArrow2 = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
+        {
+            g.DrawString("›", fontCardTitle, brushArrow2, cardX + cardW - 16f * superScale, c2Y + c2H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
+        }
+    }
+
+    private static void DrawTabMusicContent(
+        Graphics g,
+        float superScale,
+        int targetW,
+        TrackInfo track,
+        Bitmap? coverBmp,
+        double progressSeconds,
+        bool isPlaying,
+        bool isShuffle,
+        double rotationAngle,
+        float[]? eqBarHeights,
+        int hoveredButton,
+        int clickedButton,
+        double clickAnimProgress)
+    {
+        using var fontTitle = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
+        using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
+        using var fontTime = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
+
+        float artX = 16f * superScale;
+        float artY = 46f * superScale;
+        float artSize = 54f * superScale;
+        float artRadius = 12f * superScale;
+        DrawRoundedSquareCover(g, artX, artY, artSize, artRadius, coverBmp, track.CoverAccentColor, rotationAngle, isPlaying, eqBarHeights);
+
+        float textStartX = artX + artSize + 16f * superScale;
+        float rightEdge = (targetW - 16f) * superScale;
+        float barW = rightEdge - textStartX;
+
+        using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 44f * superScale, StringFormat.GenericDefault);
+        }
+
+        using (var brushArtist = new SolidBrush(Color.FromArgb(195, 255, 255, 255)))
+        {
+            g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 63f * superScale, StringFormat.GenericDefault);
+        }
+
+        float barY = 86f * superScale;
+        float barH = 2.5f * superScale;
+        double progressRatio = (track.DurationSeconds > 0)
+            ? Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0)
+            : 0.0;
+
+        using (var penRail = new Pen(Color.FromArgb(50, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawLine(penRail, textStartX + barH * 0.5f, barY, rightEdge - barH * 0.5f, barY);
+        }
+
+        float fillEnd = textStartX + (float)(progressRatio * barW);
+        if (fillEnd > textStartX + barH)
+        {
+            using var penFill = new Pen(Color.FromArgb(250, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
+        }
+
+        float beadR = 3.5f * superScale;
+        using (var brushBead = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
+        }
+
+        string elStr;
+        string remStr;
+        if (track.DurationSeconds > 0)
+        {
+            int elMin = (int)(progressSeconds / 60);
+            int elSec = (int)(progressSeconds % 60);
+            elStr = $"{elMin}:{elSec:D2}";
+
+            double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
+            int remMin = (int)(remSeconds / 60);
+            int remSec = (int)(remSeconds % 60);
+            remStr = $"-{remMin}:{remSec:D2}";
+        }
+        else
+        {
+            elStr = "0:00";
+            remStr = "--:--";
+        }
+
+        float timeLabelY = 92f * superScale;
+        using (var brushTime = new SolidBrush(Color.FromArgb(165, 255, 255, 255)))
+        {
+            g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
+            var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
+            g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
+        }
+
+        float ctrlY = 120f * superScale;
+
+        // Tactile Rounded Square Glass Buttons with Different Blur Intensity, Dark Hover, and Click Animation (NO OUTLINE)
+        DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
+            hoveredButton == BtnShuffle, clickedButton == BtnShuffle, clickAnimProgress, superScale,
+            () => DrawShuffleGlyph(g, 98f * superScale, ctrlY, 13f * superScale, isShuffle));
+
+        DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
+            hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
+            () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false));
+
+        DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
+            hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
+            () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying));
+
+        DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
+            hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
+            () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true));
+
+        DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 15f * superScale, 7f * superScale,
+            hoveredButton == BtnAirPlay, clickedButton == BtnAirPlay, clickAnimProgress, superScale,
+            () => DrawAirPlayGlyph(g, 432f * superScale, ctrlY, 12f * superScale));
+    }
+
+    private static void DrawTabWeatherContent(
+        Graphics g,
+        float superScale,
+        int targetW)
+    {
+        using var fontLarge = GetPremiumFont(22.0f * superScale, FontStyle.Bold);
+        using var fontMedium = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
+        using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
+        using var fontTab = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+
+        float wX = 24f * superScale;
+        float wY = 46f * superScale;
+
+        float sunX = wX + 22f * superScale;
+        float sunY = wY + 22f * superScale;
+        using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
+        {
+            g.FillEllipse(brushSun, sunX - 14f * superScale, sunY - 14f * superScale, 28f * superScale, 28f * superScale);
+        }
+        using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+        {
+            g.FillEllipse(brushCloud, sunX - 8f * superScale, sunY - 2f * superScale, 22f * superScale, 18f * superScale);
+            g.FillEllipse(brushCloud, sunX + 4f * superScale, sunY + 2f * superScale, 18f * superScale, 14f * superScale);
+            g.FillEllipse(brushCloud, sunX - 16f * superScale, sunY + 4f * superScale, 16f * superScale, 12f * superScale);
+        }
+
+        float tempX = wX + 68f * superScale;
+        using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString("24°", fontLarge, brushTemp, tempX, wY - 2f * superScale, StringFormat.GenericDefault);
+        }
+
+        using (var brushCond = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+        {
+            g.DrawString("Partly Cloudy", fontMedium, brushCond, tempX + 58f * superScale, wY + 2f * superScale, StringFormat.GenericDefault);
+        }
+        using (var brushLoc = new SolidBrush(Color.FromArgb(170, 255, 255, 255)))
+        {
+            g.DrawString("San Francisco • High: 28° Low: 19°", fontArtist, brushLoc, tempX + 58f * superScale, wY + 20f * superScale, StringFormat.GenericDefault);
+        }
+
+        string[] metrics = new[] { "HUMIDITY  62%", "WIND  14 km/h", "UV INDEX  3 Mod" };
+        float badgeStartX = wX + 8f * superScale;
+        float badgeW = 126f * superScale;
+        float badgeY = wY + 52f * superScale;
+        float badgeH = 22f * superScale;
+
+        for (int m = 0; m < 3; m++)
+        {
+            float bx = badgeStartX + m * (badgeW + 12f * superScale);
+            using var pathBadge = new GraphicsPath();
+            float br = badgeH * 0.5f;
+            pathBadge.AddArc(bx, badgeY, br * 2, br * 2, 180, 90);
+            pathBadge.AddArc(bx + badgeW - br * 2, badgeY, br * 2, br * 2, 270, 90);
+            pathBadge.AddArc(bx + badgeW - br * 2, badgeY + badgeH - br * 2, br * 2, br * 2, 0, 90);
+            pathBadge.AddArc(bx, badgeY + badgeH - br * 2, br * 2, br * 2, 90, 90);
+            pathBadge.CloseFigure();
+
+            using var brushBadgeBg = new SolidBrush(Color.FromArgb(30, 255, 255, 255));
+            g.FillPath(brushBadgeBg, pathBadge);
+            using var penBadge = new Pen(Color.FromArgb(80, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penBadge, pathBadge);
+
+            using var brushMetric = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+            var mSize = g.MeasureString(metrics[m], fontTab, PointF.Empty, StringFormat.GenericDefault);
+            g.DrawString(metrics[m], fontTab, brushMetric, bx + (badgeW - mSize.Width) * 0.5f, badgeY + (badgeH - mSize.Height) * 0.5f, StringFormat.GenericDefault);
+        }
+    }
+
+    private static void DrawTabChronoContent(
+        Graphics g,
+        float superScale,
+        int targetW,
+        bool isPlaying)
+    {
+        using var fontLarge = GetPremiumFont(22.0f * superScale, FontStyle.Bold);
+        using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
+        using var fontTab = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+
+        var now = DateTime.Now;
+        string grandTime = now.ToString("hh:mm:ss tt");
+        string grandDate = now.ToString("dddd, MMMM dd, yyyy");
+
+        float cX = (targetW * 0.5f) * superScale;
+        float cY = 46f * superScale;
+
+        var timeSize = g.MeasureString(grandTime, fontLarge, PointF.Empty, StringFormat.GenericDefault);
+        using (var brushGrand = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString(grandTime, fontLarge, brushGrand, cX - timeSize.Width * 0.5f, cY, StringFormat.GenericDefault);
+        }
+
+        var dateSize = g.MeasureString(grandDate, fontArtist, PointF.Empty, StringFormat.GenericDefault);
+        using (var brushDate = new SolidBrush(Color.FromArgb(185, 255, 255, 255)))
+        {
+            g.DrawString(grandDate, fontArtist, brushDate, cX - dateSize.Width * 0.5f, cY + 34f * superScale, StringFormat.GenericDefault);
+        }
+
+        float timerW = 180f * superScale;
+        float timerH = 24f * superScale;
+        float timerX = cX - timerW * 0.5f;
+        float timerY = cY + 54f * superScale;
+        using var pathTimer = new GraphicsPath();
+        float tr = timerH * 0.5f;
+        pathTimer.AddArc(timerX, timerY, tr * 2, tr * 2, 180, 90);
+        pathTimer.AddArc(timerX + timerW - tr * 2, timerY, tr * 2, tr * 2, 270, 90);
+        pathTimer.AddArc(timerX + timerW - tr * 2, timerY + timerH - tr * 2, tr * 2, tr * 2, 0, 90);
+        pathTimer.AddArc(timerX, timerY + timerH - tr * 2, tr * 2, tr * 2, 90, 90);
+        pathTimer.CloseFigure();
+
+        using var brushTimerBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
+        g.FillPath(brushTimerBg, pathTimer);
+        using var penTimer = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale);
+        g.DrawPath(penTimer, pathTimer);
+
+        string timerStr = isPlaying ? "⏱ CHRONO: RUNNING (01:28.45)" : "⏱ CHRONO: PAUSED";
+        var tSize = g.MeasureString(timerStr, fontTab, PointF.Empty, StringFormat.GenericDefault);
+        using var brushTimerText = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
+        g.DrawString(timerStr, fontTab, brushTimerText, timerX + (timerW - tSize.Width) * 0.5f, timerY + (timerH - tSize.Height) * 0.5f, StringFormat.GenericDefault);
     }
 
     private void UpdateTimeMaskIfNeeded(bool force = false)
@@ -2786,7 +3024,15 @@ internal sealed class OverlayForm : Form
                 _progress = 1.0;
                 _hoverPos = 1.0;
                 _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _activeTab = TabHome;
+                string txt = File.ReadAllText(expTriggerPath).Trim();
+                if (int.TryParse(txt, out int reqTab) && reqTab >= TabHome && reqTab <= TabChrono)
+                {
+                    SwitchTab(reqTab, immediate: true);
+                }
+                else
+                {
+                    SwitchTab(TabHome, immediate: true);
+                }
                 UpdateExpandedMask();
                 var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
                 ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
@@ -2995,8 +3241,7 @@ internal sealed class OverlayForm : Form
                 // Intelligence: on hover expansion, auto-select Media Tab if active media, Home Tab if no media
                 if (!_wasHovered && isExpandHover)
                 {
-                    _activeTab = _hasActiveMedia ? TabMusic : TabHome;
-                    UpdateExpandedMask();
+                    SwitchTab(_hasActiveMedia ? TabMusic : TabHome, immediate: true);
                 }
                 _wasHovered = isExpandHover;
 
@@ -3007,35 +3252,19 @@ internal sealed class OverlayForm : Form
                     {
                         if (mouseSurfaceX >= 86 && mouseSurfaceX < 108)
                         {
-                            if (_activeTab != TabHome)
-                            {
-                                _activeTab = TabHome;
-                                UpdateExpandedMask();
-                            }
+                            SwitchTab(TabHome);
                         }
                         else if (mouseSurfaceX >= 108 && mouseSurfaceX < 130)
                         {
-                            if (_activeTab != TabMusic)
-                            {
-                                _activeTab = TabMusic;
-                                UpdateExpandedMask();
-                            }
+                            SwitchTab(TabMusic);
                         }
                         else if (mouseSurfaceX >= 130 && mouseSurfaceX < 152)
                         {
-                            if (_activeTab != TabWeather)
-                            {
-                                _activeTab = TabWeather;
-                                UpdateExpandedMask();
-                            }
+                            SwitchTab(TabWeather);
                         }
                         else if (mouseSurfaceX >= 152 && mouseSurfaceX <= 176)
                         {
-                            if (_activeTab != TabChrono)
-                            {
-                                _activeTab = TabChrono;
-                                UpdateExpandedMask();
-                            }
+                            SwitchTab(TabChrono);
                         }
                     }
 
@@ -3222,6 +3451,7 @@ internal sealed class OverlayForm : Form
             }
 
             UpdateEqualizerPhysics(dt);
+            UpdateTabTransitionPhysics(dt);
 
             double nowSec = _totalStopwatch.Elapsed.TotalSeconds;
             if (_hoverPos > 0.6 && _isPlaying && (nowSec - _lastExpandedMaskUpdateTime >= 0.050))
@@ -3478,7 +3708,9 @@ internal sealed class OverlayForm : Form
             double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
             double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
             double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
-            bool isMusicTabActive = (_activeTab == TabMusic) && (expAlpha > 0.01);
+            double musicTabBlend = (_activeTab == TabMusic) ? _tabTransitionP : ((_prevTab == TabMusic) ? (1.0 - _tabTransitionP) : 0.0);
+            if (_tabTransitionP >= 1.0) musicTabBlend = (_activeTab == TabMusic) ? 1.0 : 0.0;
+            bool isMusicTabActive = (musicTabBlend > 0.01) && (expAlpha > 0.01);
 
             // Virtual illumination vectors (normalized half-vectors with view ray V = (0, 0, 1))
             // Primary key light from top-left (elevation ~65°)
@@ -3707,7 +3939,7 @@ internal sealed class OverlayForm : Form
 
                             if (btnSdf <= 1.0)
                             {
-                                btnBlurFactor = Math.Clamp(-btnSdf + 0.5, 0.0, 1.0) * expAlpha;
+                                btnBlurFactor = Math.Clamp(-btnSdf + 0.5, 0.0, 1.0) * expAlpha * musicTabBlend;
                             }
                         }
                     }
@@ -3974,6 +4206,14 @@ internal sealed class OverlayForm : Form
             _running = false;
             _renderSignal.Set();
             _renderThread?.Join(500);
+
+            lock (_expandedRenderLock)
+            {
+                _tabLayerPrev?.Dispose();
+                _tabLayerPrev = null;
+                _tabLayerCurr?.Dispose();
+                _tabLayerCurr = null;
+            }
 
             _audioMeter.Dispose();
             _screenCapturer?.Dispose();
