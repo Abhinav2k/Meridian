@@ -726,12 +726,19 @@ internal sealed class OverlayForm : Form
     private const int HomeSleepBtnCancel = 4;
     private const int HomeSleepBtnMoon = 5;
 
+    // DEBUG VARIABLE:
+    // When true: Sleep timer templates (15, 30, 45) act as seconds (15s, 30s, 45s) for rapid testing,
+    // and hovering over the active moon button displays remaining seconds (e.g. "28s").
+    // When false: Standard production mode (15m, 30m, 45m) and hover displays remaining minutes (e.g. "14m").
+    public static bool DebugSleepTimerInSeconds = true;
+
     private static bool _sleepTimerActive = false;
     private static DateTime _sleepTimerTargetUtc = DateTime.MinValue;
     private static int _sleepTimerDurationMinutes = 0;
     private static bool _homeSleepPickerOpen = false;
     private static double _homeSleepExpandP = 0.0;
     private static int _hoveredHomeSleepBtn = HomeSleepBtnNone;
+    private static int _lastHoverCountdownSec = -1;
 
     private void SwitchTab(int newTab, bool immediate = false)
     {
@@ -1206,7 +1213,7 @@ internal sealed class OverlayForm : Form
                     // Joined Sleep Timer Template Buttons: [15m], [30m], [45m], [Cancel]
                     if (mx >= 224 && mx < 274)
                     {
-                        _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(15);
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(15) : DateTime.UtcNow.AddMinutes(15);
                         _sleepTimerDurationMinutes = 15;
                         _sleepTimerActive = true;
                         _homeSleepPickerOpen = false;
@@ -1216,7 +1223,7 @@ internal sealed class OverlayForm : Form
                     }
                     else if (mx >= 274 && mx < 323)
                     {
-                        _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(30);
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(30) : DateTime.UtcNow.AddMinutes(30);
                         _sleepTimerDurationMinutes = 30;
                         _sleepTimerActive = true;
                         _homeSleepPickerOpen = false;
@@ -1226,7 +1233,7 @@ internal sealed class OverlayForm : Form
                     }
                     else if (mx >= 323 && mx < 372)
                     {
-                        _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(45);
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(45) : DateTime.UtcNow.AddMinutes(45);
                         _sleepTimerDurationMinutes = 45;
                         _sleepTimerActive = true;
                         _homeSleepPickerOpen = false;
@@ -2681,18 +2688,47 @@ internal sealed class OverlayForm : Form
                     }
                 }
 
-                // Right Piece: Moon with Stars (subtly scales down as it disappears on click)
-                float moonR = 8.8f * superScale * (1f - 0.2f * sleepP);
-                float moonCx = curTimerX + curTimerW * 0.5f - 2.5f * superScale;
-                float moonCy = c1Y + c1H * 0.5f;
+                // Right Piece: Moon with Stars OR Remaining Time on Hover (Special Case)
+                // "after the sleep timer is toggled on, a special case turns on, only and only if sleep timer has a value,
+                // when the moon and stars is hovered over it displays the remaining time for the sleep timer in only minutes"
+                // "(for debug purpose make the 15,30 and 45 minutes to seconds... and instead of minutes displayed on hover show seconds)"
+                bool hasTimerValue = _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && DateTime.UtcNow < _sleepTimerTargetUtc;
+                bool showRemainingOnHover = hasTimerValue && isHovMoon && sleepP < 0.3f;
 
-                if (_sleepTimerActive)
+                if (showRemainingOnHover)
                 {
+                    string timeText;
+                    if (DebugSleepTimerInSeconds)
+                    {
+                        int remainingSec = Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - DateTime.UtcNow).TotalSeconds));
+                        timeText = $"{remainingSec}s";
+                    }
+                    else
+                    {
+                        int remainingMin = Math.Max(1, (int)Math.Ceiling((_sleepTimerTargetUtc - DateTime.UtcNow).TotalMinutes));
+                        timeText = $"{remainingMin}m";
+                    }
+
+                    using var fontCountdown = GetPremiumFont(9.5f * superScale, FontStyle.Bold);
+                    var textSize = g.MeasureString(timeText, fontCountdown, PointF.Empty, StringFormat.GenericTypographic);
+                    float textX = curTimerX + (curTimerW - textSize.Width) * 0.5f;
+                    float textY = c1Y + (c1H - textSize.Height) * 0.5f;
+                    using var brushCountdown = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 25, 28, 35));
+                    g.DrawString(timeText, fontCountdown, brushCountdown, textX, textY, StringFormat.GenericTypographic);
+                }
+                else if (_sleepTimerActive)
+                {
+                    float moonR = 8.8f * superScale * (1f - 0.2f * sleepP);
+                    float moonCx = curTimerX + curTimerW * 0.5f - 2.5f * superScale;
+                    float moonCy = c1Y + c1H * 0.5f;
                     using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 25, 28, 35));
                     DrawMoonWithStars(g, brushDarkMoon, moonCx, moonCy, moonR);
                 }
                 else
                 {
+                    float moonR = 8.8f * superScale * (1f - 0.2f * sleepP);
+                    float moonCx = curTimerX + curTimerW * 0.5f - 2.5f * superScale;
+                    float moonCy = c1Y + c1H * 0.5f;
                     using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * splitAlpha), 255, 255, 255));
                     DrawMoonWithStars(g, brushLightMoon, moonCx, moonCy, moonR);
                 }
@@ -2712,25 +2748,29 @@ internal sealed class OverlayForm : Form
                 using var fontTimerBtn = GetPremiumFont(7.8f * superScale, FontStyle.Bold);
                 using var fontCancelBtn = GetPremiumFont(7.2f * superScale, FontStyle.Bold);
 
-                // Button 1: 15m
+                string lbl15 = DebugSleepTimerInSeconds ? "15s" : "15m";
+                string lbl30 = DebugSleepTimerInSeconds ? "30s" : "30m";
+                string lbl45 = DebugSleepTimerInSeconds ? "45s" : "45m";
+
+                // Button 1: 15
                 float b1X = cardX + padX;
-                DrawSleepOptionPill(g, superScale, b1X, btnY, bW, btnH, btnR, "15m", fontTimerBtn,
+                DrawSleepOptionPill(g, superScale, b1X, btnY, bW, btnH, btnR, lbl15, fontTimerBtn,
                     isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 15,
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtn15m,
                     isCancel: false,
                     alphaMul: sleepP);
 
-                // Button 2: 30m
+                // Button 2: 30
                 float b2X = b1X + bW + gap;
-                DrawSleepOptionPill(g, superScale, b2X, btnY, bW, btnH, btnR, "30m", fontTimerBtn,
+                DrawSleepOptionPill(g, superScale, b2X, btnY, bW, btnH, btnR, lbl30, fontTimerBtn,
                     isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 30,
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtn30m,
                     isCancel: false,
                     alphaMul: sleepP);
 
-                // Button 3: 45m
+                // Button 3: 45
                 float b3X = b2X + bW + gap;
-                DrawSleepOptionPill(g, superScale, b3X, btnY, bW, btnH, btnR, "45m", fontTimerBtn,
+                DrawSleepOptionPill(g, superScale, b3X, btnY, bW, btnH, btnR, lbl45, fontTimerBtn,
                     isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 45,
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtn45m,
                     isCancel: false,
@@ -3833,6 +3873,34 @@ internal sealed class OverlayForm : Form
                 SaveDesktopScreenshotWithPill("screenshot_home_active.png");
                 File.Delete(activeTriggerPath);
             }
+
+            string hoverTimerTriggerPath = Path.Combine(rootDir, "take_home_hover_timer.trigger");
+            if (File.Exists(hoverTimerTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _sleepTimerActive = true;
+                _sleepTimerDurationMinutes = 30;
+                _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(28) : DateTime.UtcNow.AddMinutes(28);
+                _hoveredHomeSleepBtn = HomeSleepBtnMoon;
+                _homeSleepPickerOpen = false;
+                _homeSleepExpandP = 0.0;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_home_hover_timer.png");
+                File.Delete(hoverTimerTriggerPath);
+            }
         }
         catch { }
     }
@@ -4304,6 +4372,22 @@ internal sealed class OverlayForm : Form
                 }
                 _tabBufferCache[TabHome] = null;
                 _needExpandedUpdate = true;
+            }
+
+            // Live hover countdown ticker: when hovering over the active sleep timer button, invalidate cache each second
+            if (_activeTab == TabHome && _hoveredHomeSleepBtn == HomeSleepBtnMoon && _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue)
+            {
+                int curSec = Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds));
+                if (curSec != _lastHoverCountdownSec)
+                {
+                    _lastHoverCountdownSec = curSec;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                }
+            }
+            else if (_hoveredHomeSleepBtn != HomeSleepBtnMoon)
+            {
+                _lastHoverCountdownSec = -1;
             }
 
             // Sleep timer expiration check: automatically pauses playback when countdown finishes
