@@ -694,6 +694,7 @@ internal sealed class OverlayForm : Form
     private int _clickedButton = BtnNone;
     private double _clickAnimTimer = 0.0;
     private bool _wasHovered = false;
+    private bool _wasCursorInPill = false;
 
     private void UpdateEqualizerPhysics(double dt)
     {
@@ -2609,12 +2610,17 @@ internal sealed class OverlayForm : Form
                 _lastPlayingTrackTitle = _currentTrack.Title;
             }
 
-            bool isHovered = false;
+            bool isInsideTriggerArea = false;
+            bool isEdgeOrNotchHover = false;
             bool cursorInPill = false;
+            bool isExpandHover = false;
+
             if (GetCursorPos(out var cursorPos))
             {
                 int mouseSurfaceX = cursorPos.x - rect.Left;
                 int mouseSurfaceY = cursorPos.y - rect.Top;
+
+                double summonHalfWidth = Math.Max(85.0, _currentGeometry.HalfWidth);
 
                 if (_progress > 0.10)
                 {
@@ -2630,20 +2636,35 @@ internal sealed class OverlayForm : Form
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
                     double mouseSdf = outDist + insideDist - _currentGeometry.Radius;
 
-                    // Allow hover either directly inside/near the pill OR in the top notch summoning strip above the pill
-                    if (mouseSdf <= 2.0 || (mouseSurfaceY >= 0 && mouseSurfaceY <= TopPadding + 8 && Math.Abs(mouseSurfaceX - _currentGeometry.CenterX) <= _currentGeometry.HalfWidth))
+                    // Trigger area: physically inside or directly touching the pill body (Y >= 14 and mouseSdf <= tolerance)
+                    double sdfTolerance = _hoverPos > 0.3 ? 4.0 : 2.0;
+                    if (mouseSurfaceY >= 14 && mouseSdf <= sdfTolerance)
                     {
-                        cursorInPill = true;
+                        isInsideTriggerArea = true;
+                    }
+
+                    // Top edge / notch summon strip: screen bezel down to top of pill (0 <= Y < 16)
+                    if (mouseSurfaceY >= 0 && mouseSurfaceY < 16 && Math.Abs(mouseSurfaceX - _currentGeometry.CenterX) <= summonHalfWidth)
+                    {
+                        isEdgeOrNotchHover = true;
                     }
                 }
                 else
                 {
-                    // Notch hover trigger to summon pill when despawned / hidden
-                    if (mouseSurfaceY >= 0 && mouseSurfaceY <= 26 && Math.Abs(mouseSurfaceX - 300) <= 70)
+                    // Despawned / hidden state:
+                    // Top edge (Y from 0 to 14) spawns as compact (not expanded)
+                    if (mouseSurfaceY >= 0 && mouseSurfaceY < 16 && Math.Abs(mouseSurfaceX - 300) <= 85.0)
                     {
-                        cursorInPill = true;
+                        isEdgeOrNotchHover = true;
+                    }
+                    // Trigger area (resting pill body area: Y from 16 to 65) spawns and then expands once landed
+                    else if (mouseSurfaceY >= 16 && mouseSurfaceY <= 65 && Math.Abs(mouseSurfaceX - 300) <= 85.0)
+                    {
+                        isInsideTriggerArea = true;
                     }
                 }
+
+                cursorInPill = isInsideTriggerArea || isEdgeOrNotchHover;
 
                 // If user dismissed the island, keep it despawned until cursor moves away and re-enters notch
                 if (_userDismissed)
@@ -2664,17 +2685,19 @@ internal sealed class OverlayForm : Form
                     _cursorWasInsideNotch = cursorInPill;
                 }
 
-                if (cursorInPill && !_userDismissed)
-                {
-                    isHovered = true;
-                }
+                // Expansion gate:
+                // 1. Spawning should NOT be initially expanded: must complete entry drop (_progress >= 0.82)
+                // 2. Must be inside trigger area (not at the most edge / notch strip)
+                // 3. Not dismissed by user, and not in the process of despawning (_animDirection >= 0.0)
+                isExpandHover = isInsideTriggerArea && !_userDismissed && (_progress >= 0.82) && (_animDirection >= 0.0);
 
                 // Intelligence: on hover expansion, auto-select Media Tab if active media, Home Tab if no media
-                if (!_wasHovered && isHovered)
+                if (!_wasHovered && isExpandHover)
                 {
                     _activeTab = _hasActiveMedia ? TabMusic : TabHome;
                     UpdateExpandedMask();
                 }
+                _wasHovered = isExpandHover;
 
                 if (_hoverPos > 0.6 && !_userDismissed)
                 {
@@ -2735,18 +2758,18 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            if (!isHovered && _hoveredButton != BtnNone)
+            if (!cursorInPill && _hoveredButton != BtnNone)
             {
                 _hoveredButton = BtnNone;
                 UpdateExpandedMask();
             }
 
-            if (_wasHovered && !isHovered)
+            if (_wasCursorInPill && !cursorInPill && !_userDismissed)
             {
                 // Unhovered: time displays for 1 minute
                 _unhoverShowTimeUntil = utcNow.AddMinutes(1);
             }
-            _wasHovered = isHovered;
+            _wasCursorInPill = cursorInPill;
 
             // Spawning Intelligence:
             // 1. O'clocks: spawns and displays time for 3 minutes (e.g. HH:00:00 to HH:02:59)
@@ -2756,7 +2779,8 @@ internal sealed class OverlayForm : Form
             // Otherwise: despawns and hides
             bool isOClock = (now.Minute < 3);
             bool isUnhoverActive = (utcNow < _unhoverShowTimeUntil);
-            bool shouldBeSpawned = !_userDismissed && (isHovered || _hasActiveMedia || isOClock || isUnhoverActive);
+            bool isSpawnHover = cursorInPill && !_userDismissed;
+            bool shouldBeSpawned = !_userDismissed && (isSpawnHover || _hasActiveMedia || isOClock || isUnhoverActive);
 
             if (shouldBeSpawned)
             {
@@ -2856,7 +2880,7 @@ internal sealed class OverlayForm : Form
                 UpdateExpandedMask();
             }
 
-            double target = isHovered ? 1.0 : 0.0;
+            double target = isExpandHover ? 1.0 : 0.0;
             const double stiffness = 175.0;
             const double damping = 15.0;
 
