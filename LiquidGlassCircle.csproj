@@ -16,4 +16,9 @@
     <Compile Remove="MainWindow.xaml.cs" />
     <None Remove="MainWindow.xaml" />
   </ItemGroup>
+  <ItemGroup>
+    <None Update="Fonts\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
 </Project>

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
+using System.Drawing.Text;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -1053,6 +1054,36 @@ internal sealed class OverlayForm : Form
             }
         }
 
+        if (_activeTab == TabHome)
+        {
+            float mx = pt.X - 70f;
+            float my = pt.Y - 26f;
+
+            // Card 1: Music Quick-Glance (mx in [216, 444], my in [36, 80])
+            if (mx >= 216 && mx <= 444 && my >= 36 && my <= 80)
+            {
+                _activeTab = TabMusic;
+                UpdateExpandedMask();
+                return true;
+            }
+
+            // Card 2: Weather Quick-Glance (mx in [216, 444], my in [87, 132])
+            if (mx >= 216 && mx <= 444 && my >= 87 && my <= 132)
+            {
+                _activeTab = TabWeather;
+                UpdateExpandedMask();
+                return true;
+            }
+
+            // System Status Pill: Chrono Quick-Glance (mx in [18, 205], my in [96, 126])
+            if (mx >= 18 && mx <= 205 && my >= 96 && my <= 126)
+            {
+                _activeTab = TabChrono;
+                UpdateExpandedMask();
+                return true;
+            }
+        }
+
         if (_activeTab == TabMusic)
         {
             float mx = pt.X - 70f;
@@ -1269,6 +1300,70 @@ internal sealed class OverlayForm : Form
         }
 
         return new Font("Segoe UI", sizeInPoints, style);
+    }
+
+    private static readonly PrivateFontCollection _privateFonts = new();
+    private static FontFamily? _eternaloFamily = null;
+    private static bool _eternaloLoaded = false;
+    private static readonly object _fontLock = new();
+
+    private static Font GetEternaloFont(float sizeInPoints, FontStyle style = FontStyle.Regular)
+    {
+        if (!_eternaloLoaded)
+        {
+            lock (_fontLock)
+            {
+                if (!_eternaloLoaded)
+                {
+                    try
+                    {
+                        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                        string[] candidatePaths = new[]
+                        {
+                            Path.Combine(baseDir, "Fonts", "Eternalo.ttf"),
+                            Path.Combine(baseDir, @"..\..\..", "Fonts", "Eternalo.ttf"),
+                            @"C:\Users\abhin\Workspace\liquid glass\Fonts\Eternalo.ttf",
+                            @"C:\Users\abhin\Downloads\Eternalo.ttf"
+                        };
+
+                        foreach (var path in candidatePaths)
+                        {
+                            if (File.Exists(path))
+                            {
+                                _privateFonts.AddFontFile(path);
+                                break;
+                            }
+                        }
+
+                        foreach (var fam in _privateFonts.Families)
+                        {
+                            if (fam.Name.Equals("Eternalo", StringComparison.OrdinalIgnoreCase))
+                            {
+                                _eternaloFamily = fam;
+                                break;
+                            }
+                        }
+                        if (_eternaloFamily == null && _privateFonts.Families.Length > 0)
+                        {
+                            _eternaloFamily = _privateFonts.Families[0];
+                        }
+                    }
+                    catch { }
+                    _eternaloLoaded = true;
+                }
+            }
+        }
+
+        if (_eternaloFamily != null)
+        {
+            try
+            {
+                return new Font(_eternaloFamily, sizeInPoints, style);
+            }
+            catch { }
+        }
+
+        return GetPremiumFont(sizeInPoints, style);
     }
 
     private static void DrawRoundedSquareCover(
@@ -1765,8 +1860,229 @@ internal sealed class OverlayForm : Form
             // ==========================================
             if (activeTab == TabHome)
             {
-                // TAB 0: HOME TAB (Blank / pristine liquid glass workspace ready for future widgets)
-                // Left intentionally empty as requested.
+                // TAB 0: HOME TAB (Executive Liquid Glass Dashboard)
+                var now = DateTime.Now;
+
+                // 1. Top-Left: "Welcome" in Eternalo luxury serif font
+                float welcomeX = 18f * superScale;
+                float welcomeY = 33f * superScale;
+
+                using var fontWelcome = GetEternaloFont(28.0f * superScale, FontStyle.Regular);
+                using var fontHomeSub = GetPremiumFont(9.0f * superScale, FontStyle.Regular);
+                using var fontCardTitle = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+                using var fontCardSub = GetPremiumFont(7.5f * superScale, FontStyle.Regular);
+                using var fontPill = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+
+                // Subtle soft shadow behind "Welcome" for glass depth
+                using (var brushShadow = new SolidBrush(Color.FromArgb(70, 0, 0, 0)))
+                {
+                    g.DrawString("Welcome", fontWelcome, brushShadow, welcomeX + 1.0f * superScale, welcomeY + 1.5f * superScale, StringFormat.GenericTypographic);
+                }
+                using (var brushWelcome = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                {
+                    g.DrawString("Welcome", fontWelcome, brushWelcome, welcomeX, welcomeY, StringFormat.GenericTypographic);
+                }
+
+                // Greeting & Date Line
+                string timeGreeting = now.Hour < 12 ? "Good morning" : (now.Hour < 17 ? "Good afternoon" : "Good evening");
+                string dateStr = $"{timeGreeting}  •  {now:dddd, MMM d}";
+                using (var brushDateShadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0)))
+                {
+                    g.DrawString(dateStr, fontHomeSub, brushDateShadow, welcomeX + 0.8f * superScale, welcomeY + 38f * superScale, StringFormat.GenericDefault);
+                }
+                using (var brushDate = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
+                {
+                    g.DrawString(dateStr, fontHomeSub, brushDate, welcomeX, welcomeY + 37f * superScale, StringFormat.GenericDefault);
+                }
+
+                // System Pulse / Status Pill (Bottom-Left)
+                float sysPillX = 18f * superScale;
+                float sysPillY = 96f * superScale;
+                float sysPillW = 186f * superScale;
+                float sysPillH = 28f * superScale;
+                float sysPillR = sysPillH * 0.5f;
+
+                using (var pathSys = new GraphicsPath())
+                {
+                    pathSys.AddArc(sysPillX, sysPillY, sysPillR * 2, sysPillR * 2, 180, 90);
+                    pathSys.AddArc(sysPillX + sysPillW - sysPillR * 2, sysPillY, sysPillR * 2, sysPillR * 2, 270, 90);
+                    pathSys.AddArc(sysPillX + sysPillW - sysPillR * 2, sysPillY + sysPillH - sysPillR * 2, sysPillR * 2, sysPillR * 2, 0, 90);
+                    pathSys.AddArc(sysPillX, sysPillY + sysPillH - sysPillR * 2, sysPillR * 2, sysPillR * 2, 90, 90);
+                    pathSys.CloseFigure();
+
+                    using var brushSysBg = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+                    g.FillPath(brushSysBg, pathSys);
+                    using var penSys = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+                    g.DrawPath(penSys, pathSys);
+                }
+
+                // Glowing emerald status dot
+                float dotX = sysPillX + 13f * superScale;
+                float dotY = sysPillY + sysPillH * 0.5f;
+                float dotR = 3.5f * superScale;
+                using (var brushAura = new SolidBrush(Color.FromArgb(50, 52, 199, 89)))
+                {
+                    g.FillEllipse(brushAura, dotX - dotR * 2f, dotY - dotR * 2f, dotR * 4f, dotR * 4f);
+                }
+                using (var brushDot = new SolidBrush(Color.FromArgb(255, 52, 199, 89)))
+                {
+                    g.FillEllipse(brushDot, dotX - dotR, dotY - dotR, dotR * 2f, dotR * 2f);
+                }
+
+                PowerStatus power = SystemInformation.PowerStatus;
+                string sysStatusText = power.BatteryChargeStatus.HasFlag(BatteryChargeStatus.NoSystemBattery)
+                    ? "Liquid Glass  •  Active"
+                    : $"Battery {(int)(power.BatteryLifePercent * 100)}%  •  Active";
+
+                using (var brushSysText = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
+                {
+                    g.DrawString(sysStatusText, fontPill, brushSysText, dotX + 8f * superScale, dotY - 5.5f * superScale, StringFormat.GenericDefault);
+                }
+
+                // 2. Right Column Cards: Now Playing & Weather Quick-Glances
+                float cardX = 216f * superScale;
+                float cardW = (targetW - 16f) * superScale - cardX; // ~228px at 1x
+                float cardR = 12f * superScale;
+
+                // ----------------------------------------------------
+                // Card 1: Now Playing Quick-Glance (Top-Right)
+                // ----------------------------------------------------
+                float c1Y = 36f * superScale;
+                float c1H = 43f * superScale;
+                using (var pathC1 = new GraphicsPath())
+                {
+                    pathC1.AddArc(cardX, c1Y, cardR * 2, cardR * 2, 180, 90);
+                    pathC1.AddArc(cardX + cardW - cardR * 2, c1Y, cardR * 2, cardR * 2, 270, 90);
+                    pathC1.AddArc(cardX + cardW - cardR * 2, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
+                    pathC1.AddArc(cardX, c1Y + c1H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
+                    pathC1.CloseFigure();
+
+                    using var brushC1 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+                    g.FillPath(brushC1, pathC1);
+                    using var penC1 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+                    g.DrawPath(penC1, pathC1);
+                }
+
+                // Card 1 Thumbnail
+                float thumbX = cardX + 8f * superScale;
+                float thumbY = c1Y + 7f * superScale;
+                float thumbSize = 29f * superScale;
+                float thumbR = 7f * superScale;
+
+                if (coverBmp != null)
+                {
+                    using var pathThumb = new GraphicsPath();
+                    pathThumb.AddArc(thumbX, thumbY, thumbR * 2, thumbR * 2, 180, 90);
+                    pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY, thumbR * 2, thumbR * 2, 270, 90);
+                    pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 0, 90);
+                    pathThumb.AddArc(thumbX, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 90, 90);
+                    pathThumb.CloseFigure();
+
+                    var state = g.Save();
+                    g.SetClip(pathThumb);
+                    g.DrawImage(coverBmp, thumbX, thumbY, thumbSize, thumbSize);
+                    g.Restore(state);
+                }
+                else
+                {
+                    // Stylized dark gradient disc with music note
+                    using (var brushDisc = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
+                    {
+                        g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+                    }
+                    using (var brushNote = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                    {
+                        var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                    }
+                }
+
+                // Card 1 Text
+                float text1X = thumbX + thumbSize + 9f * superScale;
+
+                string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
+                    ? "Audio Idle"
+                    : (track.Title.Length > 20 ? track.Title.Substring(0, 18) + "…" : track.Title);
+
+                string musicSub = isPlaying
+                    ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : track.Artist)
+                    : "Tap to open player";
+
+                if (musicSub.Length > 24) musicSub = musicSub.Substring(0, 22) + "…";
+
+                using (var brushMTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                {
+                    g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
+                }
+                using (var brushMSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
+                {
+                    g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
+                }
+
+                // Card 1 Right side: animated EQ bars if playing, else glyph
+                if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
+                {
+                    float eqStartX = cardX + cardW - 28f * superScale;
+                    float eqCy = c1Y + c1H * 0.5f;
+                    using var brushEq = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
+                    for (int b = 0; b < 4; b++)
+                    {
+                        float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
+                        float bx = eqStartX + b * 4.5f * superScale;
+                        g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.5f * superScale, barH);
+                    }
+                }
+                else
+                {
+                    using var brushArrow = new SolidBrush(Color.FromArgb(120, 255, 255, 255));
+                    g.DrawString("›", fontCardTitle, brushArrow, cardX + cardW - 16f * superScale, c1Y + c1H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
+                }
+
+                // ----------------------------------------------------
+                // Card 2: Weather & Environment Glance (Bottom-Right)
+                // ----------------------------------------------------
+                float c2Y = 87f * superScale;
+                float c2H = 43f * superScale;
+                using (var pathC2 = new GraphicsPath())
+                {
+                    pathC2.AddArc(cardX, c2Y, cardR * 2, cardR * 2, 180, 90);
+                    pathC2.AddArc(cardX + cardW - cardR * 2, c2Y, cardR * 2, cardR * 2, 270, 90);
+                    pathC2.AddArc(cardX + cardW - cardR * 2, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
+                    pathC2.AddArc(cardX, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
+                    pathC2.CloseFigure();
+
+                    using var brushC2 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+                    g.FillPath(brushC2, pathC2);
+                    using var penC2 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+                    g.DrawPath(penC2, pathC2);
+                }
+
+                // Card 2 Icon: Sun + cloud
+                float iconX = cardX + 10f * superScale;
+                float iconY = c2Y + 11f * superScale;
+                using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
+                {
+                    g.FillEllipse(brushSun, iconX + 4f * superScale, iconY, 14f * superScale, 14f * superScale);
+                }
+                using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+                {
+                    g.FillEllipse(brushCloud, iconX, iconY + 5f * superScale, 14f * superScale, 11f * superScale);
+                    g.FillEllipse(brushCloud, iconX + 8f * superScale, iconY + 5f * superScale, 12f * superScale, 9f * superScale);
+                }
+
+                float text2X = cardX + 38f * superScale;
+                using (var brushWTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                {
+                    g.DrawString("24°C  •  Partly Cloudy", fontCardTitle, brushWTitle, text2X, c2Y + 7f * superScale, StringFormat.GenericDefault);
+                }
+                using (var brushWSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
+                {
+                    g.DrawString("High 28°  Low 19°  •  San Francisco", fontCardSub, brushWSub, text2X, c2Y + 23f * superScale, StringFormat.GenericDefault);
+                }
+                using (var brushArrow2 = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
+                {
+                    g.DrawString("›", fontCardTitle, brushArrow2, cardX + cardW - 16f * superScale, c2Y + c2H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
+                }
             }
             else if (activeTab == TabMusic)
             {
