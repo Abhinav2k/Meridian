@@ -1074,14 +1074,6 @@ internal sealed class OverlayForm : Form
                 UpdateExpandedMask();
                 return true;
             }
-
-            // System Status Pill: Chrono Quick-Glance (mx in [18, 205], my in [96, 126])
-            if (mx >= 18 && mx <= 205 && my >= 96 && my <= 126)
-            {
-                _activeTab = TabChrono;
-                UpdateExpandedMask();
-                return true;
-            }
         }
 
         if (_activeTab == TabMusic)
@@ -1909,7 +1901,6 @@ internal sealed class OverlayForm : Form
                 using var fontHomeSub = GetPremiumFont(9.0f * superScale, FontStyle.Regular);
                 using var fontCardTitle = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
                 using var fontCardSub = GetPremiumFont(7.5f * superScale, FontStyle.Regular);
-                using var fontPill = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
 
                 // Subtle soft shadow behind "Welcome" for glass depth
                 using (var brushShadow = new SolidBrush(Color.FromArgb(70, 0, 0, 0)))
@@ -1931,50 +1922,6 @@ internal sealed class OverlayForm : Form
                 using (var brushDate = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
                 {
                     g.DrawString(dateStr, fontHomeSub, brushDate, welcomeX, welcomeY + 37f * superScale, StringFormat.GenericDefault);
-                }
-
-                // System Pulse / Status Pill (Bottom-Left)
-                float sysPillX = 18f * superScale;
-                float sysPillY = 96f * superScale;
-                float sysPillW = 186f * superScale;
-                float sysPillH = 28f * superScale;
-                float sysPillR = sysPillH * 0.5f;
-
-                using (var pathSys = new GraphicsPath())
-                {
-                    pathSys.AddArc(sysPillX, sysPillY, sysPillR * 2, sysPillR * 2, 180, 90);
-                    pathSys.AddArc(sysPillX + sysPillW - sysPillR * 2, sysPillY, sysPillR * 2, sysPillR * 2, 270, 90);
-                    pathSys.AddArc(sysPillX + sysPillW - sysPillR * 2, sysPillY + sysPillH - sysPillR * 2, sysPillR * 2, sysPillR * 2, 0, 90);
-                    pathSys.AddArc(sysPillX, sysPillY + sysPillH - sysPillR * 2, sysPillR * 2, sysPillR * 2, 90, 90);
-                    pathSys.CloseFigure();
-
-                    using var brushSysBg = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
-                    g.FillPath(brushSysBg, pathSys);
-                    using var penSys = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
-                    g.DrawPath(penSys, pathSys);
-                }
-
-                // Glowing emerald status dot
-                float dotX = sysPillX + 13f * superScale;
-                float dotY = sysPillY + sysPillH * 0.5f;
-                float dotR = 3.5f * superScale;
-                using (var brushAura = new SolidBrush(Color.FromArgb(50, 52, 199, 89)))
-                {
-                    g.FillEllipse(brushAura, dotX - dotR * 2f, dotY - dotR * 2f, dotR * 4f, dotR * 4f);
-                }
-                using (var brushDot = new SolidBrush(Color.FromArgb(255, 52, 199, 89)))
-                {
-                    g.FillEllipse(brushDot, dotX - dotR, dotY - dotR, dotR * 2f, dotR * 2f);
-                }
-
-                PowerStatus power = SystemInformation.PowerStatus;
-                string sysStatusText = power.BatteryChargeStatus.HasFlag(BatteryChargeStatus.NoSystemBattery)
-                    ? "Liquid Glass  •  Active"
-                    : $"Battery {(int)(power.BatteryLifePercent * 100)}%  •  Active";
-
-                using (var brushSysText = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
-                {
-                    g.DrawString(sysStatusText, fontPill, brushSysText, dotX + 8f * superScale, dotY - 5.5f * superScale, StringFormat.GenericDefault);
                 }
 
                 // 2. Right Column Cards: Now Playing & Weather Quick-Glances
