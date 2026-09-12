@@ -730,7 +730,7 @@ internal sealed class OverlayForm : Form
     // When true: Sleep timer templates (15, 30, 45) act as seconds (15s, 30s, 45s) for rapid testing,
     // and hovering over the active moon button displays remaining seconds (e.g. "28s").
     // When false: Standard production mode (15m, 30m, 45m) and hover displays remaining minutes (e.g. "14m").
-    public static bool DebugSleepTimerInSeconds = true;
+    public static bool DebugSleepTimerInSeconds = false;
 
     private static bool _sleepTimerActive = false;
     private static DateTime _sleepTimerTargetUtc = DateTime.MinValue;
@@ -4374,13 +4374,15 @@ internal sealed class OverlayForm : Form
                 _needExpandedUpdate = true;
             }
 
-            // Live hover countdown ticker: when hovering over the active sleep timer button, invalidate cache each second
+            // Live hover countdown ticker: when hovering over the active sleep timer button, invalidate cache when remaining value changes
             if (_activeTab == TabHome && _hoveredHomeSleepBtn == HomeSleepBtnMoon && _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue)
             {
-                int curSec = Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds));
-                if (curSec != _lastHoverCountdownSec)
+                int curVal = DebugSleepTimerInSeconds 
+                    ? Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds))
+                    : Math.Max(1, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalMinutes));
+                if (curVal != _lastHoverCountdownSec)
                 {
-                    _lastHoverCountdownSec = curSec;
+                    _lastHoverCountdownSec = curVal;
                     _tabBufferCache[TabHome] = null;
                     _needExpandedUpdate = true;
                 }
