@@ -1273,10 +1273,92 @@ internal sealed class OverlayForm : Form
         }
     }
 
+    private static readonly PrivateFontCollection _privateFonts = new();
+    private static FontFamily? _eternaloFamily = null;
+    private static FontFamily? _sfProFamily = null;
+    private static bool _customFontsLoaded = false;
+    private static readonly object _fontLock = new();
+
+    private static void EnsureCustomFontsLoaded()
+    {
+        if (_customFontsLoaded) return;
+        lock (_fontLock)
+        {
+            if (_customFontsLoaded) return;
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string[] searchDirs = new[]
+                {
+                    Path.Combine(baseDir, "Fonts"),
+                    Path.Combine(baseDir, @"..\..\..", "Fonts"),
+                    @"C:\Users\abhin\Workspace\liquid glass\Fonts"
+                };
+
+                foreach (var dir in searchDirs)
+                {
+                    if (!Directory.Exists(dir)) continue;
+
+                    string eternalPath = Path.Combine(dir, "Eternalo.ttf");
+                    if (File.Exists(eternalPath))
+                    {
+                        try { _privateFonts.AddFontFile(eternalPath); } catch { }
+                    }
+
+                    string sfPath = Path.Combine(dir, "SF-Pro.ttf");
+                    if (File.Exists(sfPath))
+                    {
+                        try { _privateFonts.AddFontFile(sfPath); } catch { }
+                    }
+
+                    string sfItalicPath = Path.Combine(dir, "SF-Pro-Italic.ttf");
+                    if (File.Exists(sfItalicPath))
+                    {
+                        try { _privateFonts.AddFontFile(sfItalicPath); } catch { }
+                    }
+
+                    break;
+                }
+
+                foreach (var fam in _privateFonts.Families)
+                {
+                    if (_eternaloFamily == null && fam.Name.Equals("Eternalo", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _eternaloFamily = fam;
+                    }
+                    if (_sfProFamily == null && (fam.Name.Equals("SF Pro", StringComparison.OrdinalIgnoreCase) || fam.Name.StartsWith("SF Pro", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _sfProFamily = fam;
+                    }
+                }
+            }
+            catch { }
+            _customFontsLoaded = true;
+        }
+    }
+
     private static Font GetPremiumFont(float sizeInPoints, FontStyle style)
     {
+        EnsureCustomFontsLoaded();
+
+        if (_sfProFamily != null)
+        {
+            try
+            {
+                if (_sfProFamily.IsStyleAvailable(style))
+                {
+                    return new Font(_sfProFamily, sizeInPoints, style);
+                }
+                return new Font(_sfProFamily, sizeInPoints, FontStyle.Regular);
+            }
+            catch { }
+        }
+
         string[] fontCandidates = new[]
         {
+            "SF Pro Display",
+            "SF Pro Text",
+            "SF Pro",
             "Segoe UI Variable Display",
             "Segoe UI Variable Text",
             "Aptos Display",
@@ -1302,63 +1384,19 @@ internal sealed class OverlayForm : Form
         return new Font("Segoe UI", sizeInPoints, style);
     }
 
-    private static readonly PrivateFontCollection _privateFonts = new();
-    private static FontFamily? _eternaloFamily = null;
-    private static bool _eternaloLoaded = false;
-    private static readonly object _fontLock = new();
-
     private static Font GetEternaloFont(float sizeInPoints, FontStyle style = FontStyle.Regular)
     {
-        if (!_eternaloLoaded)
-        {
-            lock (_fontLock)
-            {
-                if (!_eternaloLoaded)
-                {
-                    try
-                    {
-                        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
-                        string[] candidatePaths = new[]
-                        {
-                            Path.Combine(baseDir, "Fonts", "Eternalo.ttf"),
-                            Path.Combine(baseDir, @"..\..\..", "Fonts", "Eternalo.ttf"),
-                            @"C:\Users\abhin\Workspace\liquid glass\Fonts\Eternalo.ttf",
-                            @"C:\Users\abhin\Downloads\Eternalo.ttf"
-                        };
-
-                        foreach (var path in candidatePaths)
-                        {
-                            if (File.Exists(path))
-                            {
-                                _privateFonts.AddFontFile(path);
-                                break;
-                            }
-                        }
-
-                        foreach (var fam in _privateFonts.Families)
-                        {
-                            if (fam.Name.Equals("Eternalo", StringComparison.OrdinalIgnoreCase))
-                            {
-                                _eternaloFamily = fam;
-                                break;
-                            }
-                        }
-                        if (_eternaloFamily == null && _privateFonts.Families.Length > 0)
-                        {
-                            _eternaloFamily = _privateFonts.Families[0];
-                        }
-                    }
-                    catch { }
-                    _eternaloLoaded = true;
-                }
-            }
-        }
+        EnsureCustomFontsLoaded();
 
         if (_eternaloFamily != null)
         {
             try
             {
-                return new Font(_eternaloFamily, sizeInPoints, style);
+                if (_eternaloFamily.IsStyleAvailable(style))
+                {
+                    return new Font(_eternaloFamily, sizeInPoints, style);
+                }
+                return new Font(_eternaloFamily, sizeInPoints, FontStyle.Regular);
             }
             catch { }
         }
