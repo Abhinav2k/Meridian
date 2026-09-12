@@ -807,7 +807,7 @@ internal sealed class OverlayForm : Form
         // Content transition progress
         if (_tabTransitionP < 1.0)
         {
-            _tabTransitionP += dt * 4.2; // ~0.24s transition
+            _tabTransitionP += dt * 3.0; // ~0.33s two-phase transition (blur & fade off -> move in)
             if (_tabTransitionP >= 1.0)
             {
                 _tabTransitionP = 1.0;
@@ -1963,7 +1963,159 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static unsafe void CompositeSharpSlideTransition(
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void SampleBilinear2D(
+        uint* pBase,
+        float x,
+        float y,
+        int width,
+        int height,
+        int minY,
+        out float a, out float r, out float g, out float b)
+    {
+        if (x < 0.0f || x >= width - 1.0f || y < minY || y >= height - 1.0f)
+        {
+            int cx = Math.Clamp((int)Math.Round(x), 0, width - 1);
+            int cy = Math.Clamp((int)Math.Round(y), minY, height - 1);
+            uint c = pBase[cy * width + cx];
+            a = (c >> 24) & 0xFF;
+            if (a > 0.001f)
+            {
+                r = (c >> 16) & 0xFF;
+                g = (c >> 8) & 0xFF;
+                b = c & 0xFF;
+            }
+            else
+            {
+                r = 0f; g = 0f; b = 0f;
+            }
+            return;
+        }
+
+        int x0 = (int)x;
+        int y0 = (int)y;
+        int x1 = x0 + 1;
+        int y1 = y0 + 1;
+        float fx = x - x0;
+        float fy = y - y0;
+
+        int row0 = y0 * width;
+        int row1 = y1 * width;
+
+        uint c00 = pBase[row0 + x0];
+        uint c10 = pBase[row0 + x1];
+        uint c01 = pBase[row1 + x0];
+        uint c11 = pBase[row1 + x1];
+
+        float a00 = (c00 >> 24) & 0xFF;
+        float a10 = (c10 >> 24) & 0xFF;
+        float a01 = (c01 >> 24) & 0xFF;
+        float a11 = (c11 >> 24) & 0xFF;
+
+        float w00 = (1.0f - fx) * (1.0f - fy);
+        float w10 = fx * (1.0f - fy);
+        float w01 = (1.0f - fx) * fy;
+        float w11 = fx * fy;
+
+        a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+        if (a > 0.001f)
+        {
+            float r00 = (c00 >> 16) & 0xFF;
+            float g00 = (c00 >> 8) & 0xFF;
+            float b00 = c00 & 0xFF;
+
+            float r10 = (c10 >> 16) & 0xFF;
+            float g10 = (c10 >> 8) & 0xFF;
+            float b10 = c10 & 0xFF;
+
+            float r01 = (c01 >> 16) & 0xFF;
+            float g01 = (c01 >> 8) & 0xFF;
+            float b01 = c01 & 0xFF;
+
+            float r11 = (c11 >> 16) & 0xFF;
+            float g11 = (c11 >> 8) & 0xFF;
+            float b11 = c11 & 0xFF;
+
+            r = (r00 * a00 * w00 + r10 * a10 * w10 + r01 * a01 * w01 + r11 * a11 * w11) / a;
+            g = (g00 * a00 * w00 + g10 * a10 * w10 + g01 * a01 * w01 + g11 * a11 * w11) / a;
+            b = (b00 * a00 * w00 + b10 * a10 * w10 + b01 * a01 * w01 + b11 * a11 * w11) / a;
+        }
+        else
+        {
+            r = 0f; g = 0f; b = 0f;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void SampleDefocusRadial(
+        uint* pBase,
+        float cx,
+        float cy,
+        float r,
+        int width,
+        int height,
+        int minY,
+        out float a, out float rOut, out float gOut, out float bOut)
+    {
+        float rd = r * 0.7071f;
+
+        float sumA = 0f, sumR = 0f, sumG = 0f, sumB = 0f;
+        float totColorWeight = 0f;
+
+        // 9-tap radial kernel (center + 4 orthogonal + 4 diagonal)
+        // Tap 0: Center (weight 0.24)
+        SampleBilinear2D(pBase, cx, cy, width, height, minY, out float ta, out float tr, out float tg, out float tb);
+        sumA += ta * 0.24f;
+        if (ta > 0.001f) { float cw = ta * 0.24f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        // Orthogonal (weight 0.11 each)
+        SampleBilinear2D(pBase, cx - r, cy, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.11f;
+        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        SampleBilinear2D(pBase, cx + r, cy, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.11f;
+        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        SampleBilinear2D(pBase, cx, cy - r, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.11f;
+        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        SampleBilinear2D(pBase, cx, cy + r, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.11f;
+        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        // Diagonals (weight 0.08 each)
+        SampleBilinear2D(pBase, cx - rd, cy - rd, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.08f;
+        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        SampleBilinear2D(pBase, cx + rd, cy - rd, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.08f;
+        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        SampleBilinear2D(pBase, cx - rd, cy + rd, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.08f;
+        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        SampleBilinear2D(pBase, cx + rd, cy + rd, width, height, minY, out ta, out tr, out tg, out tb);
+        sumA += ta * 0.08f;
+        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
+
+        a = sumA;
+        if (totColorWeight > 0.001f)
+        {
+            rOut = sumR / totColorWeight;
+            gOut = sumG / totColorWeight;
+            bOut = sumB / totColorWeight;
+        }
+        else
+        {
+            rOut = 0f; gOut = 0f; bOut = 0f;
+        }
+    }
+
+    private static unsafe void CompositeBlurAndSlideTransition(
         uint[] prevSnapshot,
         uint[] currSnapshot,
         uint[] destBuffer,
@@ -1975,16 +2127,35 @@ internal sealed class OverlayForm : Form
         int contentStartY)
     {
         double t = Math.Clamp(transitionP, 0.0, 1.0);
-        float ease = (float)(1.0 - Math.Pow(1.0 - t, 3.0));
-
         float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
-        float maxSlide = 22.0f; // fluid slide distance in 1x coordinates
 
-        float prevOffset = -dir * ease * maxSlide;
-        float prevAlpha = Math.Clamp(1.0f - ease, 0.0f, 1.0f);
+        // --- PHASE 1: OUTGOING TAB DEFOCUS-BLURS AND FADES OFF (t in [0.0, 0.45]) ---
+        const double fadeEnd = 0.45;
+        float prevAlpha = 0.0f;
+        float prevBlurRadius = 0.0f;
+        float prevOffset = 0.0f;
 
-        float currOffset = dir * (1.0f - ease) * maxSlide;
-        float currAlpha = Math.Clamp(ease, 0.0f, 1.0f);
+        if (t < fadeEnd)
+        {
+            float pOut = (float)(t / fadeEnd); // 0.0 -> 1.0
+            prevAlpha = (1.0f - pOut) * (1.0f - pOut); // smooth quadratic fade off
+            prevBlurRadius = pOut * 7.5f; // defocus blur spreads outward up to 7.5px
+            prevOffset = -dir * (pOut * pOut * 6.0f); // subtle micro-drift
+        }
+
+        // --- PHASE 2: INCOMING TAB MOVES IN (t in [0.30, 1.0]) ---
+        const double inStart = 0.30;
+        float currAlpha = 0.0f;
+        float currOffset = 0.0f;
+
+        if (t > inStart)
+        {
+            float pIn = (float)((t - inStart) / (1.0 - inStart)); // 0.0 -> 1.0
+            float easeIn = (float)(1.0 - Math.Pow(1.0 - pIn, 3.0)); // cubic deceleration
+            currAlpha = easeIn;
+            const float maxSlide = 26.0f;
+            currOffset = dir * (1.0f - easeIn) * maxSlide;
+        }
 
         fixed (uint* pPrev = prevSnapshot, pCurr = currSnapshot, pDest = destBuffer)
         {
@@ -2002,7 +2173,14 @@ internal sealed class OverlayForm : Form
 
                     if (prevAlpha > 0.005f)
                     {
-                        SampleRowBilinearSharp(prevRow, x - prevOffset, targetW, out pa, out pr, out pg, out pb);
+                        if (prevBlurRadius <= 0.25f)
+                        {
+                            SampleRowBilinearSharp(prevRow, x - prevOffset, targetW, out pa, out pr, out pg, out pb);
+                        }
+                        else
+                        {
+                            SampleDefocusRadial(pPrev, x - prevOffset, (float)y, prevBlurRadius, targetW, targetH, contentStartY, out pa, out pr, out pg, out pb);
+                        }
                     }
 
                     if (currAlpha > 0.005f)
@@ -2365,8 +2543,8 @@ internal sealed class OverlayForm : Form
             // Downsample top bar rows (0..25) directly into targetBuffer
             DownsampleTopBarToBuffer(_topBarBmp, targetBuffer, targetW, 26);
 
-            // Single-tap sub-pixel sharp sliding crossfade for tab content rows (26..149)
-            CompositeSharpSlideTransition(_prevContentSnapshot, _currContentSnapshot, targetBuffer, activeTab, prevTab, transitionP, targetW, targetH, 26);
+            // Staggered two-phase blur & fade-off then move-in transition for tab content rows (26..149)
+            CompositeBlurAndSlideTransition(_prevContentSnapshot, _currContentSnapshot, targetBuffer, activeTab, prevTab, transitionP, targetW, targetH, 26);
 
             return (targetBuffer, targetW, targetH);
         }
@@ -4002,8 +4180,25 @@ internal sealed class OverlayForm : Form
             double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
             double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
             double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
-            double musicTabBlend = (_activeTab == TabMusic) ? _tabTransitionP : ((_prevTab == TabMusic) ? (1.0 - _tabTransitionP) : 0.0);
-            if (_tabTransitionP >= 1.0) musicTabBlend = (_activeTab == TabMusic) ? 1.0 : 0.0;
+            double musicTabBlend;
+            if (_tabTransitionP >= 1.0)
+            {
+                musicTabBlend = (_activeTab == TabMusic) ? 1.0 : 0.0;
+            }
+            else if (_activeTab == TabMusic)
+            {
+                double pIn = Math.Clamp((_tabTransitionP - 0.30) / 0.70, 0.0, 1.0);
+                musicTabBlend = 1.0 - Math.Pow(1.0 - pIn, 3.0);
+            }
+            else if (_prevTab == TabMusic)
+            {
+                double pOut = Math.Clamp(_tabTransitionP / 0.45, 0.0, 1.0);
+                musicTabBlend = (1.0 - pOut) * (1.0 - pOut);
+            }
+            else
+            {
+                musicTabBlend = 0.0;
+            }
             bool isMusicTabActive = (musicTabBlend > 0.01) && (expAlpha > 0.01);
 
             // Virtual illumination vectors (normalized half-vectors with view ray V = (0, 0, 1))
