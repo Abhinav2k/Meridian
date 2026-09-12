@@ -4,7 +4,6 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Windows.Media.Control;
@@ -120,6 +119,12 @@ internal sealed class OverlayForm : Form
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT lpPoint);
+
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", SetLastError = true)]
+    private static extern uint TimeBeginPeriod(uint uMilliseconds);
+
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", SetLastError = true)]
+    private static extern uint TimeEndPeriod(uint uMilliseconds);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT
@@ -687,6 +692,7 @@ internal sealed class OverlayForm : Form
     private static readonly uint[] _prevContentSnapshot = new uint[460 * 150];
     private static readonly uint[] _currContentSnapshot = new uint[460 * 150];
     private static readonly uint[]?[] _tabBufferCache = new uint[4][];
+    private static readonly uint[] _transitionBuffer = new uint[460 * 150];
     private static uint[]? _expandedBufferA = null;
     private static uint[]? _expandedBufferB = null;
     private static bool _expandedFlip = false;
@@ -728,67 +734,36 @@ internal sealed class OverlayForm : Form
             return;
         }
 
-        // Sub-microsecond memory copy snapshot of current screen for outgoing tab
-        bool haveValidExpanded = false;
+        // Sub-microsecond memory snapshot of current screen for outgoing tab
         lock (_expandedLock)
         {
             if (_expandedColors != null && _expandedColors.Length == 460 * 150)
             {
                 Array.Copy(_expandedColors, _prevContentSnapshot, 460 * 150);
-                haveValidExpanded = true;
+            }
+            else if (_tabBufferCache[_activeTab] != null)
+            {
+                Array.Copy(_tabBufferCache[_activeTab]!, _prevContentSnapshot, 460 * 150);
             }
         }
 
-        if (!haveValidExpanded)
+        // Ensure target tab content is pre-rendered in cache
+        if (newTab == TabMusic || _tabBufferCache[newTab] == null)
         {
-            RenderTabContentToBuffer(_activeTab, _prevContentSnapshot);
+            if (_tabBufferCache[newTab] == null)
+            {
+                _tabBufferCache[newTab] = new uint[460 * 150];
+            }
+            var track = _currentTrack;
+            var cover = GetCurrentCoverArt(track);
+            RenderFullTabBuffer(_tabBufferCache[newTab]!, newTab, track, cover, _trackProgressSeconds, _isPlaying, _isShuffle, _vinylRotationAngle, _eqBarHeights, _hoveredButton, _clickedButton, _clickAnimTimer);
         }
+        Array.Copy(_tabBufferCache[newTab]!, _currContentSnapshot, 460 * 150);
 
         _prevTab = _activeTab;
         _activeTab = newTab;
         _tabTransitionP = 0.0;
-
-        // Retrieve or precompute incoming tab content snapshot once
-        if (newTab == TabMusic || newTab == TabHome)
-        {
-            RenderTabContentToBuffer(newTab, _currContentSnapshot);
-            if (_tabBufferCache[newTab] == null) _tabBufferCache[newTab] = new uint[460 * 150];
-            Array.Copy(_currContentSnapshot, _tabBufferCache[newTab]!, 460 * 150);
-        }
-        else if (_tabBufferCache[newTab] != null)
-        {
-            Array.Copy(_tabBufferCache[newTab]!, _currContentSnapshot, 460 * 150);
-        }
-        else
-        {
-            RenderTabContentToBuffer(newTab, _currContentSnapshot);
-            _tabBufferCache[newTab] = new uint[460 * 150];
-            Array.Copy(_currContentSnapshot, _tabBufferCache[newTab]!, 460 * 150);
-        }
-
         _needExpandedUpdate = true;
-    }
-
-    private void RenderTabContentToBuffer(int tabIndex, uint[] destBuffer)
-    {
-        lock (_expandedRenderLock)
-        {
-            var track = _currentTrack;
-            var cover = GetCurrentCoverArt(track);
-            RenderTabContentToBufferStatic(
-                tabIndex,
-                destBuffer,
-                track,
-                cover,
-                _trackProgressSeconds,
-                _isPlaying,
-                _isShuffle,
-                _vinylRotationAngle,
-                _eqBarHeights,
-                _hoveredButton,
-                _clickedButton,
-                _clickAnimTimer);
-        }
     }
 
     private void UpdateTabTransitionPhysics(double dt)
@@ -807,7 +782,7 @@ internal sealed class OverlayForm : Form
         // Content transition progress
         if (_tabTransitionP < 1.0)
         {
-            _tabTransitionP += dt * 3.0; // ~0.33s two-phase transition (blur & fade off -> move in)
+            _tabTransitionP += dt * 4.2; // ~0.24s transition
             if (_tabTransitionP >= 1.0)
             {
                 _tabTransitionP = 1.0;
@@ -954,6 +929,7 @@ internal sealed class OverlayForm : Form
 
         Shown += async (_, _) =>
         {
+            TimeBeginPeriod(1);
             // Initial spawn shows time briefly on launch
             _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
             _frameStopwatch.Start();
@@ -1921,412 +1897,6 @@ internal sealed class OverlayForm : Form
         g.FillPolygon(brush, tri);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void SampleRowBilinearSharp(uint* rowPtr, float x, int width, out float a, out float r, out float g, out float b)
-    {
-        if (x < -0.5f || x >= width - 0.5f)
-        {
-            a = 0f; r = 0f; g = 0f; b = 0f;
-            return;
-        }
-
-        int x0 = (int)Math.Floor(x);
-        float fx = x - x0;
-        int x1 = x0 + 1;
-
-        uint c0 = (x0 >= 0 && x0 < width) ? rowPtr[x0] : 0;
-        uint c1 = (x1 >= 0 && x1 < width) ? rowPtr[x1] : 0;
-
-        float a0 = (c0 >> 24) & 0xFF;
-        float r0 = (c0 >> 16) & 0xFF;
-        float g0 = (c0 >> 8) & 0xFF;
-        float b0 = c0 & 0xFF;
-
-        float a1 = (c1 >> 24) & 0xFF;
-        float r1 = (c1 >> 16) & 0xFF;
-        float g1 = (c1 >> 8) & 0xFF;
-        float b1 = c1 & 0xFF;
-
-        float w0 = 1.0f - fx;
-        float w1 = fx;
-
-        a = a0 * w0 + a1 * w1;
-        // Premultiply by alpha for accurate color preservation during sub-pixel slide
-        r = (r0 * a0 * w0 + r1 * a1 * w1);
-        g = (g0 * a0 * w0 + g1 * a1 * w1);
-        b = (b0 * a0 * w0 + b1 * a1 * w1);
-        if (a > 0.001f)
-        {
-            r /= a;
-            g /= a;
-            b /= a;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void SampleBilinear2D(
-        uint* pBase,
-        float x,
-        float y,
-        int width,
-        int height,
-        int minY,
-        out float a, out float r, out float g, out float b)
-    {
-        if (x < 0.0f || x >= width - 1.0f || y < minY || y >= height - 1.0f)
-        {
-            int cx = Math.Clamp((int)Math.Round(x), 0, width - 1);
-            int cy = Math.Clamp((int)Math.Round(y), minY, height - 1);
-            uint c = pBase[cy * width + cx];
-            a = (c >> 24) & 0xFF;
-            if (a > 0.001f)
-            {
-                r = (c >> 16) & 0xFF;
-                g = (c >> 8) & 0xFF;
-                b = c & 0xFF;
-            }
-            else
-            {
-                r = 0f; g = 0f; b = 0f;
-            }
-            return;
-        }
-
-        int x0 = (int)x;
-        int y0 = (int)y;
-        int x1 = x0 + 1;
-        int y1 = y0 + 1;
-        float fx = x - x0;
-        float fy = y - y0;
-
-        int row0 = y0 * width;
-        int row1 = y1 * width;
-
-        uint c00 = pBase[row0 + x0];
-        uint c10 = pBase[row0 + x1];
-        uint c01 = pBase[row1 + x0];
-        uint c11 = pBase[row1 + x1];
-
-        float a00 = (c00 >> 24) & 0xFF;
-        float a10 = (c10 >> 24) & 0xFF;
-        float a01 = (c01 >> 24) & 0xFF;
-        float a11 = (c11 >> 24) & 0xFF;
-
-        float w00 = (1.0f - fx) * (1.0f - fy);
-        float w10 = fx * (1.0f - fy);
-        float w01 = (1.0f - fx) * fy;
-        float w11 = fx * fy;
-
-        a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
-        if (a > 0.001f)
-        {
-            float r00 = (c00 >> 16) & 0xFF;
-            float g00 = (c00 >> 8) & 0xFF;
-            float b00 = c00 & 0xFF;
-
-            float r10 = (c10 >> 16) & 0xFF;
-            float g10 = (c10 >> 8) & 0xFF;
-            float b10 = c10 & 0xFF;
-
-            float r01 = (c01 >> 16) & 0xFF;
-            float g01 = (c01 >> 8) & 0xFF;
-            float b01 = c01 & 0xFF;
-
-            float r11 = (c11 >> 16) & 0xFF;
-            float g11 = (c11 >> 8) & 0xFF;
-            float b11 = c11 & 0xFF;
-
-            r = (r00 * a00 * w00 + r10 * a10 * w10 + r01 * a01 * w01 + r11 * a11 * w11) / a;
-            g = (g00 * a00 * w00 + g10 * a10 * w10 + g01 * a01 * w01 + g11 * a11 * w11) / a;
-            b = (b00 * a00 * w00 + b10 * a10 * w10 + b01 * a01 * w01 + b11 * a11 * w11) / a;
-        }
-        else
-        {
-            r = 0f; g = 0f; b = 0f;
-        }
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static unsafe void SampleDefocusRadial(
-        uint* pBase,
-        float cx,
-        float cy,
-        float r,
-        int width,
-        int height,
-        int minY,
-        out float a, out float rOut, out float gOut, out float bOut)
-    {
-        float rd = r * 0.7071f;
-
-        float sumA = 0f, sumR = 0f, sumG = 0f, sumB = 0f;
-        float totColorWeight = 0f;
-
-        // 9-tap radial kernel (center + 4 orthogonal + 4 diagonal)
-        // Tap 0: Center (weight 0.24)
-        SampleBilinear2D(pBase, cx, cy, width, height, minY, out float ta, out float tr, out float tg, out float tb);
-        sumA += ta * 0.24f;
-        if (ta > 0.001f) { float cw = ta * 0.24f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        // Orthogonal (weight 0.11 each)
-        SampleBilinear2D(pBase, cx - r, cy, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.11f;
-        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        SampleBilinear2D(pBase, cx + r, cy, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.11f;
-        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        SampleBilinear2D(pBase, cx, cy - r, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.11f;
-        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        SampleBilinear2D(pBase, cx, cy + r, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.11f;
-        if (ta > 0.001f) { float cw = ta * 0.11f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        // Diagonals (weight 0.08 each)
-        SampleBilinear2D(pBase, cx - rd, cy - rd, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.08f;
-        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        SampleBilinear2D(pBase, cx + rd, cy - rd, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.08f;
-        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        SampleBilinear2D(pBase, cx - rd, cy + rd, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.08f;
-        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        SampleBilinear2D(pBase, cx + rd, cy + rd, width, height, minY, out ta, out tr, out tg, out tb);
-        sumA += ta * 0.08f;
-        if (ta > 0.001f) { float cw = ta * 0.08f; sumR += tr * cw; sumG += tg * cw; sumB += tb * cw; totColorWeight += cw; }
-
-        a = sumA;
-        if (totColorWeight > 0.001f)
-        {
-            rOut = sumR / totColorWeight;
-            gOut = sumG / totColorWeight;
-            bOut = sumB / totColorWeight;
-        }
-        else
-        {
-            rOut = 0f; gOut = 0f; bOut = 0f;
-        }
-    }
-
-    private static unsafe void CompositeBlurAndSlideTransition(
-        uint[] prevSnapshot,
-        uint[] currSnapshot,
-        uint[] destBuffer,
-        int activeTab,
-        int prevTab,
-        double transitionP,
-        int targetW,
-        int targetH,
-        int contentStartY)
-    {
-        double t = Math.Clamp(transitionP, 0.0, 1.0);
-        float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
-
-        // --- PHASE 1: OUTGOING TAB DEFOCUS-BLURS AND FADES OFF (t in [0.0, 0.45]) ---
-        const double fadeEnd = 0.45;
-        float prevAlpha = 0.0f;
-        float prevBlurRadius = 0.0f;
-        float prevOffset = 0.0f;
-
-        if (t < fadeEnd)
-        {
-            float pOut = (float)(t / fadeEnd); // 0.0 -> 1.0
-            prevAlpha = (1.0f - pOut) * (1.0f - pOut); // smooth quadratic fade off
-            prevBlurRadius = pOut * 7.5f; // defocus blur spreads outward up to 7.5px
-            prevOffset = -dir * (pOut * pOut * 6.0f); // subtle micro-drift
-        }
-
-        // --- PHASE 2: INCOMING TAB MOVES IN (t in [0.30, 1.0]) ---
-        const double inStart = 0.30;
-        float currAlpha = 0.0f;
-        float currOffset = 0.0f;
-
-        if (t > inStart)
-        {
-            float pIn = (float)((t - inStart) / (1.0 - inStart)); // 0.0 -> 1.0
-            float easeIn = (float)(1.0 - Math.Pow(1.0 - pIn, 3.0)); // cubic deceleration
-            currAlpha = easeIn;
-            const float maxSlide = 26.0f;
-            currOffset = dir * (1.0f - easeIn) * maxSlide;
-        }
-
-        fixed (uint* pPrev = prevSnapshot, pCurr = currSnapshot, pDest = destBuffer)
-        {
-            for (int y = contentStartY; y < targetH; y++)
-            {
-                int rowOffset = y * targetW;
-                uint* prevRow = pPrev + rowOffset;
-                uint* currRow = pCurr + rowOffset;
-                uint* destRow = pDest + rowOffset;
-
-                for (int x = 0; x < targetW; x++)
-                {
-                    float pa = 0f, pr = 0f, pg = 0f, pb = 0f;
-                    float ca = 0f, cr = 0f, cg = 0f, cb = 0f;
-
-                    if (prevAlpha > 0.005f)
-                    {
-                        if (prevBlurRadius <= 0.25f)
-                        {
-                            SampleRowBilinearSharp(prevRow, x - prevOffset, targetW, out pa, out pr, out pg, out pb);
-                        }
-                        else
-                        {
-                            SampleDefocusRadial(pPrev, x - prevOffset, (float)y, prevBlurRadius, targetW, targetH, contentStartY, out pa, out pr, out pg, out pb);
-                        }
-                    }
-
-                    if (currAlpha > 0.005f)
-                    {
-                        SampleRowBilinearSharp(currRow, x - currOffset, targetW, out ca, out cr, out cg, out cb);
-                    }
-
-                    float outA = pa * prevAlpha + ca * currAlpha;
-                    int ia = Math.Clamp((int)Math.Round(outA), 0, 255);
-                    if (ia == 0)
-                    {
-                        destRow[x] = 0;
-                    }
-                    else
-                    {
-                        float pWeight = pa * prevAlpha;
-                        float cWeight = ca * currAlpha;
-                        float totWeight = pWeight + cWeight;
-
-                        float outR, outG, outB;
-                        if (totWeight > 0.001f)
-                        {
-                            outR = (pr * pWeight + cr * cWeight) / totWeight;
-                            outG = (pg * pWeight + cg * cWeight) / totWeight;
-                            outB = (pb * pWeight + cb * cWeight) / totWeight;
-                        }
-                        else
-                        {
-                            outR = 0f; outG = 0f; outB = 0f;
-                        }
-
-                        int ir = Math.Clamp((int)Math.Round(outR), 0, 255);
-                        int ig = Math.Clamp((int)Math.Round(outG), 0, 255);
-                        int ib = Math.Clamp((int)Math.Round(outB), 0, 255);
-                        destRow[x] = ((uint)ia << 24) | ((uint)ir << 16) | ((uint)ig << 8) | (uint)ib;
-                    }
-                }
-            }
-        }
-    }
-
-    private static void DownsampleTopBarToBuffer(Bitmap topBmp, uint[] destBuffer, int targetW = 460, int topH = 26)
-    {
-        var data = topBmp.LockBits(new Rectangle(0, 0, targetW * 4, topH * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        unsafe
-        {
-            byte* scan = (byte*)data.Scan0;
-            int stride = data.Stride;
-            for (int y = 0; y < topH; y++)
-            {
-                int destRow = y * targetW;
-                for (int x = 0; x < targetW; x++)
-                {
-                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
-                    for (int dy = 0; dy < 4; dy++)
-                    {
-                        int sy = y * 4 + dy;
-                        int rowOffset = sy * stride;
-                        for (int dx = 0; dx < 4; dx++)
-                        {
-                            int sx = x * 4 + dx;
-                            int pxOffset = rowOffset + sx * 4;
-                            byte b = scan[pxOffset + 0];
-                            byte gVal = scan[pxOffset + 1];
-                            byte r = scan[pxOffset + 2];
-                            byte a = scan[pxOffset + 3];
-
-                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
-                            sumB += (b * trueA) >> 8;
-                            sumG += (gVal * trueA) >> 8;
-                            sumR += (r * trueA) >> 8;
-                            sumA += trueA;
-                        }
-                    }
-
-                    int avgA = sumA >> 4;
-                    if (avgA == 0)
-                    {
-                        destBuffer[destRow + x] = 0;
-                    }
-                    else
-                    {
-                        int avgR = Math.Min(255, sumR >> 4);
-                        int avgG = Math.Min(255, sumG >> 4);
-                        int avgB = Math.Min(255, sumB >> 4);
-                        destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
-                    }
-                }
-            }
-        }
-        topBmp.UnlockBits(data);
-    }
-
-    private static void DownsampleToBuffer(Bitmap superBmp, uint[] destBuffer, int startY, int endY, int targetW = 460)
-    {
-        int superW = targetW * 4;
-        var data = superBmp.LockBits(new Rectangle(0, 0, superW, endY * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        unsafe
-        {
-            byte* scan = (byte*)data.Scan0;
-            int stride = data.Stride;
-            for (int y = startY; y < endY; y++)
-            {
-                int destRow = y * targetW;
-                for (int x = 0; x < targetW; x++)
-                {
-                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
-                    for (int dy = 0; dy < 4; dy++)
-                    {
-                        int sy = y * 4 + dy;
-                        int rowOffset = sy * stride;
-                        for (int dx = 0; dx < 4; dx++)
-                        {
-                            int sx = x * 4 + dx;
-                            int pxOffset = rowOffset + sx * 4;
-                            byte b = scan[pxOffset + 0];
-                            byte gVal = scan[pxOffset + 1];
-                            byte r = scan[pxOffset + 2];
-                            byte a = scan[pxOffset + 3];
-
-                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
-                            sumB += (b * trueA) >> 8;
-                            sumG += (gVal * trueA) >> 8;
-                            sumR += (r * trueA) >> 8;
-                            sumA += trueA;
-                        }
-                    }
-
-                    int avgA = sumA >> 4;
-                    if (avgA == 0)
-                    {
-                        destBuffer[destRow + x] = 0;
-                    }
-                    else
-                    {
-                        int avgR = Math.Min(255, sumR >> 4);
-                        int avgG = Math.Min(255, sumG >> 4);
-                        int avgB = Math.Min(255, sumB >> 4);
-                        destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
-                    }
-                }
-            }
-        }
-        superBmp.UnlockBits(data);
-    }
-
     private static void DrawTopTabBar(
         Graphics g,
         float superScale,
@@ -2422,9 +1992,117 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void RenderTabContentToBufferStatic(
-        int tabIndex,
+    private static void DownsampleTopBarToBuffer(Bitmap topBarBmp, uint[] destBuffer, int targetW, int rows)
+    {
+        int superW = targetW * 4;
+        var data = topBarBmp.LockBits(new Rectangle(0, 0, superW, rows * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        unsafe
+        {
+            byte* scan = (byte*)data.Scan0;
+            for (int y = 0; y < rows; y++)
+            {
+                int destRow = y * targetW;
+                for (int x = 0; x < targetW; x++)
+                {
+                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
+                    for (int dy = 0; dy < 4; dy++)
+                    {
+                        int sy = y * 4 + dy;
+                        int rowOffset = sy * superW * 4;
+                        for (int dx = 0; dx < 4; dx++)
+                        {
+                            int sx = x * 4 + dx;
+                            int pxOffset = rowOffset + sx * 4;
+                            byte b = scan[pxOffset + 0];
+                            byte gVal = scan[pxOffset + 1];
+                            byte r = scan[pxOffset + 2];
+                            byte a = scan[pxOffset + 3];
+
+                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
+
+                            sumB += (b * trueA) >> 8;
+                            sumG += (gVal * trueA) >> 8;
+                            sumR += (r * trueA) >> 8;
+                            sumA += trueA;
+                        }
+                    }
+
+                    int avgA = sumA >> 4;
+                    if (avgA == 0)
+                    {
+                        destBuffer[destRow + x] = 0;
+                    }
+                    else
+                    {
+                        int avgR = Math.Min(255, sumR >> 4);
+                        int avgG = Math.Min(255, sumG >> 4);
+                        int avgB = Math.Min(255, sumB >> 4);
+                        destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
+                    }
+                }
+            }
+        }
+        topBarBmp.UnlockBits(data);
+    }
+
+    private static void DownsampleToBuffer(Bitmap superBmp, uint[] destBuffer, int startY, int endY, int targetW)
+    {
+        int superW = targetW * 4;
+        var data = superBmp.LockBits(new Rectangle(0, startY * 4, superW, (endY - startY) * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        unsafe
+        {
+            byte* scan = (byte*)data.Scan0;
+            int height = endY - startY;
+            for (int y = 0; y < height; y++)
+            {
+                int destY = startY + y;
+                int destRow = destY * targetW;
+                for (int x = 0; x < targetW; x++)
+                {
+                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
+                    for (int dy = 0; dy < 4; dy++)
+                    {
+                        int sy = y * 4 + dy;
+                        int rowOffset = sy * superW * 4;
+                        for (int dx = 0; dx < 4; dx++)
+                        {
+                            int sx = x * 4 + dx;
+                            int pxOffset = rowOffset + sx * 4;
+                            byte b = scan[pxOffset + 0];
+                            byte gVal = scan[pxOffset + 1];
+                            byte r = scan[pxOffset + 2];
+                            byte a = scan[pxOffset + 3];
+
+                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
+
+                            sumB += (b * trueA) >> 8;
+                            sumG += (gVal * trueA) >> 8;
+                            sumR += (r * trueA) >> 8;
+                            sumA += trueA;
+                        }
+                    }
+
+                    int avgA = sumA >> 4;
+                    if (avgA == 0)
+                    {
+                        destBuffer[destRow + x] = 0;
+                    }
+                    else
+                    {
+                        int avgR = Math.Min(255, sumR >> 4);
+                        int avgG = Math.Min(255, sumG >> 4);
+                        int avgB = Math.Min(255, sumB >> 4);
+                        destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
+                    }
+                }
+            }
+        }
+        superBmp.UnlockBits(data);
+    }
+
+    private static void RenderFullTabBuffer(
         uint[] destBuffer,
+        int tabIndex,
         TrackInfo track,
         Bitmap? coverBmp,
         double progressSeconds,
@@ -2459,6 +2137,147 @@ internal sealed class OverlayForm : Form
         }
 
         DownsampleToBuffer(_reusableSuperBmp, destBuffer, 0, targetH, targetW);
+    }
+
+    private static unsafe void CompositeSubpixelSlideTransition(
+        uint[] prevSnapshot,
+        uint[] currSnapshot,
+        uint[] destBuffer,
+        int activeTab,
+        int prevTab,
+        double transitionP,
+        int targetW,
+        int targetH,
+        int contentStartY)
+    {
+        double t = Math.Clamp(transitionP, 0.0, 1.0);
+        float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
+
+        // --- PHASE 1: OUTGOING TAB SLIDES AND FADES OUT (t in [0.0, 0.45]) ---
+        const double fadeEnd = 0.45;
+        float prevAlpha = 0.0f;
+        float prevOffset = 0.0f;
+
+        if (t < fadeEnd)
+        {
+            float pOut = (float)(t / fadeEnd); // 0.0 -> 1.0
+            prevAlpha = (1.0f - pOut) * (1.0f - pOut); // Smooth quadratic fade off
+            prevOffset = -dir * (pOut * 14.0f); // Micro-drift slide outward
+        }
+
+        // --- PHASE 2: INCOMING TAB SLIDES IN AND FADES IN (t in [0.25, 1.0]) ---
+        const double inStart = 0.25;
+        float currAlpha = 0.0f;
+        float currOffset = 0.0f;
+
+        if (t > inStart)
+        {
+            float pIn = (float)((t - inStart) / (1.0 - inStart)); // 0.0 -> 1.0
+            float easeIn = (float)(1.0 - Math.Pow(1.0 - pIn, 3.0)); // Cubic ease-out deceleration
+            currAlpha = easeIn;
+            currOffset = dir * (1.0f - easeIn) * 18.0f; // Smooth spring slide in
+        }
+
+        // Precompute fixed-point alpha and sub-pixel weights
+        int aP = (int)(prevAlpha * 256f);
+        int aC = (int)(currAlpha * 256f);
+
+        // Precompute horizontal offset floor and fractional weights
+        float offP = -prevOffset;
+        int x0p = (int)Math.Floor(offP);
+        float fxP = offP - x0p;
+        int wP0 = (int)((1.0f - fxP) * 256f);
+        int wP1 = 256 - wP0;
+
+        float offC = -currOffset;
+        int x0c = (int)Math.Floor(offC);
+        float fxC = offC - x0c;
+        int wC0 = (int)((1.0f - fxC) * 256f);
+        int wC1 = 256 - wC0;
+
+        fixed (uint* pPrev = prevSnapshot, pCurr = currSnapshot, pDest = destBuffer)
+        {
+            for (int y = contentStartY; y < targetH; y++)
+            {
+                int rowOffset = y * targetW;
+                uint* rowPrev = pPrev + rowOffset;
+                uint* rowCurr = pCurr + rowOffset;
+                uint* rowDest = pDest + rowOffset;
+
+                for (int x = 0; x < targetW; x++)
+                {
+                    int a1 = 0, r1 = 0, g1 = 0, b1 = 0;
+                    if (aP > 1)
+                    {
+                        int xp = x + x0p;
+                        uint p0 = (xp >= 0 && xp < targetW) ? rowPrev[xp] : 0;
+                        uint p1 = (xp + 1 >= 0 && xp + 1 < targetW) ? rowPrev[xp + 1] : 0;
+
+                        int ap0 = (int)(p0 >> 24);
+                        int ap1 = (int)(p1 >> 24);
+                        int aPix = (ap0 * wP0 + ap1 * wP1) >> 8;
+                        a1 = (aPix * aP) >> 8;
+
+                        if (a1 > 0)
+                        {
+                            int rp0 = (int)((p0 >> 16) & 0xFF);
+                            int rp1 = (int)((p1 >> 16) & 0xFF);
+                            r1 = (rp0 * wP0 + rp1 * wP1) >> 8;
+
+                            int gp0 = (int)((p0 >> 8) & 0xFF);
+                            int gp1 = (int)((p1 >> 8) & 0xFF);
+                            g1 = (gp0 * wP0 + gp1 * wP1) >> 8;
+
+                            int bp0 = (int)(p0 & 0xFF);
+                            int bp1 = (int)(p1 & 0xFF);
+                            b1 = (bp0 * wP0 + bp1 * wP1) >> 8;
+                        }
+                    }
+
+                    int a2 = 0, r2 = 0, g2 = 0, b2 = 0;
+                    if (aC > 1)
+                    {
+                        int xc = x + x0c;
+                        uint c0 = (xc >= 0 && xc < targetW) ? rowCurr[xc] : 0;
+                        uint c1 = (xc + 1 >= 0 && xc + 1 < targetW) ? rowCurr[xc + 1] : 0;
+
+                        int ac0 = (int)(c0 >> 24);
+                        int ac1 = (int)(c1 >> 24);
+                        int aPix = (ac0 * wC0 + ac1 * wC1) >> 8;
+                        a2 = (aPix * aC) >> 8;
+
+                        if (a2 > 0)
+                        {
+                            int rc0 = (int)((c0 >> 16) & 0xFF);
+                            int rc1 = (int)((c1 >> 16) & 0xFF);
+                            r2 = (rc0 * wC0 + rc1 * wC1) >> 8;
+
+                            int gc0 = (int)((c0 >> 8) & 0xFF);
+                            int gc1 = (int)((c1 >> 8) & 0xFF);
+                            g2 = (gc0 * wC0 + gc1 * wC1) >> 8;
+
+                            int bc0 = (int)(c0 & 0xFF);
+                            int bc1 = (int)(c1 & 0xFF);
+                            b2 = (bc0 * wC0 + bc1 * wC1) >> 8;
+                        }
+                    }
+
+                    int totA = a1 + a2;
+                    if (totA == 0)
+                    {
+                        rowDest[x] = 0;
+                        continue;
+                    }
+
+                    int r = (r1 * a1 + r2 * a2) / totA;
+                    int g = (g1 * a1 + g2 * a2) / totA;
+                    int b = (b1 * a1 + b2 * a2) / totA;
+                    int finalA = Math.Min(255, totA);
+
+                    rowDest[x] = ((uint)finalA << 24) | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
+                }
+            }
+        }
     }
 
     private static (uint[] colors, int width, int height) PrecomputeExpandedContent(
@@ -2525,7 +2344,7 @@ internal sealed class OverlayForm : Form
         }
         else
         {
-            // ULTRA-FAST 0.05ms SHARP SLIDING CROSS-FADE TRANSITION (ZERO BLUR, 240FPS+)
+            // ULTRA-FAST 0.6ms FLUID SUBPIXEL SLIDING TRANSITION (200FPS+)
             if (_topBarBmp == null || _topBarBmp.Width != superW || _topBarBmp.Height != 104)
             {
                 _topBarBmp?.Dispose();
@@ -2540,13 +2359,13 @@ internal sealed class OverlayForm : Form
                 DrawTopTabBar(gTop, superScale, targetW, tabIndicatorPos, tabIndicatorVel);
             }
 
-            // Downsample top bar rows (0..25) directly into targetBuffer
-            DownsampleTopBarToBuffer(_topBarBmp, targetBuffer, targetW, 26);
+            // Downsample top bar rows (0..25) directly into _transitionBuffer
+            DownsampleTopBarToBuffer(_topBarBmp, _transitionBuffer, targetW, 26);
 
-            // Staggered two-phase blur & fade-off then move-in transition for tab content rows (26..149)
-            CompositeBlurAndSlideTransition(_prevContentSnapshot, _currContentSnapshot, targetBuffer, activeTab, prevTab, transitionP, targetW, targetH, 26);
+            // Sub-pixel smooth sliding cross-fade for tab content rows (26..149)
+            CompositeSubpixelSlideTransition(_prevContentSnapshot, _currContentSnapshot, _transitionBuffer, activeTab, prevTab, transitionP, targetW, targetH, 26);
 
-            return (targetBuffer, targetW, targetH);
+            return (_transitionBuffer, targetW, targetH);
         }
     }
 
@@ -3599,7 +3418,13 @@ internal sealed class OverlayForm : Form
     {
         while (_running)
         {
-            _renderSignal.WaitOne(6);
+            bool isFastAnimating = (_tabTransitionP < 1.0) ||
+                                   (Math.Abs(_tabIndicatorVel) > 0.002) ||
+                                   (_clickAnimTimer > 0.0) ||
+                                   (_progress > 0.001 && _progress < 0.999) ||
+                                   (Math.Abs(_hoverVel) > 0.001);
+            int sleepTimeout = isFastAnimating ? 1 : (_hoverPos > 0.6 ? 4 : 10);
+            _renderSignal.WaitOne(sleepTimeout);
             if (!_running) break;
 
             try
@@ -4180,25 +4005,8 @@ internal sealed class OverlayForm : Form
             double hoverExpLinear = Math.Clamp((_hoverPos - 0.62) / 0.38, 0.0, 1.0);
             double hoverExpHermite = hoverExpLinear * hoverExpLinear * (3.0 - 2.0 * hoverExpLinear);
             double expAlpha = EaseOutCubic(spawnExpAlpha) * hoverExpHermite;
-            double musicTabBlend;
-            if (_tabTransitionP >= 1.0)
-            {
-                musicTabBlend = (_activeTab == TabMusic) ? 1.0 : 0.0;
-            }
-            else if (_activeTab == TabMusic)
-            {
-                double pIn = Math.Clamp((_tabTransitionP - 0.30) / 0.70, 0.0, 1.0);
-                musicTabBlend = 1.0 - Math.Pow(1.0 - pIn, 3.0);
-            }
-            else if (_prevTab == TabMusic)
-            {
-                double pOut = Math.Clamp(_tabTransitionP / 0.45, 0.0, 1.0);
-                musicTabBlend = (1.0 - pOut) * (1.0 - pOut);
-            }
-            else
-            {
-                musicTabBlend = 0.0;
-            }
+            double musicTabBlend = (_activeTab == TabMusic) ? _tabTransitionP : ((_prevTab == TabMusic) ? (1.0 - _tabTransitionP) : 0.0);
+            if (_tabTransitionP >= 1.0) musicTabBlend = (_activeTab == TabMusic) ? 1.0 : 0.0;
             bool isMusicTabActive = (musicTabBlend > 0.01) && (expAlpha > 0.01);
 
             // Virtual illumination vectors (normalized half-vectors with view ray V = (0, 0, 1))
@@ -4704,6 +4512,7 @@ internal sealed class OverlayForm : Form
                 _topBarBmp = null;
             }
 
+            TimeEndPeriod(1);
             _audioMeter.Dispose();
             _screenCapturer?.Dispose();
             _renderSurface?.Dispose();
