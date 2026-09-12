@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Windows.Media.Control;
@@ -683,9 +684,21 @@ internal sealed class OverlayForm : Form
     private double _tabIndicatorPos = TabHome;
     private double _tabIndicatorVel = 0.0;
     private double _tabTransitionP = 1.0;
-    private static Bitmap? _tabLayerPrev = null;
-    private static Bitmap? _tabLayerCurr = null;
+    private static readonly uint[] _prevContentSnapshot = new uint[460 * 150];
+    private static readonly uint[] _currContentSnapshot = new uint[460 * 150];
+    private static readonly uint[]?[] _tabBufferCache = new uint[4][];
+    private static uint[]? _expandedBufferA = null;
+    private static uint[]? _expandedBufferB = null;
+    private static bool _expandedFlip = false;
+    private static Bitmap? _reusableSuperBmp = null;
+    private static Bitmap? _topBarBmp = null;
     private static readonly object _expandedRenderLock = new();
+
+    private static void InvalidateTabCache()
+    {
+        _tabBufferCache[TabHome] = null;
+        _tabBufferCache[TabMusic] = null;
+    }
 
     private readonly TrackInfo _currentTrack = new();
     private bool _isPlaying = false; // Only true when real music is playing!
@@ -721,10 +734,68 @@ internal sealed class OverlayForm : Form
             return;
         }
 
+        // Snapshot current on-screen buffer for outgoing transition (sub-microsecond memory copy)
+        bool haveValidExpanded = false;
+        lock (_expandedLock)
+        {
+            if (_expandedColors != null && _expandedColors.Length == 460 * 150)
+            {
+                Array.Copy(_expandedColors, _prevContentSnapshot, 460 * 150);
+                haveValidExpanded = true;
+            }
+        }
+
+        if (!haveValidExpanded)
+        {
+            RenderTabContentToBuffer(_activeTab, _prevContentSnapshot);
+        }
+
         _prevTab = _activeTab;
         _activeTab = newTab;
         _tabTransitionP = 0.0;
+
+        // Retrieve or precompute incoming tab content snapshot once
+        if (newTab == TabMusic || newTab == TabHome)
+        {
+            // Dynamic tabs: render fresh so cover / track / greeting are fully current
+            RenderTabContentToBuffer(newTab, _currContentSnapshot);
+            if (_tabBufferCache[newTab] == null) _tabBufferCache[newTab] = new uint[460 * 150];
+            Array.Copy(_currContentSnapshot, _tabBufferCache[newTab]!, 460 * 150);
+        }
+        else if (_tabBufferCache[newTab] != null)
+        {
+            Array.Copy(_tabBufferCache[newTab]!, _currContentSnapshot, 460 * 150);
+        }
+        else
+        {
+            RenderTabContentToBuffer(newTab, _currContentSnapshot);
+            _tabBufferCache[newTab] = new uint[460 * 150];
+            Array.Copy(_currContentSnapshot, _tabBufferCache[newTab]!, 460 * 150);
+        }
+
         _needExpandedUpdate = true;
+    }
+
+    private void RenderTabContentToBuffer(int tabIndex, uint[] destBuffer)
+    {
+        lock (_expandedRenderLock)
+        {
+            var track = _currentTrack;
+            var cover = GetCurrentCoverArt(track);
+            RenderTabContentToBufferStatic(
+                tabIndex,
+                destBuffer,
+                track,
+                cover,
+                _trackProgressSeconds,
+                _isPlaying,
+                _isShuffle,
+                _vinylRotationAngle,
+                _eqBarHeights,
+                _hoveredButton,
+                _clickedButton,
+                _clickAnimTimer);
+        }
     }
 
     private void UpdateTabTransitionPhysics(double dt)
@@ -1857,30 +1928,405 @@ internal sealed class OverlayForm : Form
         g.FillPolygon(brush, tri);
     }
 
-    private static void DrawBitmapWithAlpha(Graphics g, Bitmap bmp, float x, float y, float alpha)
+    private static readonly float[] BlurTapOffsets = new[] { -1.0f, -0.65f, -0.30f, 0.0f, 0.30f, 0.65f, 1.0f };
+    private static readonly float[] BlurTapWeights = new[] { 0.07f, 0.13f, 0.19f, 0.22f, 0.19f, 0.13f, 0.07f };
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void SampleRowBilinear(uint* rowPtr, float x, int width, out float a, out float r, out float g, out float b)
     {
-        if (alpha <= 0.005f) return;
-        if (alpha >= 0.995f && Math.Abs(x) < 0.1f && Math.Abs(y) < 0.1f)
+        if (x < -0.5f || x >= width - 0.5f)
         {
-            g.DrawImage(bmp, 0, 0);
+            a = 0f; r = 0f; g = 0f; b = 0f;
             return;
         }
 
-        var colorMatrix = new ColorMatrix
-        {
-            Matrix33 = alpha
-        };
-        using var imageAttributes = new ImageAttributes();
-        imageAttributes.SetColorMatrix(colorMatrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
+        int x0 = (int)Math.Floor(x);
+        float fx = x - x0;
+        int x1 = x0 + 1;
 
-        int ix = (int)Math.Round(x);
-        int iy = (int)Math.Round(y);
-        g.DrawImage(
-            bmp,
-            new Rectangle(ix, iy, bmp.Width, bmp.Height),
-            0, 0, bmp.Width, bmp.Height,
-            GraphicsUnit.Pixel,
-            imageAttributes);
+        uint c0 = (x0 >= 0 && x0 < width) ? rowPtr[x0] : 0;
+        uint c1 = (x1 >= 0 && x1 < width) ? rowPtr[x1] : 0;
+
+        float a0 = (c0 >> 24) & 0xFF;
+        float r0 = (c0 >> 16) & 0xFF;
+        float g0 = (c0 >> 8) & 0xFF;
+        float b0 = c0 & 0xFF;
+
+        float a1 = (c1 >> 24) & 0xFF;
+        float r1 = (c1 >> 16) & 0xFF;
+        float g1 = (c1 >> 8) & 0xFF;
+        float b1 = c1 & 0xFF;
+
+        float w0 = 1.0f - fx;
+        float w1 = fx;
+
+        a = a0 * w0 + a1 * w1;
+        r = (r0 * a0 * w0 + r1 * a1 * w1);
+        g = (g0 * a0 * w0 + g1 * a1 * w1);
+        b = (b0 * a0 * w0 + b1 * a1 * w1);
+        if (a > 0.001f)
+        {
+            r /= a;
+            g /= a;
+            b /= a;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static unsafe void SampleMotionBlur(uint* rowPtr, float centerX, float blurRadius, int width, out float a, out float r, out float g, out float b)
+    {
+        if (blurRadius <= 0.6f)
+        {
+            SampleRowBilinear(rowPtr, centerX, width, out a, out r, out g, out b);
+            return;
+        }
+
+        float accA = 0f, accR = 0f, accG = 0f, accB = 0f;
+        for (int k = 0; k < 7; k++)
+        {
+            float tapX = centerX + BlurTapOffsets[k] * blurRadius;
+            SampleRowBilinear(rowPtr, tapX, width, out float ta, out float tr, out float tg, out float tb);
+            float w = BlurTapWeights[k];
+            accA += ta * w;
+            accR += tr * ta * w;
+            accG += tg * ta * w;
+            accB += tb * ta * w;
+        }
+
+        if (accA > 0.001f)
+        {
+            a = accA;
+            r = accR / accA;
+            g = accG / accA;
+            b = accB / accA;
+        }
+        else
+        {
+            a = 0f; r = 0f; g = 0f; b = 0f;
+        }
+    }
+
+    private static unsafe void CompositeMotionBlurTransition(
+        uint[] prevSnapshot,
+        uint[] currSnapshot,
+        uint[] destBuffer,
+        int activeTab,
+        int prevTab,
+        double transitionP,
+        int targetW,
+        int targetH,
+        int contentStartY)
+    {
+        double t = Math.Clamp(transitionP, 0.0, 1.0);
+        float ease = (float)(1.0 - Math.Pow(1.0 - t, 3.0));
+
+        float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
+        float maxSlide = 26.0f; // fluid slide distance in 1x coordinates
+
+        float prevOffset = -dir * ease * maxSlide;
+        float prevAlpha = Math.Clamp(1.0f - ease, 0.0f, 1.0f);
+
+        float currOffset = dir * (1.0f - ease) * maxSlide;
+        float currAlpha = Math.Clamp(ease, 0.0f, 1.0f);
+
+        float velocity = (float)(3.0 * Math.Pow(1.0 - t, 2.0));
+        float blurRadius = Math.Clamp(velocity * 3.8f, 0.0f, 12.0f);
+
+        fixed (uint* pPrev = prevSnapshot, pCurr = currSnapshot, pDest = destBuffer)
+        {
+            for (int y = contentStartY; y < targetH; y++)
+            {
+                int rowOffset = y * targetW;
+                uint* prevRow = pPrev + rowOffset;
+                uint* currRow = pCurr + rowOffset;
+                uint* destRow = pDest + rowOffset;
+
+                for (int x = 0; x < targetW; x++)
+                {
+                    float pa = 0f, pr = 0f, pg = 0f, pb = 0f;
+                    float ca = 0f, cr = 0f, cg = 0f, cb = 0f;
+
+                    if (prevAlpha > 0.005f)
+                    {
+                        SampleMotionBlur(prevRow, x - prevOffset, blurRadius, targetW, out pa, out pr, out pg, out pb);
+                    }
+
+                    if (currAlpha > 0.005f)
+                    {
+                        SampleMotionBlur(currRow, x - currOffset, blurRadius, targetW, out ca, out cr, out cg, out cb);
+                    }
+
+                    float outA = pa * prevAlpha + ca * currAlpha;
+                    int ia = Math.Clamp((int)Math.Round(outA), 0, 255);
+                    if (ia == 0)
+                    {
+                        destRow[x] = 0;
+                    }
+                    else
+                    {
+                        float pWeight = pa * prevAlpha;
+                        float cWeight = ca * currAlpha;
+                        float totWeight = pWeight + cWeight;
+
+                        float outR, outG, outB;
+                        if (totWeight > 0.001f)
+                        {
+                            outR = (pr * pWeight + cr * cWeight) / totWeight;
+                            outG = (pg * pWeight + cg * cWeight) / totWeight;
+                            outB = (pb * pWeight + cb * cWeight) / totWeight;
+                        }
+                        else
+                        {
+                            outR = 0f; outG = 0f; outB = 0f;
+                        }
+
+                        int ir = Math.Clamp((int)Math.Round(outR), 0, 255);
+                        int ig = Math.Clamp((int)Math.Round(outG), 0, 255);
+                        int ib = Math.Clamp((int)Math.Round(outB), 0, 255);
+                        destRow[x] = ((uint)ia << 24) | ((uint)ir << 16) | ((uint)ig << 8) | (uint)ib;
+                    }
+                }
+            }
+        }
+    }
+
+    private static void DownsampleTopBarToBuffer(Bitmap topBmp, uint[] destBuffer, int targetW = 460, int topH = 26)
+    {
+        var data = topBmp.LockBits(new Rectangle(0, 0, targetW * 4, topH * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        unsafe
+        {
+            byte* scan = (byte*)data.Scan0;
+            int stride = data.Stride;
+            for (int y = 0; y < topH; y++)
+            {
+                int destRow = y * targetW;
+                for (int x = 0; x < targetW; x++)
+                {
+                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
+                    for (int dy = 0; dy < 4; dy++)
+                    {
+                        int sy = y * 4 + dy;
+                        int rowOffset = sy * stride;
+                        for (int dx = 0; dx < 4; dx++)
+                        {
+                            int sx = x * 4 + dx;
+                            int pxOffset = rowOffset + sx * 4;
+                            byte b = scan[pxOffset + 0];
+                            byte gVal = scan[pxOffset + 1];
+                            byte r = scan[pxOffset + 2];
+                            byte a = scan[pxOffset + 3];
+
+                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
+                            sumB += (b * trueA) >> 8;
+                            sumG += (gVal * trueA) >> 8;
+                            sumR += (r * trueA) >> 8;
+                            sumA += trueA;
+                        }
+                    }
+
+                    int avgA = sumA >> 4;
+                    if (avgA == 0)
+                    {
+                        destBuffer[destRow + x] = 0;
+                    }
+                    else
+                    {
+                        int avgR = Math.Min(255, sumR >> 4);
+                        int avgG = Math.Min(255, sumG >> 4);
+                        int avgB = Math.Min(255, sumB >> 4);
+                        destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
+                    }
+                }
+            }
+        }
+        topBmp.UnlockBits(data);
+    }
+
+    private static void DownsampleToBuffer(Bitmap superBmp, uint[] destBuffer, int startY, int endY, int targetW = 460)
+    {
+        int superW = targetW * 4;
+        var data = superBmp.LockBits(new Rectangle(0, 0, superW, endY * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        unsafe
+        {
+            byte* scan = (byte*)data.Scan0;
+            int stride = data.Stride;
+            for (int y = startY; y < endY; y++)
+            {
+                int destRow = y * targetW;
+                for (int x = 0; x < targetW; x++)
+                {
+                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
+                    for (int dy = 0; dy < 4; dy++)
+                    {
+                        int sy = y * 4 + dy;
+                        int rowOffset = sy * stride;
+                        for (int dx = 0; dx < 4; dx++)
+                        {
+                            int sx = x * 4 + dx;
+                            int pxOffset = rowOffset + sx * 4;
+                            byte b = scan[pxOffset + 0];
+                            byte gVal = scan[pxOffset + 1];
+                            byte r = scan[pxOffset + 2];
+                            byte a = scan[pxOffset + 3];
+
+                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
+                            sumB += (b * trueA) >> 8;
+                            sumG += (gVal * trueA) >> 8;
+                            sumR += (r * trueA) >> 8;
+                            sumA += trueA;
+                        }
+                    }
+
+                    int avgA = sumA >> 4;
+                    if (avgA == 0)
+                    {
+                        destBuffer[destRow + x] = 0;
+                    }
+                    else
+                    {
+                        int avgR = Math.Min(255, sumR >> 4);
+                        int avgG = Math.Min(255, sumG >> 4);
+                        int avgB = Math.Min(255, sumB >> 4);
+                        destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
+                    }
+                }
+            }
+        }
+        superBmp.UnlockBits(data);
+    }
+
+    private static void DrawTopTabBar(
+        Graphics g,
+        float superScale,
+        int targetW,
+        double tabIndicatorPos,
+        double tabIndicatorVel)
+    {
+        using var fontClockHeader = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+
+        // ==========================================
+        // TOP SECTION: Compact Left-Aligned Icon Tabs & Right Live Clock
+        // 4 Tabs: Home (⌂), Music (♫), Weather (☀), Chrono (⏱)
+        // ==========================================
+        float tabStartX = 16f * superScale;
+        float tabBarCy = 14f * superScale;
+        float tabItemW = 22f * superScale;
+        float tabHeight = 20f * superScale;
+        float totalTabsW = tabItemW * 4f; // 88px at 1x
+
+        // Tab Bar Background Container Pill
+        float barPad = 2.0f * superScale;
+        using (var pathBar = new GraphicsPath())
+        {
+            float bx = tabStartX - barPad;
+            float by = tabBarCy - tabHeight * 0.5f - barPad;
+            float bw = totalTabsW + barPad * 2f;
+            float bh = tabHeight + barPad * 2f;
+            float br = bh * 0.5f;
+
+            pathBar.AddArc(bx, by, br * 2, br * 2, 180, 90);
+            pathBar.AddArc(bx + bw - br * 2, by, br * 2, br * 2, 270, 90);
+            pathBar.AddArc(bx + bw - br * 2, by + bh - br * 2, br * 2, br * 2, 0, 90);
+            pathBar.AddArc(bx, by + bh - br * 2, br * 2, br * 2, 90, 90);
+            pathBar.CloseFigure();
+
+            using var brushBar = new SolidBrush(Color.FromArgb(28, 255, 255, 255));
+            g.FillPath(brushBar, pathBar);
+            using var penBar = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penBar, pathBar);
+        }
+
+        // Active Tab Sliding Indicator Pill (Fluid Mercury Capsule with Velocity Stretch)
+        float stretch = (float)Math.Clamp(Math.Abs(tabIndicatorVel) * 1.5 * superScale, 0.0, 8.0 * superScale);
+        float activeX = tabStartX + (float)tabIndicatorPos * tabItemW - stretch * 0.5f;
+        using (var pathActive = new GraphicsPath())
+        {
+            float ax = activeX;
+            float ay = tabBarCy - tabHeight * 0.5f;
+            float aw = tabItemW + stretch;
+            float ah = tabHeight;
+            float ar = ah * 0.5f;
+
+            pathActive.AddArc(ax, ay, ar * 2, ar * 2, 180, 90);
+            pathActive.AddArc(ax + aw - ar * 2, ay, ar * 2, ar * 2, 270, 90);
+            pathActive.AddArc(ax + aw - ar * 2, ay + ah - ar * 2, ar * 2, ar * 2, 0, 90);
+            pathActive.AddArc(ax, ay + ah - ar * 2, ar * 2, ar * 2, 90, 90);
+            pathActive.CloseFigure();
+
+            int fillAlpha = (int)Math.Clamp(65 + Math.Abs(tabIndicatorVel) * 10.0, 65, 95);
+            using var brushActive = new SolidBrush(Color.FromArgb(fillAlpha, 255, 255, 255));
+            g.FillPath(brushActive, pathActive);
+
+            int borderAlpha = (int)Math.Clamp(160 + Math.Abs(tabIndicatorVel) * 15.0, 160, 215);
+            using var penActive = new Pen(Color.FromArgb(borderAlpha, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penActive, pathActive);
+        }
+
+        // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱) with Proximity Illuminance
+        string[] tabIcons = new[] { "⌂", "♫", "☀", "⏱" };
+        using var fontIconTab = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
+        for (int t = 0; t < 4; t++)
+        {
+            float tx = tabStartX + t * tabItemW;
+            var strSize = g.MeasureString(tabIcons[t], fontIconTab, PointF.Empty, StringFormat.GenericTypographic);
+            float labelX = tx + (tabItemW - strSize.Width) * 0.5f;
+            float labelY = tabBarCy - strSize.Height * 0.5f;
+
+            float dist = Math.Abs(t - (float)tabIndicatorPos);
+            float activeWeight = Math.Clamp(1.0f - dist, 0.0f, 1.0f);
+            int iconAlpha = (int)Math.Round(140f + 115f * activeWeight);
+
+            Color tabColor = Color.FromArgb(iconAlpha, 255, 255, 255);
+            using var brushTab = new SolidBrush(tabColor);
+            g.DrawString(tabIcons[t], fontIconTab, brushTab, labelX, labelY, StringFormat.GenericTypographic);
+        }
+
+        // Live Time Badge in Header (Top-Right)
+        string liveClockStr = DateTime.Now.ToString("h:mm tt");
+        var clockSize = g.MeasureString(liveClockStr, fontClockHeader, PointF.Empty, StringFormat.GenericDefault);
+        using (var brushHeaderClock = new SolidBrush(Color.FromArgb(205, 255, 255, 255)))
+        {
+            g.DrawString(liveClockStr, fontClockHeader, brushHeaderClock, (targetW - 16f) * superScale - clockSize.Width, tabBarCy - clockSize.Height * 0.5f, StringFormat.GenericDefault);
+        }
+    }
+
+    private static void RenderTabContentToBufferStatic(
+        int tabIndex,
+        uint[] destBuffer,
+        TrackInfo track,
+        Bitmap? coverBmp,
+        double progressSeconds,
+        bool isPlaying,
+        bool isShuffle,
+        double rotationAngle,
+        float[]? eqBarHeights,
+        int hoveredButton,
+        int clickedButton,
+        double clickAnimProgress)
+    {
+        const float superScale = 4.0f;
+        int targetW = 460;
+        int targetH = 150;
+        int superW = (int)(targetW * superScale);
+        int superH = (int)(targetH * superScale);
+
+        if (_reusableSuperBmp == null || _reusableSuperBmp.Width != superW || _reusableSuperBmp.Height != superH)
+        {
+            _reusableSuperBmp?.Dispose();
+            _reusableSuperBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+        }
+
+        using (var g = Graphics.FromImage(_reusableSuperBmp))
+        {
+            g.Clear(Color.Transparent);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+            DrawTopTabBar(g, superScale, targetW, tabIndex, 0.0);
+            DrawSingleTabContent(g, tabIndex, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
+        }
+
+        DownsampleToBuffer(_reusableSuperBmp, destBuffer, 0, targetH, targetW);
     }
 
     private static (uint[] colors, int width, int height) PrecomputeExpandedContent(
@@ -1906,204 +2352,70 @@ internal sealed class OverlayForm : Form
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
 
-        using var superBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
-        using (var g = Graphics.FromImage(superBmp))
+        if (_expandedBufferA == null || _expandedBufferB == null)
         {
-            g.Clear(Color.Transparent);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+            _expandedBufferA = new uint[targetW * targetH];
+            _expandedBufferB = new uint[targetW * targetH];
+        }
 
-            using var fontClockHeader = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+        uint[] targetBuffer = _expandedFlip ? _expandedBufferA : _expandedBufferB;
+        _expandedFlip = !_expandedFlip;
 
-            // ==========================================
-            // TOP SECTION: Compact Left-Aligned Icon Tabs & Right Live Clock
-            // 4 Tabs: Home (⌂), Music (♫), Weather (☀), Chrono (⏱)
-            // ==========================================
-            float tabStartX = 16f * superScale;
-            float tabBarCy = 14f * superScale;
-            float tabItemW = 22f * superScale;
-            float tabHeight = 20f * superScale;
-            float totalTabsW = tabItemW * 4f; // 88px at 1x
-
-            // Tab Bar Background Container Pill
-            float barPad = 2.0f * superScale;
-            using (var pathBar = new GraphicsPath())
+        if (transitionP >= 1.0 || prevTab == activeTab)
+        {
+            // Crisp 4x superScale static rendering when resting
+            if (_reusableSuperBmp == null || _reusableSuperBmp.Width != superW || _reusableSuperBmp.Height != superH)
             {
-                float bx = tabStartX - barPad;
-                float by = tabBarCy - tabHeight * 0.5f - barPad;
-                float bw = totalTabsW + barPad * 2f;
-                float bh = tabHeight + barPad * 2f;
-                float br = bh * 0.5f;
-
-                pathBar.AddArc(bx, by, br * 2, br * 2, 180, 90);
-                pathBar.AddArc(bx + bw - br * 2, by, br * 2, br * 2, 270, 90);
-                pathBar.AddArc(bx + bw - br * 2, by + bh - br * 2, br * 2, br * 2, 0, 90);
-                pathBar.AddArc(bx, by + bh - br * 2, br * 2, br * 2, 90, 90);
-                pathBar.CloseFigure();
-
-                using var brushBar = new SolidBrush(Color.FromArgb(28, 255, 255, 255));
-                g.FillPath(brushBar, pathBar);
-                using var penBar = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penBar, pathBar);
+                _reusableSuperBmp?.Dispose();
+                _reusableSuperBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
             }
 
-            // Active Tab Sliding Indicator Pill (Fluid Mercury Capsule with Velocity Stretch)
-            float stretch = (float)Math.Clamp(Math.Abs(tabIndicatorVel) * 1.5 * superScale, 0.0, 8.0 * superScale);
-            float activeX = tabStartX + (float)tabIndicatorPos * tabItemW - stretch * 0.5f;
-            using (var pathActive = new GraphicsPath())
+            using (var g = Graphics.FromImage(_reusableSuperBmp))
             {
-                float ax = activeX;
-                float ay = tabBarCy - tabHeight * 0.5f;
-                float aw = tabItemW + stretch;
-                float ah = tabHeight;
-                float ar = ah * 0.5f;
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-                pathActive.AddArc(ax, ay, ar * 2, ar * 2, 180, 90);
-                pathActive.AddArc(ax + aw - ar * 2, ay, ar * 2, ar * 2, 270, 90);
-                pathActive.AddArc(ax + aw - ar * 2, ay + ah - ar * 2, ar * 2, ar * 2, 0, 90);
-                pathActive.AddArc(ax, ay + ah - ar * 2, ar * 2, ar * 2, 90, 90);
-                pathActive.CloseFigure();
-
-                int fillAlpha = (int)Math.Clamp(65 + Math.Abs(tabIndicatorVel) * 10.0, 65, 95);
-                using var brushActive = new SolidBrush(Color.FromArgb(fillAlpha, 255, 255, 255));
-                g.FillPath(brushActive, pathActive);
-
-                int borderAlpha = (int)Math.Clamp(160 + Math.Abs(tabIndicatorVel) * 15.0, 160, 215);
-                using var penActive = new Pen(Color.FromArgb(borderAlpha, 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penActive, pathActive);
-            }
-
-            // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱) with Proximity Illuminance
-            string[] tabIcons = new[] { "⌂", "♫", "☀", "⏱" };
-            using var fontIconTab = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
-            for (int t = 0; t < 4; t++)
-            {
-                float tx = tabStartX + t * tabItemW;
-                var strSize = g.MeasureString(tabIcons[t], fontIconTab, PointF.Empty, StringFormat.GenericTypographic);
-                float labelX = tx + (tabItemW - strSize.Width) * 0.5f;
-                float labelY = tabBarCy - strSize.Height * 0.5f;
-
-                float dist = Math.Abs(t - (float)tabIndicatorPos);
-                float activeWeight = Math.Clamp(1.0f - dist, 0.0f, 1.0f);
-                int iconAlpha = (int)Math.Round(140f + 115f * activeWeight);
-
-                Color tabColor = Color.FromArgb(iconAlpha, 255, 255, 255);
-                using var brushTab = new SolidBrush(tabColor);
-                g.DrawString(tabIcons[t], fontIconTab, brushTab, labelX, labelY, StringFormat.GenericTypographic);
-            }
-
-            // Live Time Badge in Header (Top-Right)
-            string liveClockStr = DateTime.Now.ToString("h:mm tt");
-            var clockSize = g.MeasureString(liveClockStr, fontClockHeader, PointF.Empty, StringFormat.GenericDefault);
-            using (var brushHeaderClock = new SolidBrush(Color.FromArgb(205, 255, 255, 255)))
-            {
-                g.DrawString(liveClockStr, fontClockHeader, brushHeaderClock, (targetW - 16f) * superScale - clockSize.Width, tabBarCy - clockSize.Height * 0.5f, StringFormat.GenericDefault);
-            }
-
-            // ==========================================
-            // CONTENT AREA (Fluid Transition Engine)
-            // ==========================================
-            if (transitionP >= 1.0 || prevTab == activeTab)
-            {
+                DrawTopTabBar(g, superScale, targetW, tabIndicatorPos, tabIndicatorVel);
                 DrawSingleTabContent(g, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
             }
-            else
+
+            DownsampleToBuffer(_reusableSuperBmp, targetBuffer, 0, targetH, targetW);
+
+            // Update tab buffer cache for activeTab with the fresh crisp render
+            if (_tabBufferCache[activeTab] == null)
             {
-                if (_tabLayerPrev == null || _tabLayerPrev.Width != superW || _tabLayerPrev.Height != superH)
-                {
-                    _tabLayerPrev?.Dispose();
-                    _tabLayerCurr?.Dispose();
-                    _tabLayerPrev = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
-                    _tabLayerCurr = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
-                }
-
-                using (var gPrev = Graphics.FromImage(_tabLayerPrev!))
-                {
-                    gPrev.Clear(Color.Transparent);
-                    gPrev.SmoothingMode = SmoothingMode.AntiAlias;
-                    gPrev.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                    DrawSingleTabContent(gPrev, prevTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
-                }
-
-                using (var gCurr = Graphics.FromImage(_tabLayerCurr!))
-                {
-                    gCurr.Clear(Color.Transparent);
-                    gCurr.SmoothingMode = SmoothingMode.AntiAlias;
-                    gCurr.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                    DrawSingleTabContent(gCurr, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
-                }
-
-                double t = Math.Clamp(transitionP, 0.0, 1.0);
-                float ease = (float)(1.0 - Math.Pow(1.0 - t, 3.0));
-
-                float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
-                float maxSlide = 20.0f * superScale;
-
-                float prevOffset = -dir * ease * maxSlide;
-                float prevAlpha = Math.Clamp(1.0f - ease, 0.0f, 1.0f);
-
-                float currOffset = dir * (1.0f - ease) * maxSlide;
-                float currAlpha = Math.Clamp(ease, 0.0f, 1.0f);
-
-                var contentClip = new RectangleF(0, 26f * superScale, superW, superH - 26f * superScale);
-                g.SetClip(contentClip);
-
-                DrawBitmapWithAlpha(g, _tabLayerPrev!, prevOffset, 0, prevAlpha);
-                DrawBitmapWithAlpha(g, _tabLayerCurr!, currOffset, 0, currAlpha);
-
-                g.ResetClip();
+                _tabBufferCache[activeTab] = new uint[targetW * targetH];
             }
-        }
+            Array.Copy(targetBuffer, _tabBufferCache[activeTab]!, targetW * targetH);
 
-        uint[] colorBuffer = new uint[targetW * targetH];
-        var data = superBmp.LockBits(new Rectangle(0, 0, superW, superH), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-        unsafe
+            return (targetBuffer, targetW, targetH);
+        }
+        else
         {
-            byte* scan = (byte*)data.Scan0;
-            for (int y = 0; y < targetH; y++)
+            // HIGH-FPS FLUID MOTION BLUR TRANSITION (0.2ms/frame!)
+            if (_topBarBmp == null || _topBarBmp.Width != superW || _topBarBmp.Height != 104)
             {
-                for (int x = 0; x < targetW; x++)
-                {
-                    int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
-                    for (int dy = 0; dy < 4; dy++)
-                    {
-                        int sy = y * 4 + dy;
-                        int rowOffset = sy * superW * 4;
-                        for (int dx = 0; dx < 4; dx++)
-                        {
-                            int sx = x * 4 + dx;
-                            int pxOffset = rowOffset + sx * 4;
-                            byte b = scan[pxOffset + 0];
-                            byte gVal = scan[pxOffset + 1];
-                            byte r = scan[pxOffset + 2];
-                            byte a = scan[pxOffset + 3];
-
-                            int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
-
-                            sumB += (b * trueA) >> 8;
-                            sumG += (gVal * trueA) >> 8;
-                            sumR += (r * trueA) >> 8;
-                            sumA += trueA;
-                        }
-                    }
-
-                    int avgA = sumA >> 4;
-                    if (avgA == 0)
-                    {
-                        colorBuffer[y * targetW + x] = 0;
-                    }
-                    else
-                    {
-                        int avgR = Math.Min(255, sumR >> 4);
-                        int avgG = Math.Min(255, sumG >> 4);
-                        int avgB = Math.Min(255, sumB >> 4);
-                        colorBuffer[y * targetW + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
-                    }
-                }
+                _topBarBmp?.Dispose();
+                _topBarBmp = new Bitmap(superW, 104, PixelFormat.Format32bppArgb);
             }
+
+            using (var gTop = Graphics.FromImage(_topBarBmp))
+            {
+                gTop.Clear(Color.Transparent);
+                gTop.SmoothingMode = SmoothingMode.AntiAlias;
+                gTop.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                DrawTopTabBar(gTop, superScale, targetW, tabIndicatorPos, tabIndicatorVel);
+            }
+
+            // Downsample top bar rows (0..25) directly into targetBuffer
+            DownsampleTopBarToBuffer(_topBarBmp, targetBuffer, targetW, 26);
+
+            // Multi-tap directional horizontal motion blur for tab content rows (26..149)
+            CompositeMotionBlurTransition(_prevContentSnapshot, _currContentSnapshot, targetBuffer, activeTab, prevTab, transitionP, targetW, targetH, 26);
+
+            return (targetBuffer, targetW, targetH);
         }
-        superBmp.UnlockBits(data);
-        return (colorBuffer, targetW, targetH);
     }
 
     private static void DrawSingleTabContent(
@@ -3038,6 +3350,34 @@ internal sealed class OverlayForm : Form
                 ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
                 SaveDesktopScreenshotWithPill("screenshot_expanded.png");
                 File.Delete(expTriggerPath);
+            }
+
+            string transTriggerPath = Path.Combine(rootDir, "take_transition.trigger");
+            if (File.Exists(transTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                string txt = File.ReadAllText(transTriggerPath).Trim();
+                string[] parts = txt.Split(',');
+                int fromTab = int.TryParse(parts[0], out int f) ? f : 0;
+                int toTab = (parts.Length > 1 && int.TryParse(parts[1], out int t2)) ? t2 : 1;
+                double simP = (parts.Length > 2 && double.TryParse(parts[2], out double p)) ? p : 0.25;
+
+                SwitchTab(fromTab, immediate: true);
+                UpdateExpandedMask();
+
+                // Now transition towards toTab
+                SwitchTab(toTab, immediate: false);
+                _tabTransitionP = simP;
+                _tabIndicatorPos = fromTab + (toTab - fromTab) * (1.0 - Math.Pow(1.0 - simP, 3.0));
+                _tabIndicatorVel = (toTab - fromTab) * 3.0 * Math.Pow(1.0 - simP, 2.0) * 12.0;
+
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_transition.png");
+                File.Delete(transTriggerPath);
             }
         }
         catch { }
@@ -4209,10 +4549,10 @@ internal sealed class OverlayForm : Form
 
             lock (_expandedRenderLock)
             {
-                _tabLayerPrev?.Dispose();
-                _tabLayerPrev = null;
-                _tabLayerCurr?.Dispose();
-                _tabLayerCurr = null;
+                _reusableSuperBmp?.Dispose();
+                _reusableSuperBmp = null;
+                _topBarBmp?.Dispose();
+                _topBarBmp = null;
             }
 
             _audioMeter.Dispose();
