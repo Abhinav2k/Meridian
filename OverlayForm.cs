@@ -740,6 +740,7 @@ internal sealed class OverlayForm : Form
     private static double _homeSleepExpandP = 0.0;
     private static int _hoveredHomeSleepBtn = HomeSleepBtnNone;
     private static int _lastHoverCountdownSec = -1;
+    private static bool _hoveredHomeWeather = false;
 
     // Chrono Tab Timer State & Physics
     private const int ChronoBtnNone = 0;
@@ -776,6 +777,10 @@ internal sealed class OverlayForm : Form
         _homeSleepExpandP = 0.0;
         _tabBufferCache[TabHome] = null;
         _tabBufferCache[TabChrono] = null;
+        if (newTab != TabHome)
+        {
+            _hoveredHomeWeather = false;
+        }
         if (newTab != TabChrono)
         {
             _chronoTimerHovered = false;
@@ -3100,49 +3105,166 @@ internal sealed class OverlayForm : Form
         }
 
         // ----------------------------------------------------
-        // Card 2: Weather & Environment Glance (Bottom-Right)
+        // Card 2: Elegant Geometric Weather Card (Bottom-Right)
         // ----------------------------------------------------
         float c2Y = 87f * superScale;
         float c2H = 43f * superScale;
-        using (var pathC2 = new GraphicsPath())
-        {
-            pathC2.AddArc(cardX, c2Y, cardR * 2, cardR * 2, 180, 90);
-            pathC2.AddArc(cardX + cardW - cardR * 2, c2Y, cardR * 2, cardR * 2, 270, 90);
-            pathC2.AddArc(cardX + cardW - cardR * 2, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 0, 90);
-            pathC2.AddArc(cardX, c2Y + c2H - cardR * 2, cardR * 2, cardR * 2, 90, 90);
-            pathC2.CloseFigure();
 
-            using var brushC2 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+        using (var pathC2 = CreateRoundedRectPath(cardX, c2Y, cardW, c2H, cardR, cardR, cardR, cardR))
+        {
+            // Base Liquid Glass Fill
+            int cardFillA = _hoveredHomeWeather ? 50 : 34;
+            using var brushC2 = new SolidBrush(Color.FromArgb(cardFillA, 255, 255, 255));
             g.FillPath(brushC2, pathC2);
-            using var penC2 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+
+            // Fine Liquid Glass Border
+            int cardBorderA = _hoveredHomeWeather ? 115 : 72;
+            using var penC2 = new Pen(Color.FromArgb(cardBorderA, 255, 255, 255), 1.0f * superScale);
             g.DrawPath(penC2, pathC2);
-        }
 
-        // Card 2 Icon: Sun + cloud
-        float iconX = cardX + 10f * superScale;
-        float iconY = c2Y + 11f * superScale;
-        using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
-        {
-            g.FillEllipse(brushSun, iconX + 4f * superScale, iconY, 14f * superScale, 14f * superScale);
-        }
-        using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
-        {
-            g.FillEllipse(brushCloud, iconX, iconY + 5f * superScale, 14f * superScale, 11f * superScale);
-            g.FillEllipse(brushCloud, iconX + 8f * superScale, iconY + 5f * superScale, 12f * superScale, 9f * superScale);
-        }
+            var stateC2 = g.Save();
+            g.SetClip(pathC2);
 
-        float text2X = cardX + 38f * superScale;
-        using (var brushWTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-        {
-            g.DrawString("24°C  •  Partly Cloudy", fontCardTitle, brushWTitle, text2X, c2Y + 7f * superScale, StringFormat.GenericDefault);
-        }
-        using (var brushWSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
-        {
-            g.DrawString("High 28°  Low 19°  •  San Francisco", fontCardSub, brushWSub, text2X, c2Y + 23f * superScale, StringFormat.GenericDefault);
-        }
-        using (var brushArrow2 = new SolidBrush(Color.FromArgb(120, 255, 255, 255)))
-        {
-            g.DrawString("›", fontCardTitle, brushArrow2, cardX + cardW - 16f * superScale, c2Y + c2H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
+            // ====================================================
+            // 1. WHOLE-CARD GEOMETRIC WEATHER SHAPES COMPOSITION
+            // ====================================================
+            // A. Atmospheric Daylight / Solar Gradient across the whole card
+            using (var brushAtmosphere = new LinearGradientBrush(
+                new PointF(cardX, c2Y),
+                new PointF(cardX + cardW, c2Y + c2H),
+                Color.FromArgb(16, 120, 200, 255),
+                Color.FromArgb(_hoveredHomeWeather ? 55 : 36, 255, 195, 45)))
+            {
+                g.FillPath(brushAtmosphere, pathC2);
+            }
+
+            // Geometric Sun Center & Dimensions
+            float sunCx = cardX + cardW - 28f * superScale;
+            float sunCy = c2Y + 17f * superScale;
+            float sunR = 13.5f * superScale;
+
+            // B. Architectural Geometric Sun Rays radiating across card
+            int rayAlpha = _hoveredHomeWeather ? 45 : 28;
+            using (var penRay = new Pen(Color.FromArgb(rayAlpha, 255, 225, 95), 1.1f * superScale))
+            {
+                // Draw 5 precision angled geometric rays into the card background
+                float[] rayAngles = { 135f, 155f, 175f, 195f, 215f };
+                float rayInner = sunR * 1.35f;
+                float rayOuter = 52f * superScale;
+                foreach (float angleDeg in rayAngles)
+                {
+                    double rad = angleDeg * Math.PI / 180.0;
+                    float rx1 = sunCx + (float)(Math.Cos(rad) * rayInner);
+                    float ry1 = sunCy + (float)(Math.Sin(rad) * rayInner);
+                    float rx2 = sunCx + (float)(Math.Cos(rad) * rayOuter);
+                    float ry2 = sunCy + (float)(Math.Sin(rad) * rayOuter);
+                    g.DrawLine(penRay, rx1, ry1, rx2, ry2);
+                }
+            }
+
+            // C. Luminous Outer Solar Halo
+            int haloAlpha = _hoveredHomeWeather ? 48 : 32;
+            using (var brushHalo = new SolidBrush(Color.FromArgb(haloAlpha, 255, 205, 55)))
+            {
+                g.FillEllipse(brushHalo, sunCx - sunR * 1.7f, sunCy - sunR * 1.7f, sunR * 3.4f, sunR * 3.4f);
+            }
+
+            // D. Concentric Geometric Sun Orbit Ring
+            using (var penSunRing = new Pen(Color.FromArgb(85, 255, 225, 100), 1.0f * superScale))
+            {
+                g.DrawEllipse(penSunRing, sunCx - sunR * 1.32f, sunCy - sunR * 1.32f, sunR * 2.64f, sunR * 2.64f);
+            }
+
+            // E. Stylized Geometric Sun Disc (Warm Amber-Gold)
+            using (var brushSunDisc = new SolidBrush(Color.FromArgb(230, 255, 214, 65)))
+            {
+                g.FillEllipse(brushSunDisc, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
+            }
+
+            // F. Sun Top Specular Rim Arc
+            using (var penSunRim = new Pen(Color.FromArgb(130, 255, 255, 210), 1.0f * superScale))
+            {
+                g.DrawArc(penSunRim, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f, 200, 140);
+            }
+
+            // G. Frosted Geometric Glass Cloud Architecture (Lower-right strata)
+            float cloudBaseY = c2Y + c2H - 12f * superScale;
+            float cloudBaseX = sunCx - 12f * superScale;
+
+            using (var brushCloudBase = new SolidBrush(Color.FromArgb(125, 255, 255, 255)))
+            {
+                // Cloud sphere 1 (left)
+                g.FillEllipse(brushCloudBase, cloudBaseX - 10f * superScale, cloudBaseY - 8f * superScale, 17f * superScale, 17f * superScale);
+                // Cloud sphere 2 (center main)
+                g.FillEllipse(brushCloudBase, cloudBaseX, cloudBaseY - 13f * superScale, 22f * superScale, 22f * superScale);
+                // Cloud sphere 3 (right)
+                g.FillEllipse(brushCloudBase, cloudBaseX + 13f * superScale, cloudBaseY - 8f * superScale, 18f * superScale, 18f * superScale);
+                // Cloud sphere 4 (far right)
+                g.FillEllipse(brushCloudBase, cloudBaseX + 24f * superScale, cloudBaseY - 5f * superScale, 14f * superScale, 14f * superScale);
+                // Base pill shape anchoring the cloud strata across to the right border
+                float pillW = (cardX + cardW) - (cloudBaseX - 10f * superScale) + 8f * superScale;
+                using var pathCloudBase = CreateRoundedRectPath(cloudBaseX - 10f * superScale, cloudBaseY - 2f * superScale, pillW, 16f * superScale, 5f * superScale, 5f * superScale, 5f * superScale, 5f * superScale);
+                g.FillPath(brushCloudBase, pathCloudBase);
+            }
+
+            // Cloud specular top edge highlight
+            using (var penCloudRim = new Pen(Color.FromArgb(160, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawArc(penCloudRim, cloudBaseX - 10f * superScale, cloudBaseY - 8f * superScale, 17f * superScale, 17f * superScale, 180, 160);
+                g.DrawArc(penCloudRim, cloudBaseX, cloudBaseY - 13f * superScale, 22f * superScale, 22f * superScale, 190, 145);
+                g.DrawArc(penCloudRim, cloudBaseX + 13f * superScale, cloudBaseY - 8f * superScale, 18f * superScale, 18f * superScale, 260, 100);
+            }
+
+            // ====================================================
+            // 2. GEOMETRIC INFORMATION TYPOGRAPHY
+            // ====================================================
+            // A. Bold Geometric Temperature Display (Left)
+            float tempX = cardX + 14f * superScale;
+            float textStartX = tempX;
+            using (var fontHugeTemp = GetPremiumFont(20.0f * superScale, FontStyle.Bold))
+            {
+                var tSize = g.MeasureString("24°", fontHugeTemp, PointF.Empty, StringFormat.GenericTypographic);
+                float tempY = c2Y + (c2H - tSize.Height) * 0.5f;
+
+                // Subtle ambient solar glow behind temp
+                using (var brushTempGlow = new SolidBrush(Color.FromArgb(24, 255, 220, 100)))
+                {
+                    g.FillEllipse(brushTempGlow, tempX - 4f * superScale, tempY - 2f * superScale, tSize.Width + 8f * superScale, tSize.Height + 4f * superScale);
+                }
+
+                using var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+                g.DrawString("24°", fontHugeTemp, brushTemp, tempX, tempY, StringFormat.GenericTypographic);
+                textStartX = tempX + tSize.Width + 12f * superScale;
+            }
+
+            // B. Condition & Location Geometry (Middle Stack)
+            using (var fontCond = GetPremiumFont(9.0f * superScale, FontStyle.Bold))
+            using (var fontSub = GetPremiumFont(7.5f * superScale, FontStyle.Regular))
+            {
+                float condY = c2Y + 9.5f * superScale;
+                using var brushCond = new SolidBrush(Color.FromArgb(245, 255, 255, 255));
+                g.DrawString("Partly Cloudy", fontCond, brushCond, textStartX, condY, StringFormat.GenericTypographic);
+
+                float subY = c2Y + 23.5f * superScale;
+                using var brushSub = new SolidBrush(Color.FromArgb(170, 255, 255, 255));
+                string subText = "H: 28°  L: 19°  ·  San Francisco";
+                var subSize = g.MeasureString(subText, fontSub, PointF.Empty, StringFormat.GenericTypographic);
+                if (textStartX + subSize.Width > cardX + cardW - 74f * superScale)
+                {
+                    subText = "H: 28°  L: 19°  ·  SF";
+                }
+                g.DrawString(subText, fontSub, brushSub, textStartX, subY, StringFormat.GenericTypographic);
+            }
+
+            // C. Subtle interactive affordance indicator on hover
+            if (_hoveredHomeWeather)
+            {
+                using var brushArrow = new SolidBrush(Color.FromArgb(140, 255, 255, 255));
+                using var fontArrow = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
+                g.DrawString("›", fontArrow, brushArrow, cardX + cardW - 13f * superScale, c2Y + c2H * 0.5f - 7f * superScale, StringFormat.GenericDefault);
+            }
+
+            g.Restore(stateC2);
         }
     }
 
@@ -4374,6 +4496,29 @@ internal sealed class OverlayForm : Form
                 File.Delete(hoverTimerTriggerPath);
             }
 
+            string hoverWeatherTriggerPath = Path.Combine(rootDir, "take_home_hover_weather.trigger");
+            if (File.Exists(hoverWeatherTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _hoveredHomeWeather = true;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_home_hover_weather.png");
+                File.Delete(hoverWeatherTriggerPath);
+            }
+
             string expandAnimTriggerPath = Path.Combine(rootDir, "take_home_expand_anim.trigger");
             if (File.Exists(expandAnimTriggerPath))
             {
@@ -4758,7 +4903,7 @@ internal sealed class OverlayForm : Form
                         UpdateExpandedMask();
                     }
 
-                    // Home Tab Sleep Timer Buttons Hover Interaction
+                    // Home Tab Sleep Timer & Weather Buttons Hover Interaction
                     if (_activeTab == TabHome)
                     {
                         float mx = mouseSurfaceX - 70f;
@@ -4787,12 +4932,29 @@ internal sealed class OverlayForm : Form
                             _tabBufferCache[TabHome] = null;
                             _needExpandedUpdate = true;
                         }
+
+                        bool newHoveredWeather = (my >= 87 && my <= 130 && mx >= 216 && mx <= 444);
+                        if (newHoveredWeather != _hoveredHomeWeather)
+                        {
+                            _hoveredHomeWeather = newHoveredWeather;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
                     }
-                    else if (_hoveredHomeSleepBtn != HomeSleepBtnNone)
+                    else
                     {
-                        _hoveredHomeSleepBtn = HomeSleepBtnNone;
-                        _tabBufferCache[TabHome] = null;
-                        _needExpandedUpdate = true;
+                        if (_hoveredHomeSleepBtn != HomeSleepBtnNone)
+                        {
+                            _hoveredHomeSleepBtn = HomeSleepBtnNone;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
+                        if (_hoveredHomeWeather)
+                        {
+                            _hoveredHomeWeather = false;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
                     }
 
                     // Chrono Tab Timer Hover Interaction
@@ -4853,10 +5015,11 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone))
+            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _hoveredHomeWeather || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone))
             {
                 _hoveredButton = BtnNone;
                 _hoveredHomeSleepBtn = HomeSleepBtnNone;
+                _hoveredHomeWeather = false;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = false;
                 _hoveredChronoBtn = ChronoBtnNone;
