@@ -740,6 +740,29 @@ internal sealed class OverlayForm : Form
     private static int _hoveredHomeSleepBtn = HomeSleepBtnNone;
     private static int _lastHoverCountdownSec = -1;
 
+    // Chrono Tab Timer State & Physics
+    private const int ChronoBtnNone = 0;
+    private const int ChronoBtnIcon = 1;
+    private const int ChronoBtn5m = 2;
+    private const int ChronoBtn10m = 3;
+    private const int ChronoBtn15m = 4;
+    private const int ChronoBtnPlus = 5;
+    private const int ChronoBtnCancel = 6;
+    private const int ChronoBtnRunning = 7;
+
+    private static bool _chronoTimerRunning = false;
+    private static DateTime _chronoTimerTargetUtc = DateTime.MinValue;
+    private static int _chronoTimerDurationMinutes = 0;
+    private static int _chronoTimerTotalSeconds = 0;
+    private static double _chronoTimerAnimWidth = 44.0;
+    private static bool _chronoTimerHovered = false;
+    private static bool _chronoRunningHovered = false;
+    private static double _chronoRunningHoverP = 0.0;
+    private static double _chronoMorphTimer = 0.0;
+    private static float _chronoMorphFromW = 44.0f;
+    private static int _hoveredChronoBtn = ChronoBtnNone;
+    private static int _lastChronoRemainingSec = -1;
+
     private void SwitchTab(int newTab, bool immediate = false)
     {
         if (newTab < TabHome || newTab > TabChrono) return;
@@ -748,6 +771,13 @@ internal sealed class OverlayForm : Form
         _homeSleepPickerOpen = false;
         _homeSleepExpandP = 0.0;
         _tabBufferCache[TabHome] = null;
+        _tabBufferCache[TabChrono] = null;
+        if (newTab != TabChrono)
+        {
+            _chronoTimerHovered = false;
+            _chronoRunningHovered = false;
+            _hoveredChronoBtn = ChronoBtnNone;
+        }
 
         if (immediate)
         {
@@ -899,6 +929,133 @@ internal sealed class OverlayForm : Form
                 float decaySpeed = 7.5f + i * 1.6f;
                 _eqBarHeights[i] += (target - _eqBarHeights[i]) * Math.Min(1.0f, decaySpeed * (float)dt);
             }
+        }
+    }
+
+    private void UpdateChronoPhysics(double dt, DateTime utcNow)
+    {
+        bool chronoChanged = false;
+
+        // 1. Morph animation (physical collapse and re-expansion on start or cancel)
+        if (_chronoMorphTimer > 0.0)
+        {
+            _chronoMorphTimer -= dt;
+            if (_chronoMorphTimer <= 0.0)
+            {
+                _chronoMorphTimer = 0.0;
+                _chronoTimerAnimWidth = _chronoTimerRunning ? 106.0 : 44.0;
+            }
+            else
+            {
+                if (_chronoTimerRunning)
+                {
+                    // Starts timer: total morph time 0.36s
+                    double p = 1.0 - (_chronoMorphTimer / 0.36);
+                    if (p < 0.40)
+                    {
+                        // Phase 1: quadratic collapse down to 44px
+                        double t1 = p / 0.40;
+                        _chronoTimerAnimWidth = _chronoMorphFromW + (44.0 - _chronoMorphFromW) * (t1 * t1);
+                    }
+                    else
+                    {
+                        // Phase 2: cubic ease-out expand up to 106px
+                        double t2 = (p - 0.40) / 0.60;
+                        double easeOut = 1.0 - Math.Pow(1.0 - t2, 3.0);
+                        _chronoTimerAnimWidth = 44.0 + (106.0 - 44.0) * easeOut;
+                    }
+                }
+                else
+                {
+                    // Cancels timer: collapse down to 44px (0.25s)
+                    double p = 1.0 - (_chronoMorphTimer / 0.25);
+                    double easeOut = 1.0 - Math.Pow(1.0 - p, 3.0);
+                    _chronoTimerAnimWidth = _chronoMorphFromW + (44.0 - _chronoMorphFromW) * easeOut;
+                }
+            }
+            chronoChanged = true;
+        }
+        else
+        {
+            // 2. Idle hover expansion / collapse spring
+            if (!_chronoTimerRunning)
+            {
+                double targetW = _chronoTimerHovered ? 200.0 : 44.0;
+                double diff = targetW - _chronoTimerAnimWidth;
+                if (Math.Abs(diff) > 0.1)
+                {
+                    _chronoTimerAnimWidth += diff * Math.Min(1.0, 18.0 * dt);
+                    if (Math.Abs(targetW - _chronoTimerAnimWidth) < 0.1)
+                    {
+                        _chronoTimerAnimWidth = targetW;
+                    }
+                    chronoChanged = true;
+                }
+            }
+            else
+            {
+                if (Math.Abs(_chronoTimerAnimWidth - 106.0) > 0.1)
+                {
+                    _chronoTimerAnimWidth = 106.0;
+                    chronoChanged = true;
+                }
+            }
+        }
+
+        // 3. Running hover cross-fade to reveal "✕ Cancel"
+        if (_chronoTimerRunning)
+        {
+            double targetHover = _chronoRunningHovered ? 1.0 : 0.0;
+            double hDiff = targetHover - _chronoRunningHoverP;
+            if (Math.Abs(hDiff) > 0.005)
+            {
+                _chronoRunningHoverP += hDiff * Math.Min(1.0, 18.0 * dt);
+                if (Math.Abs(targetHover - _chronoRunningHoverP) < 0.005)
+                {
+                    _chronoRunningHoverP = targetHover;
+                }
+                chronoChanged = true;
+            }
+        }
+        else if (_chronoRunningHoverP > 0.0)
+        {
+            _chronoRunningHoverP = 0.0;
+            chronoChanged = true;
+        }
+
+        // 4. Live countdown ticker & expiration check
+        if (_chronoTimerRunning && _chronoTimerTargetUtc != DateTime.MinValue)
+        {
+            if (utcNow >= _chronoTimerTargetUtc)
+            {
+                // Timer reached 00:00
+                _chronoTimerRunning = false;
+                _chronoTimerTargetUtc = DateTime.MinValue;
+                _chronoTimerDurationMinutes = 0;
+                _chronoMorphTimer = 0.25;
+                _chronoMorphFromW = (float)_chronoTimerAnimWidth;
+                _lastChronoRemainingSec = -1;
+                chronoChanged = true;
+            }
+            else
+            {
+                int remainingSec = (int)Math.Ceiling((_chronoTimerTargetUtc - utcNow).TotalSeconds);
+                if (remainingSec != _lastChronoRemainingSec)
+                {
+                    _lastChronoRemainingSec = remainingSec;
+                    chronoChanged = true;
+                }
+            }
+        }
+        else if (_lastChronoRemainingSec != -1)
+        {
+            _lastChronoRemainingSec = -1;
+        }
+
+        if (chronoChanged)
+        {
+            _tabBufferCache[TabChrono] = null;
+            _needExpandedUpdate = true;
         }
     }
 
@@ -1375,15 +1532,89 @@ internal sealed class OverlayForm : Form
         {
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
-            if (my >= 90 && my <= 126 && mx >= 140 && mx <= 320)
+
+            float slot1X = 24f;
+            float slot1Y = 44f;
+            float slot1H = 44f;
+            float curW = (float)_chronoTimerAnimWidth;
+
+            if (_chronoTimerRunning)
             {
-                _isPlaying = !_isPlaying;
-                UpdateExpandedMask();
-                return true;
+                // Clicking the running timer / cancel button cancels the timer
+                if (my >= slot1Y && my <= slot1Y + slot1H && mx >= slot1X && mx <= slot1X + curW)
+                {
+                    CancelChronoTimer();
+                    return true;
+                }
+            }
+            else
+            {
+                // While expanded, clicking any duration option starts the timer
+                if (my >= slot1Y && my <= slot1Y + slot1H && curW > 120f)
+                {
+                    if (mx >= 24 && mx < 78.5f)
+                    {
+                        StartChronoTimer(5);
+                        return true;
+                    }
+                    else if (mx >= 78.5f && mx < 125.5f)
+                    {
+                        StartChronoTimer(10);
+                        return true;
+                    }
+                    else if (mx >= 125.5f && mx < 172.5f)
+                    {
+                        StartChronoTimer(15);
+                        return true;
+                    }
+                    else if (mx >= 172.5f && mx <= 224f)
+                    {
+                        // Plus icon clicked (reserved for custom timer creation)
+                        return true;
+                    }
+                }
             }
         }
 
         return false;
+    }
+
+    private void StartChronoTimer(int minutes)
+    {
+        _chronoTimerDurationMinutes = minutes;
+        _chronoTimerTargetUtc = DateTime.UtcNow.AddMinutes(minutes);
+        _chronoTimerTotalSeconds = minutes * 60;
+        _chronoTimerRunning = true;
+        _chronoTimerHovered = false;
+        _chronoRunningHovered = false;
+        _chronoRunningHoverP = 0.0;
+        _hoveredChronoBtn = ChronoBtnNone;
+
+        // Trigger physical collapse and re-expand animation
+        _chronoMorphTimer = 0.36; // 360ms fluid spring morph
+        _chronoMorphFromW = (float)_chronoTimerAnimWidth;
+
+        _tabBufferCache[TabChrono] = null;
+        _needExpandedUpdate = true;
+    }
+
+    private void CancelChronoTimer()
+    {
+        _chronoTimerRunning = false;
+        _chronoTimerTargetUtc = DateTime.MinValue;
+        _chronoTimerDurationMinutes = 0;
+        _chronoTimerHovered = false;
+        _chronoRunningHovered = false;
+        _chronoRunningHoverP = 0.0;
+        _hoveredChronoBtn = ChronoBtnNone;
+        _lastChronoRemainingSec = -1;
+
+        // Smoothly collapse back to 44px idle icon
+        _chronoMorphTimer = 0.25;
+        _chronoMorphFromW = (float)_chronoTimerAnimWidth;
+
+        _tabBufferCache[TabChrono] = null;
+        _needExpandedUpdate = true;
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -2489,7 +2720,7 @@ internal sealed class OverlayForm : Form
                 break;
             case TabChrono:
             default:
-                DrawTabChronoContent(g, superScale, targetW, isPlaying);
+                DrawTabChronoContent(g, superScale, targetW);
                 break;
         }
     }
@@ -3228,53 +3459,234 @@ internal sealed class OverlayForm : Form
     private static void DrawTabChronoContent(
         Graphics g,
         float superScale,
-        int targetW,
-        bool isPlaying)
+        int targetW)
     {
-        using var fontLarge = GetPremiumFont(22.0f * superScale, FontStyle.Bold);
-        using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
-        using var fontTab = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+        // ----------------------------------------------------
+        // CHRONO TAB: MODULAR FLUID TIMERS
+        // Modular layout reserving space for additional timers
+        // ----------------------------------------------------
+        float slot1X = 24f * superScale;
+        float slot1Y = 44f * superScale;
+        float slot1H = 44f * superScale;
+        float slot1R = 12f * superScale;
 
-        var now = DateTime.Now;
-        string grandTime = now.ToString("hh:mm:ss tt");
-        string grandDate = now.ToString("dddd, MMMM dd, yyyy");
+        float curW = (float)_chronoTimerAnimWidth * superScale;
+        float wP = (float)Math.Clamp((_chronoTimerAnimWidth - 44.0) / (200.0 - 44.0), 0.0, 1.0);
 
-        float cX = (targetW * 0.5f) * superScale;
-        float cY = 46f * superScale;
+        // Container capsule path
+        using var pathContainer = CreateRoundedRectPath(slot1X, slot1Y, curW, slot1H, slot1R, slot1R, slot1R, slot1R);
 
-        var timeSize = g.MeasureString(grandTime, fontLarge, PointF.Empty, StringFormat.GenericDefault);
-        using (var brushGrand = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        // Liquid glass capsule background
+        if (_chronoTimerRunning)
         {
-            g.DrawString(grandTime, fontLarge, brushGrand, cX - timeSize.Width * 0.5f, cY, StringFormat.GenericDefault);
+            // Active timer running state: subtle warm active glow / tint
+            using var brushRunning = new SolidBrush(Color.FromArgb(36, 255, 255, 255));
+            g.FillPath(brushRunning, pathContainer);
+
+            // Active border
+            using var penRunning = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penRunning, pathContainer);
+        }
+        else
+        {
+            // Idle or picker state
+            int fillA = (_chronoTimerHovered && curW < 50f * superScale) ? 50 : 34;
+            using var brushIdle = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
+            g.FillPath(brushIdle, pathContainer);
+
+            int borderA = (_chronoTimerHovered && curW < 50f * superScale) ? 110 : 75;
+            using var penIdle = new Pen(Color.FromArgb(borderA, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penIdle, pathContainer);
         }
 
-        var dateSize = g.MeasureString(grandDate, fontArtist, PointF.Empty, StringFormat.GenericDefault);
-        using (var brushDate = new SolidBrush(Color.FromArgb(185, 255, 255, 255)))
+        // Render contents based on state
+        if (_chronoTimerRunning && _chronoMorphTimer <= 0.20)
         {
-            g.DrawString(grandDate, fontArtist, brushDate, cX - dateSize.Width * 0.5f, cY + 34f * superScale, StringFormat.GenericDefault);
+            // ================================================
+            // STATE 3: RUNNING TIMER (MINUTES & SECONDS) OR CANCEL BUTTON ON HOVER
+            // ================================================
+            var stateRunning = g.Save();
+            g.SetClip(pathContainer);
+
+            float cancelAlpha = (float)Math.Clamp(_chronoRunningHoverP, 0.0, 1.0);
+            float timeAlpha = 1.0f - cancelAlpha;
+
+            // Compute remaining time
+            int remainingSec = Math.Max(0, (int)Math.Ceiling((_chronoTimerTargetUtc - DateTime.UtcNow).TotalSeconds));
+            string timeStr = $"{remainingSec / 60:D2}:{remainingSec % 60:D2}";
+
+            // 1. Time display (fades out as Cancel is hovered)
+            if (timeAlpha > 0.01f)
+            {
+                using var fontTime = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
+                var strSize = g.MeasureString(timeStr, fontTime, PointF.Empty, StringFormat.GenericTypographic);
+                float dotSize = 7f * superScale;
+                float dotGap = 6f * superScale;
+                float totalContentW = dotSize + dotGap + strSize.Width;
+                float startX = slot1X + (curW - totalContentW) * 0.5f;
+                float iconCy = slot1Y + slot1H * 0.5f;
+
+                // Pulsing amber active dot
+                using (var brushDot = new SolidBrush(Color.FromArgb((int)(220 * timeAlpha), 255, 175, 60)))
+                {
+                    g.FillEllipse(brushDot, startX, iconCy - dotSize * 0.5f, dotSize, dotSize);
+                }
+
+                float textX = startX + dotSize + dotGap;
+                float textY = slot1Y + (slot1H - strSize.Height) * 0.5f;
+
+                using var brushTime = new SolidBrush(Color.FromArgb((int)(250 * timeAlpha), 255, 255, 255));
+                g.DrawString(timeStr, fontTime, brushTime, textX, textY, StringFormat.GenericTypographic);
+            }
+
+            // 2. Cancel button on hover (reveals as hovered)
+            if (cancelAlpha > 0.01f)
+            {
+                float btnPad = 5f * superScale;
+                float cancelX = slot1X + btnPad;
+                float cancelY = slot1Y + btnPad;
+                float cancelW = curW - btnPad * 2f;
+                float cancelH = slot1H - btnPad * 2f;
+                float cancelR = 8f * superScale;
+
+                using var pathCancel = CreateRoundedRectPath(cancelX, cancelY, cancelW, cancelH, cancelR, cancelR, cancelR, cancelR);
+
+                int fillA = (int)(55 * cancelAlpha);
+                using var brushCancel = new SolidBrush(Color.FromArgb(fillA, 255, 80, 80));
+                g.FillPath(brushCancel, pathCancel);
+
+                int borderA = (int)(130 * cancelAlpha);
+                using var penCancel = new Pen(Color.FromArgb(borderA, 255, 110, 110), 1.0f * superScale);
+                g.DrawPath(penCancel, pathCancel);
+
+                using var fontCancel = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+                string cancelText = "✕ Cancel";
+                var cSize = g.MeasureString(cancelText, fontCancel, PointF.Empty, StringFormat.GenericTypographic);
+                float cx = cancelX + (cancelW - cSize.Width) * 0.5f;
+                float cy = cancelY + (cancelH - cSize.Height) * 0.5f;
+
+                using var brushCText = new SolidBrush(Color.FromArgb((int)(245 * cancelAlpha), 255, 215, 215));
+                g.DrawString(cancelText, fontCancel, brushCText, cx, cy, StringFormat.GenericTypographic);
+            }
+
+            g.Restore(stateRunning);
         }
+        else
+        {
+            // ================================================
+            // STATE 1 & 2: IDLE ICON OR HOVER EXPANDED PICKER
+            // ================================================
+            // Icon alpha fades off as capsule expands
+            float iconAlpha = Math.Clamp(1.0f - wP * 2.5f, 0.0f, 1.0f);
+            if (iconAlpha > 0.01f)
+            {
+                var stateIcon = g.Save();
+                g.SetClip(pathContainer);
 
-        float timerW = 180f * superScale;
-        float timerH = 24f * superScale;
-        float timerX = cX - timerW * 0.5f;
-        float timerY = cY + 54f * superScale;
-        using var pathTimer = new GraphicsPath();
-        float tr = timerH * 0.5f;
-        pathTimer.AddArc(timerX, timerY, tr * 2, tr * 2, 180, 90);
-        pathTimer.AddArc(timerX + timerW - tr * 2, timerY, tr * 2, tr * 2, 270, 90);
-        pathTimer.AddArc(timerX + timerW - tr * 2, timerY + timerH - tr * 2, tr * 2, tr * 2, 0, 90);
-        pathTimer.AddArc(timerX, timerY + timerH - tr * 2, tr * 2, tr * 2, 90, 90);
-        pathTimer.CloseFigure();
+                float iconCx = slot1X + 22f * superScale;
+                float iconCy = slot1Y + slot1H * 0.5f;
+                float iconR = 8.5f * superScale;
 
-        using var brushTimerBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
-        g.FillPath(brushTimerBg, pathTimer);
-        using var penTimer = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale);
-        g.DrawPath(penTimer, pathTimer);
+                using var brushIcon = new SolidBrush(Color.FromArgb((int)(230 * iconAlpha), 255, 255, 255));
+                DrawStopwatchVector(g, brushIcon, iconCx, iconCy, iconR, superScale);
 
-        string timerStr = isPlaying ? "⏱ CHRONO: RUNNING (01:28.45)" : "⏱ CHRONO: PAUSED";
-        var tSize = g.MeasureString(timerStr, fontTab, PointF.Empty, StringFormat.GenericDefault);
-        using var brushTimerText = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
-        g.DrawString(timerStr, fontTab, brushTimerText, timerX + (timerW - tSize.Width) * 0.5f, timerY + (timerH - tSize.Height) * 0.5f, StringFormat.GenericDefault);
+                g.Restore(stateIcon);
+            }
+
+            // Picker buttons fade in as capsule expands
+            float pickerAlpha = Math.Clamp((wP - 0.20f) / 0.80f, 0.0f, 1.0f);
+            if (pickerAlpha > 0.01f)
+            {
+                var statePicker = g.Save();
+                g.SetClip(pathContainer);
+
+                float btnH = 30f * superScale;
+                float btnY = slot1Y + (slot1H - btnH) * 0.5f;
+                float btnR = 8f * superScale;
+                float gap = 5f * superScale;
+                float padX = 10f * superScale;
+
+                float bW = 42f * superScale;
+                float plusW = 39f * superScale;
+
+                using var fontBtn = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+                using var fontPlus = GetPremiumFont(11.0f * superScale, FontStyle.Regular);
+
+                // Button 1: 5m
+                float b1X = slot1X + padX;
+                DrawChronoPill(g, superScale, b1X, btnY, bW, btnH, btnR, "5m", fontBtn,
+                    isHovered: _hoveredChronoBtn == ChronoBtn5m,
+                    alphaMul: pickerAlpha);
+
+                // Button 2: 10m
+                float b2X = b1X + bW + gap;
+                DrawChronoPill(g, superScale, b2X, btnY, bW, btnH, btnR, "10m", fontBtn,
+                    isHovered: _hoveredChronoBtn == ChronoBtn10m,
+                    alphaMul: pickerAlpha);
+
+                // Button 3: 15m
+                float b3X = b2X + bW + gap;
+                DrawChronoPill(g, superScale, b3X, btnY, bW, btnH, btnR, "15m", fontBtn,
+                    isHovered: _hoveredChronoBtn == ChronoBtn15m,
+                    alphaMul: pickerAlpha);
+
+                // Button 4: +
+                float b4X = b3X + bW + gap;
+                DrawChronoPill(g, superScale, b4X, btnY, plusW, btnH, btnR, "+", fontPlus,
+                    isHovered: _hoveredChronoBtn == ChronoBtnPlus,
+                    alphaMul: pickerAlpha);
+
+                g.Restore(statePicker);
+            }
+        }
+    }
+
+    private static void DrawStopwatchVector(Graphics g, Brush brush, float cx, float cy, float r, float superScale)
+    {
+        using var pen = new Pen(brush, 1.4f * superScale);
+        g.DrawEllipse(pen, cx - r, cy - r + 1.5f * superScale, r * 2, r * 2);
+
+        float stemTop = cy - r - 1.5f * superScale;
+        float stemBottom = cy - r + 1.5f * superScale;
+        g.DrawLine(pen, cx, stemTop, cx, stemBottom);
+        g.DrawLine(pen, cx - 2.5f * superScale, stemTop, cx + 2.5f * superScale, stemTop);
+
+        float dialCenterY = cy + 1.5f * superScale;
+        float needleLen = r * 0.6f;
+        float needleAngleRad = -2.2f;
+        float nx = cx + needleLen * (float)Math.Cos(needleAngleRad);
+        float ny = dialCenterY + needleLen * (float)Math.Sin(needleAngleRad);
+        g.DrawLine(pen, cx, dialCenterY, nx, ny);
+
+        g.FillEllipse(brush, cx - 1.2f * superScale, dialCenterY - 1.2f * superScale, 2.4f * superScale, 2.4f * superScale);
+    }
+
+    private static void DrawChronoPill(
+        Graphics g,
+        float superScale,
+        float x, float y, float w, float h, float r,
+        string label,
+        Font font,
+        bool isHovered,
+        float alphaMul = 1.0f)
+    {
+        if (alphaMul <= 0.001f) return;
+        alphaMul = Math.Clamp(alphaMul, 0.0f, 1.0f);
+
+        using var path = CreateRoundedRectPath(x, y, w, h, r, r, r, r);
+
+        int fillA = isHovered ? (int)(65 * alphaMul) : (int)(32 * alphaMul);
+        using var brushPill = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
+        g.FillPath(brushPill, path);
+
+        int borderA = isHovered ? (int)(130 * alphaMul) : (int)(65 * alphaMul);
+        using var penPill = new Pen(Color.FromArgb(borderA, 255, 255, 255), 1.0f * superScale);
+        g.DrawPath(penPill, path);
+
+        var strSize = g.MeasureString(label, font, PointF.Empty, StringFormat.GenericTypographic);
+        int textA = isHovered ? (int)(255 * alphaMul) : (int)(225 * alphaMul);
+        using var brushText = new SolidBrush(Color.FromArgb(textA, 255, 255, 255));
+        g.DrawString(label, font, brushText, x + (w - strSize.Width) * 0.5f, y + (h - strSize.Height) * 0.5f, StringFormat.GenericTypographic);
     }
 
     private void UpdateTimeMaskIfNeeded(bool force = false)
@@ -3957,6 +4369,89 @@ internal sealed class OverlayForm : Form
 
                 File.Delete(expandAnimTriggerPath);
             }
+
+            string chronoTriggerPath = Path.Combine(rootDir, "take_chrono_all.trigger");
+            if (File.Exists(chronoTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+
+                // 1. Idle state (resting squircle timer icon 44px)
+                SwitchTab(TabChrono, immediate: true);
+                _chronoTimerRunning = false;
+                _chronoTimerHovered = false;
+                _chronoRunningHovered = false;
+                _chronoRunningHoverP = 0.0;
+                _chronoMorphTimer = 0.0;
+                _chronoTimerAnimWidth = 44.0;
+                _hoveredChronoBtn = ChronoBtnNone;
+                _tabBufferCache[TabChrono] = null;
+                UpdateExpandedMask();
+                var geomIdle = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomIdle);
+                SaveDesktopScreenshotWithPill("screenshot_chrono_idle.png");
+
+                // 2. Expanded state (hovered: 5m, 10m, 15m, +)
+                _chronoTimerRunning = false;
+                _chronoTimerHovered = true;
+                _chronoRunningHovered = false;
+                _chronoRunningHoverP = 0.0;
+                _chronoMorphTimer = 0.0;
+                _chronoTimerAnimWidth = 200.0;
+                _hoveredChronoBtn = ChronoBtn10m; // show 10m highlighted
+                _tabBufferCache[TabChrono] = null;
+                UpdateExpandedMask();
+                var geomExp = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomExp);
+                SaveDesktopScreenshotWithPill("screenshot_chrono_expanded.png");
+
+                // 3. Running state (countdown MM:SS with amber pulse dot)
+                _chronoTimerRunning = true;
+                _chronoTimerDurationMinutes = 10;
+                _chronoTimerTotalSeconds = 600;
+                _chronoTimerTargetUtc = DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
+                _chronoTimerAnimWidth = 106.0;
+                _chronoTimerHovered = false;
+                _chronoRunningHovered = false;
+                _chronoRunningHoverP = 0.0;
+                _chronoMorphTimer = 0.0;
+                _hoveredChronoBtn = ChronoBtnNone;
+                _tabBufferCache[TabChrono] = null;
+                UpdateExpandedMask();
+                var geomRun = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomRun);
+                SaveDesktopScreenshotWithPill("screenshot_chrono_running.png");
+
+                // 4. Cancel hover state (hovered while running: ✕ Cancel button revealed)
+                _chronoTimerRunning = true;
+                _chronoTimerDurationMinutes = 10;
+                _chronoTimerTotalSeconds = 600;
+                _chronoTimerTargetUtc = DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
+                _chronoTimerAnimWidth = 106.0;
+                _chronoTimerHovered = false;
+                _chronoRunningHovered = true;
+                _chronoRunningHoverP = 1.0;
+                _chronoMorphTimer = 0.0;
+                _hoveredChronoBtn = ChronoBtnCancel;
+                _tabBufferCache[TabChrono] = null;
+                UpdateExpandedMask();
+                var geomCancel = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomCancel);
+                SaveDesktopScreenshotWithPill("screenshot_chrono_cancel_hover.png");
+
+                // Reset back to idle
+                _chronoTimerRunning = false;
+                _chronoTimerHovered = false;
+                _chronoRunningHovered = false;
+                _chronoRunningHoverP = 0.0;
+                _chronoTimerAnimWidth = 44.0;
+                _hoveredChronoBtn = ChronoBtnNone;
+                _tabBufferCache[TabChrono] = null;
+                UpdateExpandedMask();
+
+                File.Delete(chronoTriggerPath);
+            }
         }
         catch { }
     }
@@ -4050,7 +4545,11 @@ internal sealed class OverlayForm : Form
                                    (_clickAnimTimer > 0.0) ||
                                    (_progress > 0.001 && _progress < 0.999) ||
                                    (Math.Abs(_hoverVel) > 0.001) ||
-                                   (Math.Abs(_homeSleepExpandP - (_homeSleepPickerOpen ? 1.0 : 0.0)) > 0.001);
+                                   (Math.Abs(_homeSleepExpandP - (_homeSleepPickerOpen ? 1.0 : 0.0)) > 0.001) ||
+                                   (_chronoMorphTimer > 0.0) ||
+                                   (!_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - (_chronoTimerHovered ? 200.0 : 44.0)) > 0.5) ||
+                                   (_chronoTimerRunning && Math.Abs(_chronoRunningHoverP - (_chronoRunningHovered ? 1.0 : 0.0)) > 0.01) ||
+                                   (_activeTab == TabChrono && _chronoTimerRunning);
             int sleepTimeout = isFastAnimating ? 1 : (_hoverPos > 0.6 ? 4 : 10);
             _renderSignal.WaitOne(sleepTimeout);
             if (!_running) break;
@@ -4247,14 +4746,74 @@ internal sealed class OverlayForm : Form
                         _tabBufferCache[TabHome] = null;
                         _needExpandedUpdate = true;
                     }
+
+                    // Chrono Tab Timer Hover Interaction
+                    if (_activeTab == TabChrono)
+                    {
+                        float mx = mouseSurfaceX - 70f;
+                        float my = mouseSurfaceY - 26f;
+                        int newChronoBtn = ChronoBtnNone;
+                        bool newChronoHovered = false;
+                        bool newRunningHovered = false;
+
+                        float slot1X = 24f;
+                        float slot1Y = 44f;
+                        float slot1H = 44f;
+                        float curW = (float)_chronoTimerAnimWidth;
+
+                        if (my >= slot1Y && my <= slot1Y + slot1H && mx >= slot1X && mx <= slot1X + curW)
+                        {
+                            if (_chronoTimerRunning)
+                            {
+                                newRunningHovered = true;
+                                newChronoBtn = ChronoBtnCancel;
+                            }
+                            else
+                            {
+                                newChronoHovered = true;
+                                if (curW > 120f)
+                                {
+                                    if (mx >= 24 && mx < 78.5f) newChronoBtn = ChronoBtn5m;
+                                    else if (mx >= 78.5f && mx < 125.5f) newChronoBtn = ChronoBtn10m;
+                                    else if (mx >= 125.5f && mx < 172.5f) newChronoBtn = ChronoBtn15m;
+                                    else if (mx >= 172.5f && mx <= 224f) newChronoBtn = ChronoBtnPlus;
+                                }
+                                else
+                                {
+                                    newChronoBtn = ChronoBtnIcon;
+                                }
+                            }
+                        }
+
+                        if (newChronoHovered != _chronoTimerHovered || newRunningHovered != _chronoRunningHovered || newChronoBtn != _hoveredChronoBtn)
+                        {
+                            _chronoTimerHovered = newChronoHovered;
+                            _chronoRunningHovered = newRunningHovered;
+                            _hoveredChronoBtn = newChronoBtn;
+                            _tabBufferCache[TabChrono] = null;
+                            _needExpandedUpdate = true;
+                        }
+                    }
+                    else if (_chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone)
+                    {
+                        _chronoTimerHovered = false;
+                        _chronoRunningHovered = false;
+                        _hoveredChronoBtn = ChronoBtnNone;
+                        _tabBufferCache[TabChrono] = null;
+                        _needExpandedUpdate = true;
+                    }
                 }
             }
 
-            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone))
+            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone))
             {
                 _hoveredButton = BtnNone;
                 _hoveredHomeSleepBtn = HomeSleepBtnNone;
+                _chronoTimerHovered = false;
+                _chronoRunningHovered = false;
+                _hoveredChronoBtn = ChronoBtnNone;
                 _tabBufferCache[TabHome] = null;
+                _tabBufferCache[TabChrono] = null;
                 UpdateExpandedMask();
             }
 
@@ -4416,6 +4975,7 @@ internal sealed class OverlayForm : Form
 
             UpdateEqualizerPhysics(dt);
             UpdateTabTransitionPhysics(dt);
+            UpdateChronoPhysics(dt, utcNow);
 
             // Smoothly animate sleep timer picker expand / collapse progress
             double targetSleepP = _homeSleepPickerOpen ? 1.0 : 0.0;
