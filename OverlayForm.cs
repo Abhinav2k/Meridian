@@ -730,7 +730,8 @@ internal sealed class OverlayForm : Form
     // When true: Sleep timer templates (15, 30, 45) act as seconds (15s, 30s, 45s) for rapid testing,
     // and hovering over the active moon button displays remaining seconds (e.g. "28s").
     // When false: Standard production mode (15m, 30m, 45m) and hover displays remaining minutes (e.g. "14m").
-    public static bool DebugSleepTimerInSeconds = false;
+    public static bool DebugSleepTimerInSeconds = true;
+    public static bool DebugChronoTimerInSeconds = true;
 
     private static bool _sleepTimerActive = false;
     private static DateTime _sleepTimerTargetUtc = DateTime.MinValue;
@@ -1582,8 +1583,8 @@ internal sealed class OverlayForm : Form
     private void StartChronoTimer(int minutes)
     {
         _chronoTimerDurationMinutes = minutes;
-        _chronoTimerTargetUtc = DateTime.UtcNow.AddMinutes(minutes);
-        _chronoTimerTotalSeconds = minutes * 60;
+        _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(minutes) : DateTime.UtcNow.AddMinutes(minutes);
+        _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? minutes : minutes * 60;
         _chronoTimerRunning = true;
         _chronoTimerHovered = false;
         _chronoRunningHovered = false;
@@ -3612,21 +3613,25 @@ internal sealed class OverlayForm : Form
                 using var fontBtn = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
                 using var fontPlus = GetPremiumFont(11.0f * superScale, FontStyle.Regular);
 
-                // Button 1: 5m
+                string lbl5 = DebugChronoTimerInSeconds ? "5s" : "5m";
+                string lbl10 = DebugChronoTimerInSeconds ? "10s" : "10m";
+                string lbl15 = DebugChronoTimerInSeconds ? "15s" : "15m";
+
+                // Button 1: 5m / 5s
                 float b1X = slot1X + padX;
-                DrawChronoPill(g, superScale, b1X, btnY, bW, btnH, btnR, "5m", fontBtn,
+                DrawChronoPill(g, superScale, b1X, btnY, bW, btnH, btnR, lbl5, fontBtn,
                     isHovered: _hoveredChronoBtn == ChronoBtn5m,
                     alphaMul: pickerAlpha);
 
-                // Button 2: 10m
+                // Button 2: 10m / 10s
                 float b2X = b1X + bW + gap;
-                DrawChronoPill(g, superScale, b2X, btnY, bW, btnH, btnR, "10m", fontBtn,
+                DrawChronoPill(g, superScale, b2X, btnY, bW, btnH, btnR, lbl10, fontBtn,
                     isHovered: _hoveredChronoBtn == ChronoBtn10m,
                     alphaMul: pickerAlpha);
 
-                // Button 3: 15m
+                // Button 3: 15m / 15s
                 float b3X = b2X + bW + gap;
-                DrawChronoPill(g, superScale, b3X, btnY, bW, btnH, btnR, "15m", fontBtn,
+                DrawChronoPill(g, superScale, b3X, btnY, bW, btnH, btnR, lbl15, fontBtn,
                     isHovered: _hoveredChronoBtn == ChronoBtn15m,
                     alphaMul: pickerAlpha);
 
@@ -4409,8 +4414,8 @@ internal sealed class OverlayForm : Form
                 // 3. Running state (countdown MM:SS with amber pulse dot)
                 _chronoTimerRunning = true;
                 _chronoTimerDurationMinutes = 10;
-                _chronoTimerTotalSeconds = 600;
-                _chronoTimerTargetUtc = DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
+                _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? 10 : 600;
+                _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(7) : DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
                 _chronoTimerAnimWidth = 106.0;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = false;
@@ -4426,8 +4431,8 @@ internal sealed class OverlayForm : Form
                 // 4. Cancel hover state (hovered while running: ✕ Cancel button revealed)
                 _chronoTimerRunning = true;
                 _chronoTimerDurationMinutes = 10;
-                _chronoTimerTotalSeconds = 600;
-                _chronoTimerTargetUtc = DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
+                _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? 10 : 600;
+                _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(7) : DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
                 _chronoTimerAnimWidth = 106.0;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = true;
