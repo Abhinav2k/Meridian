@@ -808,7 +808,7 @@ internal sealed class OverlayForm : Form
         // Content transition progress
         if (_tabTransitionP < 1.0)
         {
-            _tabTransitionP += dt * 4.2; // ~0.24s transition
+            _tabTransitionP += dt * 3.8; // ~0.26s transition
             if (_tabTransitionP >= 1.0)
             {
                 _tabTransitionP = 1.0;
@@ -819,8 +819,8 @@ internal sealed class OverlayForm : Form
 
         // Sub-stepped spring physics for the tab indicator capsule
         double targetPos = _activeTab;
-        const double stiffness = 280.0;
-        const double damping = 24.0;
+        const double stiffness = 260.0;
+        const double damping = 32.0; // Near critical damping: smooth, zero overshoot
         int subSteps = 4;
         double subDt = dt / subSteps;
         for (int s = 0; s < subSteps; s++)
@@ -2037,8 +2037,8 @@ internal sealed class OverlayForm : Form
             g.DrawPath(penBar, pathBar);
         }
 
-        // Active Tab Sliding Indicator Pill (Fluid Mercury Capsule with Velocity Stretch)
-        float stretch = (float)Math.Clamp(Math.Abs(tabIndicatorVel) * 1.5 * superScale, 0.0, 8.0 * superScale);
+        // Active Tab Sliding Indicator Pill (Fluid Liquid Glass Capsule with Inertia Stretch)
+        float stretch = (float)Math.Clamp(Math.Abs(tabIndicatorVel) * 0.8 * superScale, 0.0, 5.0 * superScale);
         float activeX = tabStartX + (float)tabIndicatorPos * tabItemW - stretch * 0.5f;
         using (var pathActive = new GraphicsPath())
         {
@@ -2054,16 +2054,16 @@ internal sealed class OverlayForm : Form
             pathActive.AddArc(ax, ay + ah - ar * 2, ar * 2, ar * 2, 90, 90);
             pathActive.CloseFigure();
 
-            int fillAlpha = (int)Math.Clamp(65 + Math.Abs(tabIndicatorVel) * 10.0, 65, 95);
-            using var brushActive = new SolidBrush(Color.FromArgb(fillAlpha, 255, 255, 255));
+            // Refined calm liquid glass fill (consistent elegant translucency, no brightness flares)
+            using var brushActive = new SolidBrush(Color.FromArgb(42, 255, 255, 255));
             g.FillPath(brushActive, pathActive);
 
-            int borderAlpha = (int)Math.Clamp(160 + Math.Abs(tabIndicatorVel) * 15.0, 160, 215);
-            using var penActive = new Pen(Color.FromArgb(borderAlpha, 255, 255, 255), 1.0f * superScale);
+            // Refined subtle glass rim border
+            using var penActive = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale);
             g.DrawPath(penActive, pathActive);
         }
 
-        // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱) with Proximity Illuminance
+        // 4 Compact Icon-Only Tab Labels (⌂, ♫, ☀, ⏱) with Smooth Proximity Illuminance
         string[] tabIcons = new[] { "⌂", "♫", "☀", "⏱" };
         using var fontIconTab = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
         for (int t = 0; t < 4; t++)
@@ -2075,7 +2075,7 @@ internal sealed class OverlayForm : Form
 
             float dist = Math.Abs(t - (float)tabIndicatorPos);
             float activeWeight = Math.Clamp(1.0f - dist, 0.0f, 1.0f);
-            int iconAlpha = (int)Math.Round(140f + 115f * activeWeight);
+            int iconAlpha = (int)Math.Round(130f + 100f * activeWeight);
 
             Color tabColor = Color.FromArgb(iconAlpha, 255, 255, 255);
             using var brushTab = new SolidBrush(tabColor);
@@ -2252,36 +2252,30 @@ internal sealed class OverlayForm : Form
         double t = Math.Clamp(transitionP, 0.0, 1.0);
         float dir = (activeTab >= prevTab) ? 1.0f : -1.0f;
 
-        // --- PHASE 1: OUTGOING TAB SLIDES AND FADES OUT (t in [0.0, 0.45]) ---
-        const double fadeEnd = 0.45;
-        float prevAlpha = 0.0f;
-        float prevOffset = 0.0f;
+        // Outgoing tab: fades out quickly (0.0 to 0.40) with subtle directional drift
+        float pOut = Math.Clamp((float)(t / 0.40), 0.0f, 1.0f);
+        float easeOut = pOut * pOut;
+        float wOut = 1.0f - easeOut;
+        float prevOffset = -dir * (pOut * 10.0f);
 
-        if (t < fadeEnd)
+        // Incoming tab: fades in (0.22 to 1.0) with cubic ease-out deceleration drift
+        float pIn = Math.Clamp((float)((t - 0.22) / 0.78), 0.0f, 1.0f);
+        float easeIn = (float)(1.0 - Math.Pow(1.0 - pIn, 3.0));
+        float wIn = easeIn;
+        float currOffset = dir * ((1.0f - easeIn) * 14.0f);
+
+        // Normalize weights so (wOut + wIn) is strictly <= 1.0 at all times (guarantees zero brightness accumulation)
+        float totalW = wOut + wIn;
+        if (totalW > 1.0f)
         {
-            float pOut = (float)(t / fadeEnd); // 0.0 -> 1.0
-            prevAlpha = (1.0f - pOut) * (1.0f - pOut); // Smooth quadratic fade off
-            prevOffset = -dir * (pOut * 14.0f); // Micro-drift slide outward
+            wOut /= totalW;
+            wIn /= totalW;
         }
 
-        // --- PHASE 2: INCOMING TAB SLIDES IN AND FADES IN (t in [0.25, 1.0]) ---
-        const double inStart = 0.25;
-        float currAlpha = 0.0f;
-        float currOffset = 0.0f;
+        int weightOut = (int)(wOut * 256f);
+        int weightIn = (int)(wIn * 256f);
 
-        if (t > inStart)
-        {
-            float pIn = (float)((t - inStart) / (1.0 - inStart)); // 0.0 -> 1.0
-            float easeIn = (float)(1.0 - Math.Pow(1.0 - pIn, 3.0)); // Cubic ease-out deceleration
-            currAlpha = easeIn;
-            currOffset = dir * (1.0f - easeIn) * 18.0f; // Smooth spring slide in
-        }
-
-        // Precompute fixed-point alpha and sub-pixel weights
-        int aP = (int)(prevAlpha * 256f);
-        int aC = (int)(currAlpha * 256f);
-
-        // Precompute horizontal offset floor and fractional weights
+        // Precompute horizontal offset floor and fractional bilinear weights
         float offP = -prevOffset;
         int x0p = (int)Math.Floor(offP);
         float fxP = offP - x0p;
@@ -2305,75 +2299,73 @@ internal sealed class OverlayForm : Form
 
                 for (int x = 0; x < targetW; x++)
                 {
-                    int a1 = 0, r1 = 0, g1 = 0, b1 = 0;
-                    if (aP > 1)
+                    int a0 = 0, r0 = 0, g0 = 0, b0 = 0;
+                    if (weightOut > 0)
                     {
                         int xp = x + x0p;
                         uint p0 = (xp >= 0 && xp < targetW) ? rowPrev[xp] : 0;
                         uint p1 = (xp + 1 >= 0 && xp + 1 < targetW) ? rowPrev[xp + 1] : 0;
 
-                        int ap0 = (int)(p0 >> 24);
-                        int ap1 = (int)(p1 >> 24);
-                        int aPix = (ap0 * wP0 + ap1 * wP1) >> 8;
-                        a1 = (aPix * aP) >> 8;
-
-                        if (a1 > 0)
+                        if ((p0 | p1) != 0)
                         {
+                            int ap0 = (int)(p0 >> 24);
+                            int ap1 = (int)(p1 >> 24);
+                            a0 = (ap0 * wP0 + ap1 * wP1) >> 8;
+
                             int rp0 = (int)((p0 >> 16) & 0xFF);
                             int rp1 = (int)((p1 >> 16) & 0xFF);
-                            r1 = (rp0 * wP0 + rp1 * wP1) >> 8;
+                            r0 = (rp0 * wP0 + rp1 * wP1) >> 8;
 
                             int gp0 = (int)((p0 >> 8) & 0xFF);
                             int gp1 = (int)((p1 >> 8) & 0xFF);
-                            g1 = (gp0 * wP0 + gp1 * wP1) >> 8;
+                            g0 = (gp0 * wP0 + gp1 * wP1) >> 8;
 
                             int bp0 = (int)(p0 & 0xFF);
                             int bp1 = (int)(p1 & 0xFF);
-                            b1 = (bp0 * wP0 + bp1 * wP1) >> 8;
+                            b0 = (bp0 * wP0 + bp1 * wP1) >> 8;
                         }
                     }
 
-                    int a2 = 0, r2 = 0, g2 = 0, b2 = 0;
-                    if (aC > 1)
+                    int a1 = 0, r1 = 0, g1 = 0, b1 = 0;
+                    if (weightIn > 0)
                     {
                         int xc = x + x0c;
                         uint c0 = (xc >= 0 && xc < targetW) ? rowCurr[xc] : 0;
                         uint c1 = (xc + 1 >= 0 && xc + 1 < targetW) ? rowCurr[xc + 1] : 0;
 
-                        int ac0 = (int)(c0 >> 24);
-                        int ac1 = (int)(c1 >> 24);
-                        int aPix = (ac0 * wC0 + ac1 * wC1) >> 8;
-                        a2 = (aPix * aC) >> 8;
-
-                        if (a2 > 0)
+                        if ((c0 | c1) != 0)
                         {
+                            int ac0 = (int)(c0 >> 24);
+                            int ac1 = (int)(c1 >> 24);
+                            a1 = (ac0 * wC0 + ac1 * wC1) >> 8;
+
                             int rc0 = (int)((c0 >> 16) & 0xFF);
                             int rc1 = (int)((c1 >> 16) & 0xFF);
-                            r2 = (rc0 * wC0 + rc1 * wC1) >> 8;
+                            r1 = (rc0 * wC0 + rc1 * wC1) >> 8;
 
                             int gc0 = (int)((c0 >> 8) & 0xFF);
                             int gc1 = (int)((c1 >> 8) & 0xFF);
-                            g2 = (gc0 * wC0 + gc1 * wC1) >> 8;
+                            g1 = (gc0 * wC0 + gc1 * wC1) >> 8;
 
                             int bc0 = (int)(c0 & 0xFF);
                             int bc1 = (int)(c1 & 0xFF);
-                            b2 = (bc0 * wC0 + bc1 * wC1) >> 8;
+                            b1 = (bc0 * wC0 + bc1 * wC1) >> 8;
                         }
                     }
 
-                    int totA = a1 + a2;
-                    if (totA == 0)
+                    // Strict energy-conserving linear cross-fade: guarantees zero brightness flare
+                    int finalA = (a0 * weightOut + a1 * weightIn) >> 8;
+                    if (finalA == 0)
                     {
                         rowDest[x] = 0;
                         continue;
                     }
 
-                    int r = (r1 * a1 + r2 * a2) / totA;
-                    int g = (g1 * a1 + g2 * a2) / totA;
-                    int b = (b1 * a1 + b2 * a2) / totA;
-                    int finalA = Math.Min(255, totA);
+                    int finalR = Math.Min(255, (r0 * weightOut + r1 * weightIn) >> 8);
+                    int finalG = Math.Min(255, (g0 * weightOut + g1 * weightIn) >> 8);
+                    int finalB = Math.Min(255, (b0 * weightOut + b1 * weightIn) >> 8);
 
-                    rowDest[x] = ((uint)finalA << 24) | ((uint)r << 16) | ((uint)g << 8) | (uint)b;
+                    rowDest[x] = ((uint)finalA << 24) | ((uint)finalR << 16) | ((uint)finalG << 8) | (uint)finalB;
                 }
             }
         }
