@@ -751,6 +751,9 @@ internal sealed class OverlayForm : Form
     private const int ChronoBtnCancel = 6;
     private const int ChronoBtnRunning = 7;
 
+    private const double ChronoActiveWidth = 76.0;
+    private const float ChronoActiveHeight = 34.0f;
+
     private static bool _chronoTimerRunning = false;
     private static DateTime _chronoTimerTargetUtc = DateTime.MinValue;
     private static int _chronoTimerDurationMinutes = 0;
@@ -944,7 +947,7 @@ internal sealed class OverlayForm : Form
             if (_chronoMorphTimer <= 0.0)
             {
                 _chronoMorphTimer = 0.0;
-                _chronoTimerAnimWidth = _chronoTimerRunning ? 106.0 : 44.0;
+                _chronoTimerAnimWidth = _chronoTimerRunning ? ChronoActiveWidth : 44.0;
             }
             else
             {
@@ -960,10 +963,10 @@ internal sealed class OverlayForm : Form
                     }
                     else
                     {
-                        // Phase 2: cubic ease-out expand up to 106px
+                        // Phase 2: cubic ease-out expand up to ChronoActiveWidth
                         double t2 = (p - 0.40) / 0.60;
                         double easeOut = 1.0 - Math.Pow(1.0 - t2, 3.0);
-                        _chronoTimerAnimWidth = 44.0 + (106.0 - 44.0) * easeOut;
+                        _chronoTimerAnimWidth = 44.0 + (ChronoActiveWidth - 44.0) * easeOut;
                     }
                 }
                 else
@@ -995,9 +998,9 @@ internal sealed class OverlayForm : Form
             }
             else
             {
-                if (Math.Abs(_chronoTimerAnimWidth - 106.0) > 0.1)
+                if (Math.Abs(_chronoTimerAnimWidth - ChronoActiveWidth) > 0.1)
                 {
-                    _chronoTimerAnimWidth = 106.0;
+                    _chronoTimerAnimWidth = ChronoActiveWidth;
                     chronoChanged = true;
                 }
             }
@@ -3471,11 +3474,50 @@ internal sealed class OverlayForm : Form
         float slot1H = 44f * superScale;
         float slot1R = 12f * superScale;
 
+        // Dynamic height calculation: smoothly morphs between 44px (idle/picker) and 34px (active running)
+        float curH;
+        if (_chronoTimerRunning)
+        {
+            if (_chronoMorphTimer > 0.0)
+            {
+                double p = 1.0 - (_chronoMorphTimer / 0.36);
+                if (p < 0.40)
+                {
+                    curH = slot1H;
+                }
+                else
+                {
+                    double t2 = (p - 0.40) / 0.60;
+                    double easeOut = 1.0 - Math.Pow(1.0 - t2, 3.0);
+                    curH = (float)(44.0 + (ChronoActiveHeight - 44.0) * easeOut) * superScale;
+                }
+            }
+            else
+            {
+                curH = ChronoActiveHeight * superScale;
+            }
+        }
+        else
+        {
+            if (_chronoMorphTimer > 0.0)
+            {
+                double p = 1.0 - (_chronoMorphTimer / 0.25);
+                double easeOut = 1.0 - Math.Pow(1.0 - p, 3.0);
+                curH = (float)(ChronoActiveHeight + (44.0 - ChronoActiveHeight) * easeOut) * superScale;
+            }
+            else
+            {
+                curH = slot1H;
+            }
+        }
+
+        float curY = slot1Y + (slot1H - curH) * 0.5f;
         float curW = (float)_chronoTimerAnimWidth * superScale;
+        float curR = Math.Min(slot1R, curH * 0.5f);
         float wP = (float)Math.Clamp((_chronoTimerAnimWidth - 44.0) / (200.0 - 44.0), 0.0, 1.0);
 
         // Container capsule path
-        using var pathContainer = CreateRoundedRectPath(slot1X, slot1Y, curW, slot1H, slot1R, slot1R, slot1R, slot1R);
+        using var pathContainer = CreateRoundedRectPath(slot1X, curY, curW, curH, curR, curR, curR, curR);
 
         // Liquid glass capsule background
         if (_chronoTimerRunning)
@@ -3519,13 +3561,13 @@ internal sealed class OverlayForm : Form
             // 1. Time display (fades out as Cancel is hovered)
             if (timeAlpha > 0.01f)
             {
-                using var fontTime = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
+                using var fontTime = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
                 var strSize = g.MeasureString(timeStr, fontTime, PointF.Empty, StringFormat.GenericTypographic);
-                float dotSize = 7f * superScale;
-                float dotGap = 6f * superScale;
+                float dotSize = 5f * superScale;
+                float dotGap = 4.5f * superScale;
                 float totalContentW = dotSize + dotGap + strSize.Width;
                 float startX = slot1X + (curW - totalContentW) * 0.5f;
-                float iconCy = slot1Y + slot1H * 0.5f;
+                float iconCy = curY + curH * 0.5f;
 
                 // Pulsing amber active dot
                 using (var brushDot = new SolidBrush(Color.FromArgb((int)(220 * timeAlpha), 255, 175, 60)))
@@ -3534,7 +3576,7 @@ internal sealed class OverlayForm : Form
                 }
 
                 float textX = startX + dotSize + dotGap;
-                float textY = slot1Y + (slot1H - strSize.Height) * 0.5f;
+                float textY = curY + (curH - strSize.Height) * 0.5f;
 
                 using var brushTime = new SolidBrush(Color.FromArgb((int)(250 * timeAlpha), 255, 255, 255));
                 g.DrawString(timeStr, fontTime, brushTime, textX, textY, StringFormat.GenericTypographic);
@@ -3543,12 +3585,12 @@ internal sealed class OverlayForm : Form
             // 2. Cancel button on hover (reveals as hovered)
             if (cancelAlpha > 0.01f)
             {
-                float btnPad = 5f * superScale;
+                float btnPad = 4f * superScale;
                 float cancelX = slot1X + btnPad;
-                float cancelY = slot1Y + btnPad;
+                float cancelY = curY + btnPad;
                 float cancelW = curW - btnPad * 2f;
-                float cancelH = slot1H - btnPad * 2f;
-                float cancelR = 8f * superScale;
+                float cancelH = curH - btnPad * 2f;
+                float cancelR = 7f * superScale;
 
                 using var pathCancel = CreateRoundedRectPath(cancelX, cancelY, cancelW, cancelH, cancelR, cancelR, cancelR, cancelR);
 
@@ -3560,7 +3602,7 @@ internal sealed class OverlayForm : Form
                 using var penCancel = new Pen(Color.FromArgb(borderA, 255, 110, 110), 1.0f * superScale);
                 g.DrawPath(penCancel, pathCancel);
 
-                using var fontCancel = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+                using var fontCancel = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
                 string cancelText = "✕ Cancel";
                 var cSize = g.MeasureString(cancelText, fontCancel, PointF.Empty, StringFormat.GenericTypographic);
                 float cx = cancelX + (cancelW - cSize.Width) * 0.5f;
@@ -4416,7 +4458,7 @@ internal sealed class OverlayForm : Form
                 _chronoTimerDurationMinutes = 10;
                 _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? 10 : 600;
                 _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(7) : DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
-                _chronoTimerAnimWidth = 106.0;
+                _chronoTimerAnimWidth = ChronoActiveWidth;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = false;
                 _chronoRunningHoverP = 0.0;
@@ -4433,7 +4475,7 @@ internal sealed class OverlayForm : Form
                 _chronoTimerDurationMinutes = 10;
                 _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? 10 : 600;
                 _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(7) : DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
-                _chronoTimerAnimWidth = 106.0;
+                _chronoTimerAnimWidth = ChronoActiveWidth;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = true;
                 _chronoRunningHoverP = 1.0;
@@ -4553,6 +4595,7 @@ internal sealed class OverlayForm : Form
                                    (Math.Abs(_homeSleepExpandP - (_homeSleepPickerOpen ? 1.0 : 0.0)) > 0.001) ||
                                    (_chronoMorphTimer > 0.0) ||
                                    (!_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - (_chronoTimerHovered ? 200.0 : 44.0)) > 0.5) ||
+                                   (_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - ChronoActiveWidth) > 0.5) ||
                                    (_chronoTimerRunning && Math.Abs(_chronoRunningHoverP - (_chronoRunningHovered ? 1.0 : 0.0)) > 0.01) ||
                                    (_activeTab == TabChrono && _chronoTimerRunning);
             int sleepTimeout = isFastAnimating ? 1 : (_hoverPos > 0.6 ? 4 : 10);
