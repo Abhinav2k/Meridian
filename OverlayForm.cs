@@ -4429,7 +4429,7 @@ internal sealed class OverlayForm : Form
             double targetSleepP = _homeSleepPickerOpen ? 1.0 : 0.0;
             if (Math.Abs(_homeSleepExpandP - targetSleepP) > 0.001)
             {
-                _homeSleepExpandP += (targetSleepP - _homeSleepExpandP) * Math.Min(1.0, 16.0 * dt);
+                _homeSleepExpandP += (targetSleepP - _homeSleepExpandP) * Math.Min(1.0, 8.5 * dt);
                 if (Math.Abs(_homeSleepExpandP - targetSleepP) < 0.001)
                 {
                     _homeSleepExpandP = targetSleepP;
