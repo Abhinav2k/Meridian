@@ -2562,138 +2562,155 @@ internal sealed class OverlayForm : Form
         if (isSplit)
         {
             // ====================================================
-            // FLUID JOIN / SPLIT MEDIA & SLEEP TIMER WIDGET
+            // FLUID PHYSICAL SLEEP TIMER EXPANSION ANIMATION
             // ====================================================
+            // Smooth physical easing (cubic ease in-out / smoothstep)
+            float easeP = sleepP * sleepP * (3f - 2f * sleepP);
+
             float timerW0 = c1H; // 43px square at 1x
             float fullGap = 6f * superScale;
             float mediaW0 = cardW - timerW0 - fullGap; // ~179px at 1x
 
-            // As sleepP goes from 0.0 (split) to 1.0 (joined):
-            float curGap = fullGap * (1f - sleepP);
-            float curMediaW = mediaW0 + (fullGap - curGap) * 0.5f;
-            float curTimerX = cardX + curMediaW + curGap;
-            float curTimerW = (cardX + cardW) - curTimerX;
-            float innerR = cardR * (1f - sleepP);
+            // As sleep timer expands to the left:
+            // 1) Sleep timer right edge stays pinned at (cardX + cardW).
+            //    Its width expands leftwards from 43px (timerW0) to 228px (cardW).
+            float curTimerW = timerW0 + (cardW - timerW0) * easeP;
+            float curTimerX = (cardX + cardW) - curTimerW;
 
-            // Piece 1: Left media end (inner corners round at 12px when split, sharpen to 0px as joined)
-            using var pathMedia = CreateRoundedRectPath(cardX, c1Y, curMediaW, c1H, cardR, innerR, innerR, cardR);
-            using var brushMedia = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
-            g.FillPath(brushMedia, pathMedia);
+            // 2) Gap smoothly closes as the timer expands:
+            float curGap = fullGap * (1f - easeP);
 
-            // Piece 2: Right sleep timer end
-            using var pathTimer = CreateRoundedRectPath(curTimerX, c1Y, curTimerW, c1H, innerR, cardR, cardR, innerR);
+            // 3) Media piece is pinned at cardX on the left, and shrinks leftwards:
+            float curMediaW = Math.Max(0f, curTimerX - curGap - cardX);
+
+            // Piece 1: Left media end (shrinks leftwards and fades off)
+            if (curMediaW > 1.5f * superScale)
+            {
+                float mediaCornerR = Math.Min(cardR, curMediaW * 0.5f);
+                using var pathMedia = CreateRoundedRectPath(cardX, c1Y, curMediaW, c1H, mediaCornerR, mediaCornerR, mediaCornerR, mediaCornerR);
+
+                float mediaBgAlpha = 1f - easeP;
+                if (mediaBgAlpha > 0.01f)
+                {
+                    using var brushMedia = new SolidBrush(Color.FromArgb((int)(32 * mediaBgAlpha), 255, 255, 255));
+                    g.FillPath(brushMedia, pathMedia);
+
+                    using var penMedia = new Pen(Color.FromArgb((int)(70 * mediaBgAlpha), 255, 255, 255), 1.0f * superScale);
+                    g.DrawPath(penMedia, pathMedia);
+                }
+
+                // Media contents: fade off cleanly and clipped strictly inside pathMedia
+                float mediaAlpha = Math.Clamp(1f - easeP * 1.8f, 0f, 1f);
+                if (mediaAlpha > 0.01f)
+                {
+                    var stateMedia = g.Save();
+                    g.SetClip(pathMedia);
+
+                    // Media Piece Thumbnail
+                    float thumbX = cardX + 7f * superScale;
+                    float thumbY = c1Y + 7f * superScale;
+                    float thumbSize = 29f * superScale;
+                    float thumbR = 7f * superScale;
+
+                    if (coverBmp != null)
+                    {
+                        using var pathThumb = CreateRoundedRectPath(thumbX, thumbY, thumbSize, thumbSize, thumbR, thumbR, thumbR, thumbR);
+                        var stateThumb = g.Save();
+                        g.SetClip(pathThumb);
+                        using var ia = new ImageAttributes();
+                        ColorMatrix cm = new ColorMatrix();
+                        cm.Matrix33 = mediaAlpha;
+                        ia.SetColorMatrix(cm);
+                        g.DrawImage(coverBmp, new Rectangle((int)thumbX, (int)thumbY, (int)thumbSize, (int)thumbSize), 0, 0, coverBmp.Width, coverBmp.Height, GraphicsUnit.Pixel, ia);
+                        g.Restore(stateThumb);
+                    }
+                    else
+                    {
+                        using (var brushDisc = new SolidBrush(Color.FromArgb((int)(45 * mediaAlpha), 255, 255, 255)))
+                        {
+                            g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+                        }
+                        using (var brushNote = new SolidBrush(Color.FromArgb((int)(200 * mediaAlpha), 255, 255, 255)))
+                        {
+                            var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
+                            g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                        }
+                    }
+
+                    // Media Piece Text
+                    float text1X = thumbX + thumbSize + 8f * superScale;
+                    string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
+                        ? "Audio Idle"
+                        : (track.Title.Length > 15 ? track.Title.Substring(0, 13) + "…" : track.Title);
+
+                    string musicSub = isPlaying
+                        ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : (track.Artist.Length > 16 ? track.Artist.Substring(0, 14) + "…" : track.Artist))
+                        : "Tap to open";
+
+                    using (var brushMTitle = new SolidBrush(Color.FromArgb((int)(255 * mediaAlpha), 255, 255, 255)))
+                    {
+                        g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
+                    }
+                    using (var brushMSub = new SolidBrush(Color.FromArgb((int)(160 * mediaAlpha), 255, 255, 255)))
+                    {
+                        g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
+                    }
+
+                    // Media Piece EQ Bars
+                    if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
+                    {
+                        float eqStartX = cardX + mediaW0 - 24f * superScale;
+                        float eqCy = c1Y + c1H * 0.5f;
+                        using var brushEq = new SolidBrush(Color.FromArgb((int)(240 * mediaAlpha), 255, 255, 255));
+                        for (int b = 0; b < 4; b++)
+                        {
+                            float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
+                            float bx = eqStartX + b * 4.2f * superScale;
+                            g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.3f * superScale, barH);
+                        }
+                    }
+
+                    g.Restore(stateMedia);
+                }
+            }
+
+            // Piece 2: Sleep timer end (expands leftwards from 43px square to full 228px card)
+            float timerCornerR = Math.Min(cardR, curTimerW * 0.5f);
+            using var pathTimer = CreateRoundedRectPath(curTimerX, c1Y, curTimerW, c1H, timerCornerR, timerCornerR, timerCornerR, timerCornerR);
             bool isHovMoon = _hoveredHomeSleepBtn == HomeSleepBtnMoon;
 
             if (_sleepTimerActive)
             {
                 // INVERTED COLOURS TO INDICATE SLEEP TIMER ACTIVE
-                int invFillA = (int)(32 + (235 - 32) * (1f - sleepP));
+                int invFillA = (int)(32 + (235 - 32) * (1f - easeP));
                 using var brushActiveTimer = new SolidBrush(Color.FromArgb(invFillA, 255, 255, 255));
                 g.FillPath(brushActiveTimer, pathTimer);
             }
             else
             {
-                int fillA = (isHovMoon && sleepP < 0.3f) ? 52 : 32;
+                int fillA = (isHovMoon && easeP < 0.3f) ? 52 : 32;
                 using var brushNormalTimer = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
                 g.FillPath(brushNormalTimer, pathTimer);
             }
 
-            // Separate piece borders only when split (fades out as they join together)
-            float splitBorderAlpha = 1f - sleepP;
-            if (splitBorderAlpha > 0.02f)
+            int borderA = _sleepTimerActive ? (int)(75 + (255 - 75) * (1f - easeP)) : ((isHovMoon && easeP < 0.3f) ? 110 : 75);
+            float borderThickness = (_sleepTimerActive && easeP < 0.3f) ? 1.2f * superScale : 1.0f * superScale;
+            using var penTimer = new Pen(Color.FromArgb(borderA, 255, 255, 255), borderThickness);
+            g.DrawPath(penTimer, pathTimer);
+
+            // Moon logo / countdown on hover: anchored at right end, fades out rapidly as timer expands left
+            float moonAlpha = Math.Clamp(1f - easeP * 2.8f, 0f, 1f);
+            if (moonAlpha > 0.01f)
             {
-                using var penMedia = new Pen(Color.FromArgb((int)(70 * splitBorderAlpha), 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penMedia, pathMedia);
+                var stateMoon = g.Save();
+                g.SetClip(pathTimer);
 
-                int borderA = _sleepTimerActive ? 255 : ((isHovMoon && sleepP < 0.3f) ? 110 : 70);
-                using var penTimer = new Pen(Color.FromArgb((int)(borderA * splitBorderAlpha), 255, 255, 255), (_sleepTimerActive ? 1.2f : 1.0f) * superScale);
-                g.DrawPath(penTimer, pathTimer);
-            }
+                float moonAnchorX = (cardX + cardW) - timerW0;
+                float moonCx = moonAnchorX + timerW0 * 0.5f - 2.5f * superScale;
+                float moonCy = c1Y + c1H * 0.5f;
 
-            // Unified joined card path overlay when joining (ensures zero subpixel seam and clean continuous outer border)
-            if (sleepP > 0.01f)
-            {
-                using var pathJoined = CreateRoundedRectPath(cardX, c1Y, cardW, c1H, cardR, cardR, cardR, cardR);
-                using var brushJoined = new SolidBrush(Color.FromArgb((int)(34 * sleepP), 255, 255, 255));
-                g.FillPath(brushJoined, pathJoined);
-                using var penJoined = new Pen(Color.FromArgb((int)(75 * sleepP), 255, 255, 255), 1.0f * superScale);
-                g.DrawPath(penJoined, pathJoined);
-            }
-
-            // --- SPLIT CONTENT: Fades out as sleepP increases from 0 to 1 ---
-            float splitAlpha = 1f - sleepP;
-            if (splitAlpha > 0.01f)
-            {
-                // Media Piece Thumbnail
-                float thumbX = cardX + 7f * superScale;
-                float thumbY = c1Y + 7f * superScale;
-                float thumbSize = 29f * superScale;
-                float thumbR = 7f * superScale;
-
-                if (coverBmp != null)
-                {
-                    using var pathThumb = CreateRoundedRectPath(thumbX, thumbY, thumbSize, thumbSize, thumbR, thumbR, thumbR, thumbR);
-                    var state = g.Save();
-                    g.SetClip(pathThumb);
-                    using var ia = new ImageAttributes();
-                    ColorMatrix cm = new ColorMatrix();
-                    cm.Matrix33 = splitAlpha;
-                    ia.SetColorMatrix(cm);
-                    g.DrawImage(coverBmp, new Rectangle((int)thumbX, (int)thumbY, (int)thumbSize, (int)thumbSize), 0, 0, coverBmp.Width, coverBmp.Height, GraphicsUnit.Pixel, ia);
-                    g.Restore(state);
-                }
-                else
-                {
-                    using (var brushDisc = new SolidBrush(Color.FromArgb((int)(45 * splitAlpha), 255, 255, 255)))
-                    {
-                        g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
-                    }
-                    using (var brushNote = new SolidBrush(Color.FromArgb((int)(200 * splitAlpha), 255, 255, 255)))
-                    {
-                        var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
-                        g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
-                    }
-                }
-
-                // Media Piece Text
-                float text1X = thumbX + thumbSize + 8f * superScale;
-                string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
-                    ? "Audio Idle"
-                    : (track.Title.Length > 15 ? track.Title.Substring(0, 13) + "…" : track.Title);
-
-                string musicSub = isPlaying
-                    ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : (track.Artist.Length > 16 ? track.Artist.Substring(0, 14) + "…" : track.Artist))
-                    : "Tap to open";
-
-                using (var brushMTitle = new SolidBrush(Color.FromArgb((int)(255 * splitAlpha), 255, 255, 255)))
-                {
-                    g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
-                }
-                using (var brushMSub = new SolidBrush(Color.FromArgb((int)(160 * splitAlpha), 255, 255, 255)))
-                {
-                    g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
-                }
-
-                // Media Piece EQ Bars
-                if (isPlaying && eqBarHeights != null && eqBarHeights.Length >= 4)
-                {
-                    float eqStartX = cardX + mediaW0 - 24f * superScale;
-                    float eqCy = c1Y + c1H * 0.5f;
-                    using var brushEq = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 255, 255, 255));
-                    for (int b = 0; b < 4; b++)
-                    {
-                        float barH = Math.Max(2.5f * superScale, eqBarHeights[b] * 12.0f * superScale);
-                        float bx = eqStartX + b * 4.2f * superScale;
-                        g.FillRectangle(brushEq, bx, eqCy - barH * 0.5f, 2.3f * superScale, barH);
-                    }
-                }
-
-                // Right Piece: Moon with Stars OR Remaining Time on Hover (Special Case)
-                // "after the sleep timer is toggled on, a special case turns on, only and only if sleep timer has a value,
-                // when the moon and stars is hovered over it displays the remaining time for the sleep timer in only minutes"
-                // "(for debug purpose make the 15,30 and 45 minutes to seconds... and instead of minutes displayed on hover show seconds)"
                 bool hasTimerValue = _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && DateTime.UtcNow < _sleepTimerTargetUtc;
-                bool showRemainingOnHover = hasTimerValue && isHovMoon && sleepP < 0.3f;
+                bool showRemainingOnHover = hasTimerValue && isHovMoon && easeP < 0.3f;
 
                 if (showRemainingOnHover)
                 {
@@ -2711,32 +2728,34 @@ internal sealed class OverlayForm : Form
 
                     using var fontCountdown = GetPremiumFont(9.5f * superScale, FontStyle.Bold);
                     var textSize = g.MeasureString(timeText, fontCountdown, PointF.Empty, StringFormat.GenericTypographic);
-                    float textX = curTimerX + (curTimerW - textSize.Width) * 0.5f;
+                    float textX = moonAnchorX + (timerW0 - textSize.Width) * 0.5f;
                     float textY = c1Y + (c1H - textSize.Height) * 0.5f;
-                    using var brushCountdown = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 25, 28, 35));
+                    using var brushCountdown = new SolidBrush(Color.FromArgb((int)(240 * moonAlpha), 25, 28, 35));
                     g.DrawString(timeText, fontCountdown, brushCountdown, textX, textY, StringFormat.GenericTypographic);
                 }
                 else if (_sleepTimerActive)
                 {
-                    float moonR = 8.8f * superScale * (1f - 0.2f * sleepP);
-                    float moonCx = curTimerX + curTimerW * 0.5f - 2.5f * superScale;
-                    float moonCy = c1Y + c1H * 0.5f;
-                    using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * splitAlpha), 25, 28, 35));
+                    float moonR = 8.8f * superScale;
+                    using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * moonAlpha), 25, 28, 35));
                     DrawMoonWithStars(g, brushDarkMoon, moonCx, moonCy, moonR);
                 }
                 else
                 {
-                    float moonR = 8.8f * superScale * (1f - 0.2f * sleepP);
-                    float moonCx = curTimerX + curTimerW * 0.5f - 2.5f * superScale;
-                    float moonCy = c1Y + c1H * 0.5f;
-                    using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * splitAlpha), 255, 255, 255));
+                    float moonR = 8.8f * superScale;
+                    using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * moonAlpha), 255, 255, 255));
                     DrawMoonWithStars(g, brushLightMoon, moonCx, moonCy, moonR);
                 }
+
+                g.Restore(stateMoon);
             }
 
-            // --- JOINED CONTENT: Fades in as sleepP increases from 0 to 1 ---
-            if (sleepP > 0.01f)
+            // --- EXPANDED TEMPLATE BUTTONS: Fades in and revealed as timer expands to the left ---
+            float templatesAlpha = Math.Clamp((easeP - 0.20f) / 0.80f, 0f, 1f);
+            if (templatesAlpha > 0.01f)
             {
+                var stateTemplates = g.Save();
+                g.SetClip(pathTimer);
+
                 float btnH = 29f * superScale;
                 float btnY = c1Y + (c1H - btnH) * 0.5f;
                 float btnR = 8f * superScale;
@@ -2758,7 +2777,7 @@ internal sealed class OverlayForm : Form
                     isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 15,
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtn15m,
                     isCancel: false,
-                    alphaMul: sleepP);
+                    alphaMul: templatesAlpha);
 
                 // Button 2: 30
                 float b2X = b1X + bW + gap;
@@ -2766,7 +2785,7 @@ internal sealed class OverlayForm : Form
                     isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 30,
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtn30m,
                     isCancel: false,
-                    alphaMul: sleepP);
+                    alphaMul: templatesAlpha);
 
                 // Button 3: 45
                 float b3X = b2X + bW + gap;
@@ -2774,7 +2793,7 @@ internal sealed class OverlayForm : Form
                     isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 45,
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtn45m,
                     isCancel: false,
-                    alphaMul: sleepP);
+                    alphaMul: templatesAlpha);
 
                 // Button 4: Cancel
                 float b4X = b3X + bW + gap;
@@ -2783,7 +2802,9 @@ internal sealed class OverlayForm : Form
                     isHovered: _hoveredHomeSleepBtn == HomeSleepBtnCancel,
                     isCancel: true,
                     timerActive: _sleepTimerActive,
-                    alphaMul: sleepP);
+                    alphaMul: templatesAlpha);
+
+                g.Restore(stateTemplates);
             }
         }
         else
@@ -3900,6 +3921,49 @@ internal sealed class OverlayForm : Form
                 ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
                 SaveDesktopScreenshotWithPill("screenshot_home_hover_timer.png");
                 File.Delete(hoverTimerTriggerPath);
+            }
+
+            string expandAnimTriggerPath = Path.Combine(rootDir, "take_home_expand_anim.trigger");
+            if (File.Exists(expandAnimTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _sleepTimerActive = false;
+                _homeSleepPickerOpen = true;
+
+                // 1. Mid-expansion (p = 0.45)
+                _homeSleepExpandP = 0.45;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var geomMid = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomMid);
+                SaveDesktopScreenshotWithPill("screenshot_home_expand_mid.png");
+
+                // 2. Full-expansion (p = 1.0)
+                _homeSleepExpandP = 1.0;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var geomFull = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomFull);
+                SaveDesktopScreenshotWithPill("screenshot_home_expand_full.png");
+
+                // 3. Reset back to resting state
+                _homeSleepPickerOpen = false;
+                _homeSleepExpandP = 0.0;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var geomRest = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomRest);
+
+                File.Delete(expandAnimTriggerPath);
             }
         }
         catch { }
