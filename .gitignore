@@ -5,3 +5,9 @@ obj/
 *.user
 *.suo
 desktop-debug.png
+*.trigger
+crop_*.png
+screenshot_chrono_*.png
+screenshot_home_*.png
+screenshot_style*.png
+screenshot_transition.png
