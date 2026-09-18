@@ -868,6 +868,7 @@ internal sealed class OverlayForm : Form
     private static uint[]? _expandedBufferB = null;
     private static bool _expandedFlip = false;
     private static Bitmap? _reusableSuperBmp = null;
+    private static Bitmap? _reusableFastBmp = null;
     private static Bitmap? _topBarBmp = null;
     private static readonly object _expandedRenderLock = new();
 
@@ -2836,10 +2837,12 @@ internal sealed class OverlayForm : Form
         topBarBmp.UnlockBits(data);
     }
 
-    private static void DownsampleToBuffer(Bitmap superBmp, uint[] destBuffer, int startY, int endY, int targetW)
+    private static void DownsampleToBuffer(Bitmap superBmp, uint[] destBuffer, int startY, int endY, int targetW, int scale = 4)
     {
-        int superW = targetW * 4;
-        var data = superBmp.LockBits(new Rectangle(0, startY * 4, superW, (endY - startY) * 4), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        int superW = targetW * scale;
+        int shift = scale == 2 ? 2 : 4;
+        int stride = superW * 4;
+        var data = superBmp.LockBits(new Rectangle(0, startY * scale, superW, (endY - startY) * scale), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
         unsafe
         {
             byte* scan = (byte*)data.Scan0;
@@ -2848,24 +2851,23 @@ internal sealed class OverlayForm : Form
             {
                 int destY = startY + y;
                 int destRow = destY * targetW;
+                int syBase = y * scale * stride;
                 for (int x = 0; x < targetW; x++)
                 {
                     int sumB = 0, sumG = 0, sumR = 0, sumA = 0;
-                    for (int dy = 0; dy < 4; dy++)
+                    int sxBase = x * scale * 4;
+                    for (int dy = 0; dy < scale; dy++)
                     {
-                        int sy = y * 4 + dy;
-                        int rowOffset = sy * superW * 4;
-                        for (int dx = 0; dx < 4; dx++)
+                        byte* pRow = scan + syBase + dy * stride + sxBase;
+                        for (int dx = 0; dx < scale; dx++)
                         {
-                            int sx = x * 4 + dx;
-                            int pxOffset = rowOffset + sx * 4;
-                            byte b = scan[pxOffset + 0];
-                            byte gVal = scan[pxOffset + 1];
-                            byte r = scan[pxOffset + 2];
-                            byte a = scan[pxOffset + 3];
+                            byte b = pRow[0];
+                            byte gVal = pRow[1];
+                            byte r = pRow[2];
+                            byte a = pRow[3];
+                            pRow += 4;
 
                             int trueA = (a > 0) ? a : Math.Max(r, Math.Max(gVal, b));
-
                             sumB += (b * trueA) >> 8;
                             sumG += (gVal * trueA) >> 8;
                             sumR += (r * trueA) >> 8;
@@ -2873,16 +2875,16 @@ internal sealed class OverlayForm : Form
                         }
                     }
 
-                    int avgA = sumA >> 4;
+                    int avgA = sumA >> shift;
                     if (avgA == 0)
                     {
                         destBuffer[destRow + x] = 0;
                     }
                     else
                     {
-                        int avgR = Math.Min(255, sumR >> 4);
-                        int avgG = Math.Min(255, sumG >> 4);
-                        int avgB = Math.Min(255, sumB >> 4);
+                        int avgR = Math.Min(255, sumR >> shift);
+                        int avgG = Math.Min(255, sumG >> shift);
+                        int avgB = Math.Min(255, sumB >> shift);
                         destBuffer[destRow + x] = ((uint)avgA << 24) | ((uint)avgR << 16) | ((uint)avgG << 8) | (uint)avgB;
                     }
                 }
@@ -3080,7 +3082,12 @@ internal sealed class OverlayForm : Form
         int clickedButton,
         double clickAnimProgress)
     {
-        const float superScale = 4.0f;
+        bool isMoving = (activeTab == TabMusic) && (
+            (Math.Abs(_audioPickerExpandP - (_audioPickerOpen ? 1.0 : 0.0)) > 0.001) ||
+            (Math.Abs(_musicSleepExpandP - (_musicSleepPickerOpen ? 1.0 : 0.0)) > 0.001));
+
+        float superScale = isMoving ? 2.0f : 4.0f;
+        int scaleInt = (int)superScale;
         int targetW = 460;
         int targetH = 150;
         int superW = (int)(targetW * superScale);
@@ -3097,14 +3104,27 @@ internal sealed class OverlayForm : Form
 
         if (transitionP >= 1.0 || prevTab == activeTab)
         {
-            // Crisp 4x superScale static rendering when resting
-            if (_reusableSuperBmp == null || _reusableSuperBmp.Width != superW || _reusableSuperBmp.Height != superH)
+            Bitmap bmp;
+            if (isMoving)
             {
-                _reusableSuperBmp?.Dispose();
-                _reusableSuperBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+                if (_reusableFastBmp == null || _reusableFastBmp.Width != superW || _reusableFastBmp.Height != superH)
+                {
+                    _reusableFastBmp?.Dispose();
+                    _reusableFastBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+                }
+                bmp = _reusableFastBmp;
+            }
+            else
+            {
+                if (_reusableSuperBmp == null || _reusableSuperBmp.Width != superW || _reusableSuperBmp.Height != superH)
+                {
+                    _reusableSuperBmp?.Dispose();
+                    _reusableSuperBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+                }
+                bmp = _reusableSuperBmp;
             }
 
-            using (var g = Graphics.FromImage(_reusableSuperBmp))
+            using (var g = Graphics.FromImage(bmp))
             {
                 g.Clear(Color.Transparent);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -3114,14 +3134,17 @@ internal sealed class OverlayForm : Form
                 DrawSingleTabContent(g, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
             }
 
-            DownsampleToBuffer(_reusableSuperBmp, targetBuffer, 0, targetH, targetW);
+            DownsampleToBuffer(bmp, targetBuffer, 0, targetH, targetW, scaleInt);
 
             // Update tab buffer cache for activeTab with the fresh crisp render
-            if (_tabBufferCache[activeTab] == null)
+            if (!isMoving)
             {
-                _tabBufferCache[activeTab] = new uint[targetW * targetH];
+                if (_tabBufferCache[activeTab] == null)
+                {
+                    _tabBufferCache[activeTab] = new uint[targetW * targetH];
+                }
+                Array.Copy(targetBuffer, _tabBufferCache[activeTab]!, targetW * targetH);
             }
-            Array.Copy(targetBuffer, _tabBufferCache[activeTab]!, targetW * targetH);
 
             return (targetBuffer, targetW, targetH);
         }
@@ -4243,49 +4266,50 @@ internal sealed class OverlayForm : Form
                 curR = oR + (tR - oR) * sleepEase;
             }
 
-            // 1. Soft physical contact drop shadow
-            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 2.5f) * superScale, curW * superScale, curH * superScale, curR * superScale))
-            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(55 * Math.Min(1f, expandEase * 1.5f)), 0, 0, 0)))
+            // 1. Soft physical contact drop shadow (elevates the glass card above the pill floor)
+            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 3.0f) * superScale, curW * superScale, curH * superScale, curR * superScale))
+            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(75 * Math.Min(1f, expandEase * 1.5f)), 0, 0, 0)))
             {
                 g.FillPath(brushShadow, shadowPath);
             }
 
-            // 2. Translucent Liquid Glass Body
+            // 2. Liquid Glass Card Body (Ultra-transparent crystal obsidian, NO milky white wash!)
             using var bodyPath = CreateRoundedRectanglePath(curX * superScale, curY * superScale, curW * superScale, curH * superScale, curR * superScale);
 
-            // 2a. Smoky acrylic backing
-            using (var brushBacking = new SolidBrush(Color.FromArgb((int)(46 * expandEase), 14, 18, 26)))
+            // 2a. Deep translucent obsidian glass base (subtle dark tint for contrast, 100% free of frosted white haze)
+            using (var brushBacking = new SolidBrush(Color.FromArgb((int)(20 * expandEase), 6, 8, 14)))
             {
                 g.FillPath(brushBacking, bodyPath);
             }
 
-            // 2b. Multi-stop vertical frosted glass sheen
-            using (var brushBody = new LinearGradientBrush(
-                new RectangleF(curX * superScale, curY * superScale, curW * superScale, curH * superScale),
-                Color.FromArgb((int)(60 * expandEase), 255, 255, 255),
-                Color.FromArgb((int)(18 * expandEase), 255, 255, 255),
-                90f))
-            {
-                g.FillPath(brushBody, bodyPath);
-            }
-
-            // 2c. Specular Top Meniscus Highlight
-            using (var brushTopRim = new LinearGradientBrush(
-                new RectangleF(curX * superScale, curY * superScale, curW * superScale, 20f * superScale),
-                Color.FromArgb((int)(85 * expandEase), 255, 255, 255),
+            // 2b. Specular glossy surface sheen (subtle curved reflection across top 28% only)
+            using (var brushGloss = new LinearGradientBrush(
+                new RectangleF(curX * superScale, curY * superScale, curW * superScale, 28f * superScale),
+                Color.FromArgb((int)(28 * expandEase), 255, 255, 255),
                 Color.FromArgb(0, 255, 255, 255),
                 90f))
             {
-                var stateTop = g.Save();
+                var stateGloss = g.Save();
                 g.SetClip(bodyPath);
-                g.FillRectangle(brushTopRim, curX * superScale, curY * superScale, curW * superScale, 20f * superScale);
-                g.Restore(stateTop);
+                g.FillRectangle(brushGloss, curX * superScale, curY * superScale, curW * superScale, 28f * superScale);
+                g.Restore(stateGloss);
             }
 
-            // 2d. Specular Outer Rim Pen
-            using (var penRim = new Pen(Color.FromArgb((int)(78 * expandEase), 255, 255, 255), 1.0f * superScale))
+            // 2c. Specular Dual Rim Border (Top: sharp jewel-like reflection; Bottom: ambient glass edge)
+            using (var brushRim = new LinearGradientBrush(
+                new RectangleF(curX * superScale, curY * superScale, curW * superScale, curH * superScale),
+                Color.FromArgb((int)(140 * expandEase), 255, 255, 255),
+                Color.FromArgb((int)(28 * expandEase), 255, 255, 255),
+                90f))
+            using (var penRim = new Pen(brushRim, 1.0f * superScale))
             {
                 g.DrawPath(penRim, bodyPath);
+            }
+
+            // 2d. Top Meniscus Crest Line (Liquid glass surface tension highlight)
+            using (var penMeniscus = new Pen(Color.FromArgb((int)(110 * expandEase), 255, 255, 255), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(penMeniscus, (curX + curR * 0.75f) * superScale, (curY + 0.5f) * superScale, (curX + curW - curR * 0.75f) * superScale, (curY + 0.5f) * superScale);
             }
 
             // 3. Expanded Panel Content (Fades in as card expands)
@@ -4299,7 +4323,7 @@ internal sealed class OverlayForm : Form
                 using var fontSub = GetPremiumFont(7.0f * superScale, FontStyle.Regular);
                 using var brushTitle = new SolidBrush(Color.FromArgb((int)(250 * contentAlpha), 255, 255, 255));
                 using var brushSub = new SolidBrush(Color.FromArgb((int)(160 * contentAlpha), 255, 255, 255));
-                using var penDivider = new Pen(Color.FromArgb((int)(40 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                using var penDivider = new Pen(Color.FromArgb((int)(30 * contentAlpha), 255, 255, 255), 1.0f * superScale);
 
                 if (isAudioMode)
                 {
@@ -4314,9 +4338,9 @@ internal sealed class OverlayForm : Form
                     bool isCloseHov = _hoveredAudioBtn == AudioBtnClose;
                     using (var pathClose = CreateRoundedRectanglePath(cX * superScale, cY * superScale, cW * superScale, cH * superScale, cR * superScale))
                     {
-                        using var brushClose = new SolidBrush(Color.FromArgb((int)((isCloseHov ? 75 : 35) * contentAlpha), 255, 255, 255));
+                        using var brushClose = new SolidBrush(Color.FromArgb((int)((isCloseHov ? 60 : 25) * contentAlpha), 255, 255, 255));
                         g.FillPath(brushClose, pathClose);
-                        using var penClose = new Pen(Color.FromArgb((int)(70 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                        using var penClose = new Pen(Color.FromArgb((int)((isCloseHov ? 100 : 50) * contentAlpha), 255, 255, 255), 1.0f * superScale);
                         g.DrawPath(penClose, pathClose);
                     }
                     using (var penX = new Pen(Color.FromArgb((int)(240 * contentAlpha), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
@@ -4358,8 +4382,12 @@ internal sealed class OverlayForm : Form
                         using var pathCard = CreateRoundedRectanglePath(cardX * superScale, cardY * superScale, cardW * superScale, cardH * superScale, cardR * superScale);
                         if (isDefault)
                         {
-                            // Inverted active liquid glass tile
-                            using var brushActive = new SolidBrush(Color.FromArgb((int)(232 * contentAlpha), 255, 255, 255));
+                            // Active / Connected Device: Luminous liquid pearl glass tile with dark obsidian typography
+                            using var brushActiveShadow = new SolidBrush(Color.FromArgb((int)(40 * contentAlpha), 0, 0, 0));
+                            using var pathActiveShadow = CreateRoundedRectanglePath(cardX * superScale, (cardY + 1.5f) * superScale, cardW * superScale, cardH * superScale, cardR * superScale);
+                            g.FillPath(brushActiveShadow, pathActiveShadow);
+
+                            using var brushActive = new SolidBrush(Color.FromArgb((int)(238 * contentAlpha), 255, 255, 255));
                             g.FillPath(brushActive, pathCard);
                             using var penActive = new Pen(Color.FromArgb((int)(255 * contentAlpha), 255, 255, 255), 1.0f * superScale);
                             g.DrawPath(penActive, pathCard);
@@ -4367,23 +4395,34 @@ internal sealed class OverlayForm : Form
                             // Dark speaker glyph
                             DrawAudioOutputGlyph(g, (cardX + 17f) * superScale, (cardY + 29f) * superScale, 11f * superScale, contentAlpha, isDark: true);
 
-                            using var brushDarkText = new SolidBrush(Color.FromArgb((int)(245 * contentAlpha), 20, 24, 30));
+                            using var brushDarkText = new SolidBrush(Color.FromArgb((int)(245 * contentAlpha), 18, 22, 28));
                             g.DrawString(shown[i].ShortName, fontDevName, brushDarkText, (cardX + 32f) * superScale, (cardY + 14f) * superScale, StringFormat.GenericTypographic);
 
                             // Badge: "✓ Active"
-                            using var brushBadge = new SolidBrush(Color.FromArgb((int)(40 * contentAlpha), 0, 0, 0));
+                            using var brushBadge = new SolidBrush(Color.FromArgb((int)(35 * contentAlpha), 0, 0, 0));
                             using var pathBadge = CreateRoundedRectanglePath((cardX + 32f) * superScale, (cardY + 34f) * superScale, 48f * superScale, 15f * superScale, 4f * superScale);
                             g.FillPath(brushBadge, pathBadge);
-                            using var brushBadgeText = new SolidBrush(Color.FromArgb((int)(225 * contentAlpha), 20, 24, 30));
+                            using var brushBadgeText = new SolidBrush(Color.FromArgb((int)(225 * contentAlpha), 18, 22, 28));
                             g.DrawString("✓ Active", fontDevSub, brushBadgeText, (cardX + 35f) * superScale, (cardY + 36f) * superScale, StringFormat.GenericTypographic);
                         }
                         else
                         {
-                            // Frosted glass tile
-                            using var brushNorm = new SolidBrush(Color.FromArgb((int)((isDevHovered ? 65 : 30) * contentAlpha), 255, 255, 255));
+                            // Inactive Device: Polished liquid glass tile (crystal depth, specular rim, no milky wash)
+                            using var brushNorm = new SolidBrush(Color.FromArgb((int)((isDevHovered ? 28 : 12) * contentAlpha), 255, 255, 255));
                             g.FillPath(brushNorm, pathCard);
-                            using var penNorm = new Pen(Color.FromArgb((int)((isDevHovered ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+
+                            // Specular edge gradient pen
+                            using var brushTileRim = new LinearGradientBrush(
+                                new RectangleF(cardX * superScale, cardY * superScale, cardW * superScale, cardH * superScale),
+                                Color.FromArgb((int)((isDevHovered ? 130 : 65) * contentAlpha), 255, 255, 255),
+                                Color.FromArgb((int)((isDevHovered ? 45 : 18) * contentAlpha), 255, 255, 255),
+                                90f);
+                            using var penNorm = new Pen(brushTileRim, 1.0f * superScale);
                             g.DrawPath(penNorm, pathCard);
+
+                            // Top edge hairline glint
+                            using var penTileGlint = new Pen(Color.FromArgb((int)((isDevHovered ? 90 : 35) * contentAlpha), 255, 255, 255), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                            g.DrawLine(penTileGlint, (cardX + cardR * 0.7f) * superScale, (cardY + 0.5f) * superScale, (cardX + cardW - cardR * 0.7f) * superScale, (cardY + 0.5f) * superScale);
 
                             // Light speaker glyph
                             DrawAudioOutputGlyph(g, (cardX + 17f) * superScale, (cardY + 29f) * superScale, 11f * superScale, contentAlpha, isDark: false);
@@ -4464,14 +4503,22 @@ internal sealed class OverlayForm : Form
                             clockText = $"{remMin}:{remSec:D2}";
                         }
 
-                        // Left card: Digital countdown clock
+                        // Left card: Digital countdown clock (Liquid glass crystal container)
                         float cLeftX = 96f, cLeftY = 70f, cLeftW = 154f, cLeftH = 58f, cLeftR = 9f;
                         using (var pathLeft = CreateRoundedRectanglePath(cLeftX * superScale, cLeftY * superScale, cLeftW * superScale, cLeftH * superScale, cLeftR * superScale))
                         {
-                            using var brushLeft = new SolidBrush(Color.FromArgb((int)(38 * contentAlpha), 255, 255, 255));
+                            using var brushLeft = new SolidBrush(Color.FromArgb((int)(16 * contentAlpha), 255, 255, 255));
                             g.FillPath(brushLeft, pathLeft);
-                            using var penLeft = new Pen(Color.FromArgb((int)(65 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            using var brushClockRim = new LinearGradientBrush(
+                                new RectangleF(cLeftX * superScale, cLeftY * superScale, cLeftW * superScale, cLeftH * superScale),
+                                Color.FromArgb((int)(80 * contentAlpha), 255, 255, 255),
+                                Color.FromArgb((int)(22 * contentAlpha), 255, 255, 255),
+                                90f);
+                            using var penLeft = new Pen(brushClockRim, 1.0f * superScale);
                             g.DrawPath(penLeft, pathLeft);
+
+                            using var penClockGlint = new Pen(Color.FromArgb((int)(55 * contentAlpha), 255, 255, 255), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                            g.DrawLine(penClockGlint, (cLeftX + cLeftR * 0.7f) * superScale, (cLeftY + 0.5f) * superScale, (cLeftX + cLeftW - cLeftR * 0.7f) * superScale, (cLeftY + 0.5f) * superScale);
                         }
 
                         using var fontClock = GetPremiumFont(17.5f * superScale, FontStyle.Bold);
@@ -4503,10 +4550,18 @@ internal sealed class OverlayForm : Form
                         bool isAdd5Hov = _hoveredMusicSleepBtn == MusicSleepBtnAdd5m;
                         using (var pathAdd5 = CreateRoundedRectanglePath(260f * superScale, 70f * superScale, 54f * superScale, bH * superScale, bR * superScale))
                         {
-                            using var brushAdd5 = new SolidBrush(Color.FromArgb((int)((isAdd5Hov ? 65 : 30) * contentAlpha), 255, 255, 255));
+                            using var brushAdd5 = new SolidBrush(Color.FromArgb((int)((isAdd5Hov ? 28 : 12) * contentAlpha), 255, 255, 255));
                             g.FillPath(brushAdd5, pathAdd5);
-                            using var penAdd5 = new Pen(Color.FromArgb((int)((isAdd5Hov ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            using var brushAdd5Rim = new LinearGradientBrush(
+                                new RectangleF(260f * superScale, 70f * superScale, 54f * superScale, bH * superScale),
+                                Color.FromArgb((int)((isAdd5Hov ? 130 : 65) * contentAlpha), 255, 255, 255),
+                                Color.FromArgb((int)((isAdd5Hov ? 45 : 18) * contentAlpha), 255, 255, 255),
+                                90f);
+                            using var penAdd5 = new Pen(brushAdd5Rim, 1.0f * superScale);
                             g.DrawPath(penAdd5, pathAdd5);
+
+                            using var penGlint = new Pen(Color.FromArgb((int)((isAdd5Hov ? 90 : 35) * contentAlpha), 255, 255, 255), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                            g.DrawLine(penGlint, (260f + bR * 0.7f) * superScale, 70.5f * superScale, (260f + 54f - bR * 0.7f) * superScale, 70.5f * superScale);
                         }
                         using var fontAdjNum = GetPremiumFont(11.5f * superScale, FontStyle.Bold);
                         using var fontAdjSub = GetPremiumFont(6.2f * superScale, FontStyle.Regular);
@@ -4520,10 +4575,18 @@ internal sealed class OverlayForm : Form
                         bool isAdd15Hov = _hoveredMusicSleepBtn == MusicSleepBtn30m;
                         using (var pathAdd15 = CreateRoundedRectanglePath(320f * superScale, 70f * superScale, 54f * superScale, bH * superScale, bR * superScale))
                         {
-                            using var brushAdd15 = new SolidBrush(Color.FromArgb((int)((isAdd15Hov ? 65 : 30) * contentAlpha), 255, 255, 255));
+                            using var brushAdd15 = new SolidBrush(Color.FromArgb((int)((isAdd15Hov ? 28 : 12) * contentAlpha), 255, 255, 255));
                             g.FillPath(brushAdd15, pathAdd15);
-                            using var penAdd15 = new Pen(Color.FromArgb((int)((isAdd15Hov ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            using var brushAdd15Rim = new LinearGradientBrush(
+                                new RectangleF(320f * superScale, 70f * superScale, 54f * superScale, bH * superScale),
+                                Color.FromArgb((int)((isAdd15Hov ? 130 : 65) * contentAlpha), 255, 255, 255),
+                                Color.FromArgb((int)((isAdd15Hov ? 45 : 18) * contentAlpha), 255, 255, 255),
+                                90f);
+                            using var penAdd15 = new Pen(brushAdd15Rim, 1.0f * superScale);
                             g.DrawPath(penAdd15, pathAdd15);
+
+                            using var penGlint = new Pen(Color.FromArgb((int)((isAdd15Hov ? 90 : 35) * contentAlpha), 255, 255, 255), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                            g.DrawLine(penGlint, (320f + bR * 0.7f) * superScale, 70.5f * superScale, (320f + 54f - bR * 0.7f) * superScale, 70.5f * superScale);
                         }
                         string lblAdd15 = DebugSleepTimerInSeconds ? "+15s" : "+15m";
                         var szA15 = g.MeasureString(lblAdd15, fontAdjNum, PointF.Empty, StringFormat.GenericTypographic);
@@ -4531,14 +4594,22 @@ internal sealed class OverlayForm : Form
                         var szA15Sub = g.MeasureString("EXTEND", fontAdjSub, PointF.Empty, StringFormat.GenericTypographic);
                         g.DrawString("EXTEND", fontAdjSub, brushClockLabel, (320f + (54f - szA15Sub.Width / superScale) * 0.5f) * superScale, 104f * superScale, StringFormat.GenericTypographic);
 
-                        // [✕ Stop]
+                        // [✕ Stop] (Translucent Ruby Glass Tile)
                         bool isStopBodyHov = _hoveredMusicSleepBtn == MusicSleepBtnCancel;
                         using (var pathStopBody = CreateRoundedRectanglePath(380f * superScale, 70f * superScale, 54f * superScale, bH * superScale, bR * superScale))
                         {
-                            using var brushStopBody = new SolidBrush(Color.FromArgb((int)((isStopBodyHov ? 70 : 35) * contentAlpha), 255, 75, 75));
+                            using var brushStopBody = new SolidBrush(Color.FromArgb((int)((isStopBodyHov ? 55 : 24) * contentAlpha), 255, 50, 50));
                             g.FillPath(brushStopBody, pathStopBody);
-                            using var penStopBody = new Pen(Color.FromArgb((int)(100 * contentAlpha), 255, 100, 100), 1.0f * superScale);
+                            using var brushStopRim = new LinearGradientBrush(
+                                new RectangleF(380f * superScale, 70f * superScale, 54f * superScale, bH * superScale),
+                                Color.FromArgb((int)((isStopBodyHov ? 140 : 75) * contentAlpha), 255, 90, 90),
+                                Color.FromArgb((int)((isStopBodyHov ? 60 : 30) * contentAlpha), 200, 40, 40),
+                                90f);
+                            using var penStopBody = new Pen(brushStopRim, 1.0f * superScale);
                             g.DrawPath(penStopBody, pathStopBody);
+
+                            using var penGlint = new Pen(Color.FromArgb((int)((isStopBodyHov ? 110 : 50) * contentAlpha), 255, 140, 140), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                            g.DrawLine(penGlint, (380f + bR * 0.7f) * superScale, 70.5f * superScale, (380f + 54f - bR * 0.7f) * superScale, 70.5f * superScale);
                         }
                         using var brushStopTextB = new SolidBrush(Color.FromArgb((int)(250 * contentAlpha), 255, 200, 200));
                         var szStop = g.MeasureString("✕", fontAdjNum, PointF.Empty, StringFormat.GenericTypographic);
@@ -4570,12 +4641,17 @@ internal sealed class OverlayForm : Form
                             using var pathPreset = CreateRoundedRectanglePath(cardX * superScale, cardY * superScale, cardW * superScale, cardH * superScale, cardR * superScale);
                             if (isCurrentVal)
                             {
-                                using var brushActive = new SolidBrush(Color.FromArgb((int)(230 * contentAlpha), 255, 255, 255));
+                                // Active preset: Luminous liquid pearl tile
+                                using var brushActiveShadow = new SolidBrush(Color.FromArgb((int)(40 * contentAlpha), 0, 0, 0));
+                                using var pathActiveShadow = CreateRoundedRectanglePath(cardX * superScale, (cardY + 1.5f) * superScale, cardW * superScale, cardH * superScale, cardR * superScale);
+                                g.FillPath(brushActiveShadow, pathActiveShadow);
+
+                                using var brushActive = new SolidBrush(Color.FromArgb((int)(238 * contentAlpha), 255, 255, 255));
                                 g.FillPath(brushActive, pathPreset);
                                 using var penActive = new Pen(Color.FromArgb((int)(255 * contentAlpha), 255, 255, 255), 1.0f * superScale);
                                 g.DrawPath(penActive, pathPreset);
 
-                                using var brushDark = new SolidBrush(Color.FromArgb((int)(245 * contentAlpha), 20, 24, 30));
+                                using var brushDark = new SolidBrush(Color.FromArgb((int)(245 * contentAlpha), 18, 22, 28));
                                 string num = presets[j].ToString();
                                 var szN = g.MeasureString(num, fontNum, PointF.Empty, StringFormat.GenericTypographic);
                                 g.DrawString(num, fontNum, brushDark, (cardX + (cardW - szN.Width / superScale) * 0.5f) * superScale, 77f * superScale, StringFormat.GenericTypographic);
@@ -4585,10 +4661,20 @@ internal sealed class OverlayForm : Form
                             }
                             else
                             {
-                                using var brushCard = new SolidBrush(Color.FromArgb((int)((isHovered ? 65 : 30) * contentAlpha), 255, 255, 255));
+                                // Inactive preset: Polished liquid glass tile (crystal depth, specular rim, no milky wash)
+                                using var brushCard = new SolidBrush(Color.FromArgb((int)((isHovered ? 28 : 12) * contentAlpha), 255, 255, 255));
                                 g.FillPath(brushCard, pathPreset);
-                                using var penCard = new Pen(Color.FromArgb((int)((isHovered ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+
+                                using var brushPresetRim = new LinearGradientBrush(
+                                    new RectangleF(cardX * superScale, cardY * superScale, cardW * superScale, cardH * superScale),
+                                    Color.FromArgb((int)((isHovered ? 130 : 65) * contentAlpha), 255, 255, 255),
+                                    Color.FromArgb((int)((isHovered ? 45 : 18) * contentAlpha), 255, 255, 255),
+                                    90f);
+                                using var penCard = new Pen(brushPresetRim, 1.0f * superScale);
                                 g.DrawPath(penCard, pathPreset);
+
+                                using var penTileGlint = new Pen(Color.FromArgb((int)((isHovered ? 90 : 35) * contentAlpha), 255, 255, 255), 1.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                                g.DrawLine(penTileGlint, (cardX + cardR * 0.7f) * superScale, (cardY + 0.5f) * superScale, (cardX + cardW - cardR * 0.7f) * superScale, (cardY + 0.5f) * superScale);
 
                                 string num = presets[j].ToString();
                                 var szN = g.MeasureString(num, fontNum, PointF.Empty, StringFormat.GenericTypographic);
@@ -6057,8 +6143,11 @@ internal sealed class OverlayForm : Form
                                    (_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - ChronoActiveWidth) > 0.5) ||
                                    (_chronoTimerRunning && Math.Abs(_chronoRunningHoverP - (_chronoRunningHovered ? 1.0 : 0.0)) > 0.01) ||
                                    (_activeTab == TabChrono && _chronoTimerRunning);
-            int sleepTimeout = isFastAnimating ? 1 : (_hoverPos > 0.6 ? 4 : 10);
-            _renderSignal.WaitOne(sleepTimeout);
+            int sleepTimeout = isFastAnimating ? 0 : (_hoverPos > 0.6 ? 4 : 10);
+            if (sleepTimeout > 0)
+            {
+                _renderSignal.WaitOne(sleepTimeout);
+            }
             if (!_running) break;
 
             try
@@ -6525,10 +6614,10 @@ internal sealed class OverlayForm : Form
 
             // Smoothly animate audio output picker expand / collapse progress
             double targetAudioP = _audioPickerOpen ? 1.0 : 0.0;
-            if (Math.Abs(_audioPickerExpandP - targetAudioP) > 0.001)
+            if (Math.Abs(_audioPickerExpandP - targetAudioP) > 0.0005)
             {
-                _audioPickerExpandP += (targetAudioP - _audioPickerExpandP) * Math.Min(1.0, 8.5 * dt);
-                if (Math.Abs(_audioPickerExpandP - targetAudioP) < 0.001)
+                _audioPickerExpandP += (targetAudioP - _audioPickerExpandP) * Math.Min(1.0, 16.5 * dt);
+                if (Math.Abs(_audioPickerExpandP - targetAudioP) < 0.0005)
                 {
                     _audioPickerExpandP = targetAudioP;
                 }
@@ -6538,10 +6627,10 @@ internal sealed class OverlayForm : Form
 
             // Smoothly animate music sleep timer picker expand / collapse progress
             double targetMusicSleepP = _musicSleepPickerOpen ? 1.0 : 0.0;
-            if (Math.Abs(_musicSleepExpandP - targetMusicSleepP) > 0.001)
+            if (Math.Abs(_musicSleepExpandP - targetMusicSleepP) > 0.0005)
             {
-                _musicSleepExpandP += (targetMusicSleepP - _musicSleepExpandP) * Math.Min(1.0, 8.5 * dt);
-                if (Math.Abs(_musicSleepExpandP - targetMusicSleepP) < 0.001)
+                _musicSleepExpandP += (targetMusicSleepP - _musicSleepExpandP) * Math.Min(1.0, 16.5 * dt);
+                if (Math.Abs(_musicSleepExpandP - targetMusicSleepP) < 0.0005)
                 {
                     _musicSleepExpandP = targetMusicSleepP;
                 }
@@ -6900,8 +6989,8 @@ internal sealed class OverlayForm : Form
                 double pX, pY, pW, pH;
                 if (_audioPickerExpandP >= _musicSleepExpandP)
                 {
-                    double oX = 70.0 + 83.0, oY = 38.0 + 105.0, oW = 30.0, oH = 30.0, oR = 15.0;
-                    double tX = 70.0 + 84.0, tY = 38.0 + 38.0, tW = 362.0, tH = 100.0, tR = 14.0;
+                    double oX = 70.0 + 83.0, oY = 26.0 + 105.0, oW = 30.0, oH = 30.0, oR = 15.0;
+                    double tX = 70.0 + 84.0, tY = 26.0 + 38.0, tW = 362.0, tH = 100.0, tR = 14.0;
                     pX = oX + (tX - oX) * panelEase;
                     pY = oY + (tY - oY) * panelEase;
                     pW = oW + (tW - oW) * panelEase;
@@ -6910,8 +6999,8 @@ internal sealed class OverlayForm : Form
                 }
                 else
                 {
-                    double oX = 70.0 + 417.0, oY = 38.0 + 105.0, oW = 30.0, oH = 30.0, oR = 15.0;
-                    double tX = 70.0 + 84.0, tY = 38.0 + 38.0, tW = 362.0, tH = 100.0, tR = 14.0;
+                    double oX = 70.0 + 417.0, oY = 26.0 + 105.0, oW = 30.0, oH = 30.0, oR = 15.0;
+                    double tX = 70.0 + 84.0, tY = 26.0 + 38.0, tW = 362.0, tH = 100.0, tR = 14.0;
                     pX = oX + (tX - oX) * panelEase;
                     pY = oY + (tY - oY) * panelEase;
                     pW = oW + (tW - oW) * panelEase;
@@ -7117,7 +7206,8 @@ internal sealed class OverlayForm : Form
                     int blurG = (int)(gStd * (1.0 - heavyBlend) + gHvy * heavyBlend);
                     int blurR = (int)(rStd * (1.0 - heavyBlend) + rHvy * heavyBlend);
 
-                    // Distinct blur under expanded music tab media buttons or expanded liquid glass panel
+                    // Distinct blur under resting media buttons, and specular rim crest for expanded liquid glass panel
+                    double panelEdgeCrest = 0.0;
                     double btnBlurFactor = 0.0;
                     if (hasExpandedMusicPanel)
                     {
@@ -7126,10 +7216,9 @@ internal sealed class OverlayForm : Form
                         double pOutDist = Math.Sqrt(Math.Max(0.0, pqx) * Math.Max(0.0, pqx) + Math.Max(0.0, pqy) * Math.Max(0.0, pqy));
                         double pInDist = Math.Min(0.0, Math.Max(pqx, pqy));
                         double panelSdf = pOutDist + pInDist - panelR;
-                        if (panelSdf <= 1.0)
+                        if (panelSdf >= -3.5 && panelSdf <= 1.5)
                         {
-                            double panelFactor = Math.Clamp(-panelSdf + 0.5, 0.0, 1.0) * panelEase * expAlpha * musicTabBlend;
-                            btnBlurFactor = Math.Max(btnBlurFactor, panelFactor);
+                            panelEdgeCrest = Math.Clamp(1.0 - Math.Abs(panelSdf + 0.8) / 2.2, 0.0, 1.0) * panelEase * expAlpha * musicTabBlend;
                         }
                     }
                     else if (isMusicTabActive && y >= 124 && y <= 168)
@@ -7204,6 +7293,12 @@ internal sealed class OverlayForm : Form
                         double topNorm = (-uy);
                         double edgeCrest = Math.Pow((rNorm - 0.65) / 0.35, 2.0);
                         topLight = topNorm * edgeCrest * 22.0;
+                    }
+
+                    // Liquid glass specular rim crest for expanded music card
+                    if (panelEdgeCrest > 0.005)
+                    {
+                        specKey += panelEdgeCrest * 38.0;
                     }
 
                     // Composite liquid glass optics: balanced and tasteful
