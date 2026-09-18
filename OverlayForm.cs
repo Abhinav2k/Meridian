@@ -850,7 +850,10 @@ internal sealed class OverlayForm : Form
     private const int MusicSleepBtn15m = 20;
     private const int MusicSleepBtn30m = 21;
     private const int MusicSleepBtn45m = 22;
-    private const int MusicSleepBtnCancel = 23;
+    private const int MusicSleepBtn60m = 23;
+    private const int MusicSleepBtnCancel = 24;
+    private const int MusicSleepBtnClose = 25;
+    private const int MusicSleepBtnAdd5m = 26;
 
     private int _activeTab = TabHome;
     private int _prevTab = TabHome;
@@ -1515,37 +1518,31 @@ internal sealed class OverlayForm : Form
 
     private static int HitTestMediaButton(float mx, float my)
     {
-        float cy = 120f;
-        if (my < 100f || my > 140f) return BtnNone;
-
         // 1. Audio output device picker expanded state
-        if (_audioPickerOpen || _audioPickerExpandP > 0.3)
+        if (_audioPickerOpen || _audioPickerExpandP > 0.05)
         {
             float ease = (float)(_audioPickerExpandP * _audioPickerExpandP * (3.0 - 2.0 * _audioPickerExpandP));
-            float curW = 30f + (310f - 30f) * ease;
-            float curX = 83f;
+            float curX = 83f + 1f * ease;
+            float curY = 105f + (38f - 105f) * ease;
+            float curW = 30f + (362f - 30f) * ease;
+            float curH = 30f + (100f - 30f) * ease;
 
-            if (mx >= curX && mx <= curX + curW)
+            if (mx >= curX && mx <= curX + curW && my >= curY && my <= curY + curH)
             {
-                // Close button at far right
-                float cX = curX + curW - 28f;
-                if (mx >= cX && mx <= cX + 24f) return AudioBtnClose;
+                // Close button at top right
+                if (mx >= 412f && mx <= 440f && my >= 38f && my <= 66f) return AudioBtnClose;
 
-                // Device chips in middle
-                float startX = 117f;
-                float endX = cX - 6f;
-                float availW = endX - startX;
-                var devices = AudioDeviceManager.GetDevices();
-                int count = Math.Min(3, devices.Count > 0 ? devices.Count : 2);
-                float gap = 5f;
-                float chipW = Math.Max(50f, (availW - gap * (count - 1)) / count);
-
-                for (int i = 0; i < count; i++)
+                // Device chips in body
+                if (my >= 68f && my <= 134f)
                 {
-                    float chX = startX + i * (chipW + gap);
-                    if (mx >= chX && mx <= chX + chipW)
+                    var devices = AudioDeviceManager.GetDevices();
+                    int count = Math.Min(3, devices.Count > 0 ? devices.Count : 2);
+                    float gap = 8f;
+                    float cardW = (338f - (count - 1) * gap) / count;
+                    for (int i = 0; i < count; i++)
                     {
-                        return AudioBtnChip0 + i;
+                        float chX = 96f + i * (cardW + gap);
+                        if (mx >= chX && mx <= chX + cardW) return AudioBtnChip0 + i;
                     }
                 }
 
@@ -1554,39 +1551,63 @@ internal sealed class OverlayForm : Form
         }
 
         // 2. Music sleep timer picker expanded state
-        if (_musicSleepPickerOpen || _musicSleepExpandP > 0.3)
+        if (_musicSleepPickerOpen || _musicSleepExpandP > 0.05)
         {
             float ease = (float)(_musicSleepExpandP * _musicSleepExpandP * (3.0 - 2.0 * _musicSleepExpandP));
-            float curW = 30f + (188f - 30f) * ease;
-            float curX = 447f - curW;
+            float curX = 417f + (84f - 417f) * ease;
+            float curY = 105f + (38f - 105f) * ease;
+            float curW = 30f + (362f - 30f) * ease;
+            float curH = 30f + (100f - 30f) * ease;
 
-            if (mx >= curX && mx <= 447f)
+            if (mx >= curX && mx <= curX + curW && my >= curY && my <= curY + curH)
             {
-                float padX = (curW - 138f) * 0.5f;
-                float b1X = curX + padX;
-                float b2X = b1X + 38f;
-                float b3X = b2X + 38f;
-                float b4X = b3X + 38f;
+                // Close button at top right
+                if (mx >= 412f && mx <= 440f && my >= 38f && my <= 66f) return MusicSleepBtnClose;
 
-                if (mx >= b1X && mx < b1X + 34f) return MusicSleepBtn15m;
-                if (mx >= b2X && mx < b2X + 34f) return MusicSleepBtn30m;
-                if (mx >= b3X && mx < b3X + 34f) return MusicSleepBtn45m;
-                if (mx >= b4X && mx <= b4X + 24f) return MusicSleepBtnCancel;
+                // Header Stop button if active
+                if (_sleepTimerActive && mx >= 334f && mx <= 410f && my >= 38f && my <= 66f) return MusicSleepBtnCancel;
+
+                // Body area
+                if (my >= 68f && my <= 134f)
+                {
+                    if (_sleepTimerActive && _sleepTimerTargetUtc > DateTime.UtcNow)
+                    {
+                        // Right side controls: +5m at [260, 314], +15m at [320, 374], Stop at [380, 434]
+                        if (mx >= 260f && mx <= 314f) return MusicSleepBtnAdd5m;
+                        if (mx >= 320f && mx <= 374f) return MusicSleepBtn30m; // Adds 15m
+                        if (mx >= 380f && mx <= 434f) return MusicSleepBtnCancel;
+                    }
+                    else
+                    {
+                        // 4 Presets: 15, 30, 45, 60
+                        float gap = 8f;
+                        float cardW = (338f - 3 * gap) / 4f;
+                        for (int j = 0; j < 4; j++)
+                        {
+                            float chX = 96f + j * (cardW + gap);
+                            if (mx >= chX && mx <= chX + cardW) return MusicSleepBtn15m + j;
+                        }
+                    }
+                }
 
                 return BtnSleepTimer;
             }
         }
 
         // 3. Resting / collapsed buttons
-        if (Math.Abs(mx - 98f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnAudioDevice;
-        if (Math.Abs(mx - 432f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnSleepTimer;
-
-        // Transport controls (only active if neither picker is expanded)
-        if (_audioPickerExpandP < 0.2 && _musicSleepExpandP < 0.2)
+        float cy = 120f;
+        if (my >= 100f && my <= 140f)
         {
-            if (Math.Abs(mx - 217f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnPrev;
-            if (Math.Abs(mx - 265f) <= 21f && Math.Abs(my - cy) <= 21f) return BtnPlayPause;
-            if (Math.Abs(mx - 313f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnNext;
+            if (Math.Abs(mx - 98f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnAudioDevice;
+            if (Math.Abs(mx - 432f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnSleepTimer;
+
+            // Transport controls (only active if neither picker is expanded)
+            if (_audioPickerExpandP < 0.1 && _musicSleepExpandP < 0.1)
+            {
+                if (Math.Abs(mx - 217f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnPrev;
+                if (Math.Abs(mx - 265f) <= 21f && Math.Abs(my - cy) <= 21f) return BtnPlayPause;
+                if (Math.Abs(mx - 313f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnNext;
+            }
         }
 
         return BtnNone;
@@ -1737,6 +1758,7 @@ internal sealed class OverlayForm : Form
                     {
                         AudioDeviceManager.SetDefaultDevice(devices[devIdx].Id);
                     }
+                    _audioPickerOpen = false;
                     _tabBufferCache[TabMusic] = null;
                     _needExpandedUpdate = true;
                     return true;
@@ -1744,9 +1766,11 @@ internal sealed class OverlayForm : Form
                 else
                 {
                     float ease = (float)(_audioPickerExpandP * _audioPickerExpandP * (3.0 - 2.0 * _audioPickerExpandP));
-                    float curW = 30f + (310f - 30f) * ease;
-                    float curX = 83f;
-                    if (mx < curX || mx > curX + curW || my < 100f || my > 140f)
+                    float curX = 83f + 1f * ease;
+                    float curY = 105f + (38f - 105f) * ease;
+                    float curW = 30f + (362f - 30f) * ease;
+                    float curH = 30f + (100f - 30f) * ease;
+                    if (mx < curX || mx > curX + curW || my < curY || my > curY + curH)
                     {
                         _audioPickerOpen = false;
                         _tabBufferCache[TabMusic] = null;
@@ -1759,36 +1783,10 @@ internal sealed class OverlayForm : Form
             if (_musicSleepPickerOpen)
             {
                 int btn = HitTestMediaButton(mx, my);
-                if (btn == MusicSleepBtn15m)
+                if (btn == MusicSleepBtnClose)
                 {
-                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(15) : DateTime.UtcNow.AddMinutes(15);
-                    _sleepTimerDurationMinutes = 15;
-                    _sleepTimerActive = true;
                     _musicSleepPickerOpen = false;
                     _tabBufferCache[TabMusic] = null;
-                    _tabBufferCache[TabHome] = null;
-                    _needExpandedUpdate = true;
-                    return true;
-                }
-                else if (btn == MusicSleepBtn30m)
-                {
-                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(30) : DateTime.UtcNow.AddMinutes(30);
-                    _sleepTimerDurationMinutes = 30;
-                    _sleepTimerActive = true;
-                    _musicSleepPickerOpen = false;
-                    _tabBufferCache[TabMusic] = null;
-                    _tabBufferCache[TabHome] = null;
-                    _needExpandedUpdate = true;
-                    return true;
-                }
-                else if (btn == MusicSleepBtn45m)
-                {
-                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(45) : DateTime.UtcNow.AddMinutes(45);
-                    _sleepTimerDurationMinutes = 45;
-                    _sleepTimerActive = true;
-                    _musicSleepPickerOpen = false;
-                    _tabBufferCache[TabMusic] = null;
-                    _tabBufferCache[TabHome] = null;
                     _needExpandedUpdate = true;
                     return true;
                 }
@@ -1803,12 +1801,79 @@ internal sealed class OverlayForm : Form
                     _needExpandedUpdate = true;
                     return true;
                 }
+                else if (btn == MusicSleepBtnAdd5m)
+                {
+                    if (_sleepTimerTargetUtc != DateTime.MinValue)
+                    {
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds
+                            ? _sleepTimerTargetUtc.AddSeconds(5)
+                            : _sleepTimerTargetUtc.AddMinutes(5);
+                    }
+                    else
+                    {
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(5) : DateTime.UtcNow.AddMinutes(5);
+                        _sleepTimerActive = true;
+                    }
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtn15m)
+                {
+                    _sleepTimerDurationMinutes = 15;
+                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(15) : DateTime.UtcNow.AddMinutes(15);
+                    _sleepTimerActive = true;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtn30m)
+                {
+                    if (_sleepTimerActive && _sleepTimerTargetUtc > DateTime.UtcNow)
+                    {
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? _sleepTimerTargetUtc.AddSeconds(15) : _sleepTimerTargetUtc.AddMinutes(15);
+                    }
+                    else
+                    {
+                        _sleepTimerDurationMinutes = 30;
+                        _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(30) : DateTime.UtcNow.AddMinutes(30);
+                        _sleepTimerActive = true;
+                    }
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtn45m)
+                {
+                    _sleepTimerDurationMinutes = 45;
+                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(45) : DateTime.UtcNow.AddMinutes(45);
+                    _sleepTimerActive = true;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtn60m)
+                {
+                    _sleepTimerDurationMinutes = 60;
+                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(60) : DateTime.UtcNow.AddMinutes(60);
+                    _sleepTimerActive = true;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
                 else
                 {
                     float ease = (float)(_musicSleepExpandP * _musicSleepExpandP * (3.0 - 2.0 * _musicSleepExpandP));
-                    float curW = 30f + (188f - 30f) * ease;
-                    float curX = 447f - curW;
-                    if (mx < curX || mx > 447f || my < 100f || my > 140f)
+                    float curX = 417f + (84f - 417f) * ease;
+                    float curY = 105f + (38f - 105f) * ease;
+                    float curW = 30f + (362f - 30f) * ease;
+                    float curH = 30f + (100f - 30f) * ease;
+                    if (mx < curX || mx > curX + curW || my < curY || my > curY + curH)
                     {
                         _musicSleepPickerOpen = false;
                         _tabBufferCache[TabMusic] = null;
@@ -2514,13 +2579,14 @@ internal sealed class OverlayForm : Form
         g.FillPolygon(brush, tri2);
     }
 
-    private static void DrawAudioOutputGlyph(Graphics g, float cx, float cy, float size, float alpha = 1.0f)
+    private static void DrawAudioOutputGlyph(Graphics g, float cx, float cy, float size, float alpha = 1.0f, bool isDark = false)
     {
         if (alpha <= 0.01f) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         int a = (int)(235 * alpha);
-        using var pen = new Pen(Color.FromArgb(a, 255, 255, 255), 1.5f * (size / 13f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        using var brush = new SolidBrush(Color.FromArgb(a, 255, 255, 255));
+        Color color = isDark ? Color.FromArgb(a, 25, 28, 35) : Color.FromArgb(a, 255, 255, 255);
+        using var pen = new Pen(color, 1.5f * (size / 13f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var brush = new SolidBrush(color);
 
         float s = size * 0.5f;
         PointF[] speakerPts = new[]
@@ -3989,67 +4055,6 @@ internal sealed class OverlayForm : Form
         float rightEdge = (targetW - 16f) * superScale;
         float barW = rightEdge - textStartX;
 
-        using (var brushTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-        {
-            g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 44f * superScale, StringFormat.GenericDefault);
-        }
-
-        using (var brushArtist = new SolidBrush(Color.FromArgb(195, 255, 255, 255)))
-        {
-            g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 63f * superScale, StringFormat.GenericDefault);
-        }
-
-        float barY = 86f * superScale;
-        float barH = 2.5f * superScale;
-        double progressRatio = (track.DurationSeconds > 0)
-            ? Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0)
-            : 0.0;
-
-        using (var penRail = new Pen(Color.FromArgb(50, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-        {
-            g.DrawLine(penRail, textStartX + barH * 0.5f, barY, rightEdge - barH * 0.5f, barY);
-        }
-
-        float fillEnd = textStartX + (float)(progressRatio * barW);
-        if (fillEnd > textStartX + barH)
-        {
-            using var penFill = new Pen(Color.FromArgb(250, 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
-        }
-
-        float beadR = 3.5f * superScale;
-        using (var brushBead = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-        {
-            g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
-        }
-
-        string elStr;
-        string remStr;
-        if (track.DurationSeconds > 0)
-        {
-            int elMin = (int)(progressSeconds / 60);
-            int elSec = (int)(progressSeconds % 60);
-            elStr = $"{elMin}:{elSec:D2}";
-
-            double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
-            int remMin = (int)(remSeconds / 60);
-            int remSec = (int)(remSeconds % 60);
-            remStr = $"-{remMin}:{remSec:D2}";
-        }
-        else
-        {
-            elStr = "0:00";
-            remStr = "--:--";
-        }
-
-        float timeLabelY = 92f * superScale;
-        using (var brushTime = new SolidBrush(Color.FromArgb(165, 255, 255, 255)))
-        {
-            g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
-            var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
-            g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
-        }
-
         float ctrlY = 120f * superScale;
 
         // Fluid expansion ease progress
@@ -4059,185 +4064,114 @@ internal sealed class OverlayForm : Form
         float sleepP = (float)Math.Clamp(_musicSleepExpandP, 0.0, 1.0);
         float sleepEase = sleepP * sleepP * (3f - 2f * sleepP);
 
-        // Center Transport Controls Alpha (Prev, Play/Pause, Next)
-        float centerAlpha = Math.Clamp(1f - Math.Max(audioEase, sleepEase) * 2.5f, 0f, 1f);
+        float expandEase = Math.Max(audioEase, sleepEase);
+        float restingAlpha = Math.Clamp(1f - expandEase * 2.2f, 0f, 1f);
 
         // -------------------------------------------------------------
-        // 1. LEFT BUTTON: AUDIO OUTPUT DEVICE / EXPANDING AUDIO PICKER
+        // RESTING TRACK INFO & TRANSPORT CONTROLS (FADES OUT AS CARD EXPANDS)
         // -------------------------------------------------------------
-        if (audioP < 0.001f)
+        if (restingAlpha > 0.01f)
         {
+            using (var brushTitle = new SolidBrush(Color.FromArgb((int)(255 * restingAlpha), 255, 255, 255)))
+            {
+                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 44f * superScale, StringFormat.GenericDefault);
+            }
+
+            using (var brushArtist = new SolidBrush(Color.FromArgb((int)(195 * restingAlpha), 255, 255, 255)))
+            {
+                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 63f * superScale, StringFormat.GenericDefault);
+            }
+
+            float barY = 86f * superScale;
+            float barH = 2.5f * superScale;
+            double progressRatio = (track.DurationSeconds > 0)
+                ? Math.Clamp(progressSeconds / track.DurationSeconds, 0.0, 1.0)
+                : 0.0;
+
+            using (var penRail = new Pen(Color.FromArgb((int)(50 * restingAlpha), 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(penRail, textStartX + barH * 0.5f, barY, rightEdge - barH * 0.5f, barY);
+            }
+
+            float fillEnd = textStartX + (float)(progressRatio * barW);
+            if (fillEnd > textStartX + barH)
+            {
+                using var penFill = new Pen(Color.FromArgb((int)(250 * restingAlpha), 255, 255, 255), barH) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLine(penFill, textStartX + barH * 0.5f, barY, fillEnd, barY);
+            }
+
+            float beadR = 3.5f * superScale;
+            using (var brushBead = new SolidBrush(Color.FromArgb((int)(255 * restingAlpha), 255, 255, 255)))
+            {
+                g.FillEllipse(brushBead, fillEnd - beadR, barY - beadR, beadR * 2, beadR * 2);
+            }
+
+            string elStr;
+            string remStr;
+            if (track.DurationSeconds > 0)
+            {
+                int elMin = (int)(progressSeconds / 60);
+                int elSec = (int)(progressSeconds % 60);
+                elStr = $"{elMin}:{elSec:D2}";
+
+                double remSeconds = Math.Max(0.0, track.DurationSeconds - progressSeconds);
+                int remMin = (int)(remSeconds / 60);
+                int remSec = (int)(remSeconds % 60);
+                remStr = $"-{remMin}:{remSec:D2}";
+            }
+            else
+            {
+                elStr = "0:00";
+                remStr = "--:--";
+            }
+
+            float timeLabelY = 92f * superScale;
+            using (var brushTime = new SolidBrush(Color.FromArgb((int)(165 * restingAlpha), 255, 255, 255)))
+            {
+                g.DrawString(elStr, fontTime, brushTime, textStartX, timeLabelY, StringFormat.GenericDefault);
+                var remSize = g.MeasureString(remStr, fontTime, PointF.Empty, StringFormat.GenericDefault);
+                g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
+            }
+
+            // Left resting Audio Device button
             DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
                 hoveredButton == BtnAudioDevice, clickedButton == BtnAudioDevice, clickAnimProgress, superScale,
-                () => DrawAudioOutputGlyph(g, 98f * superScale, ctrlY, 13f * superScale));
-        }
-        else
-        {
-            // Fluid expansion rightwards: starts at X=83, width grows from 30px to 310px
-            float baseW = 30f;
-            float maxW = 310f;
-            float curW = baseW + (maxW - baseW) * audioEase;
-            float curX = 83f;
-            float curH = 30f;
-            float curY = 105f;
-            float curR = 8f + 7f * (1f - audioEase);
+                () => DrawAudioOutputGlyph(g, 98f * superScale, ctrlY, 13f * superScale, restingAlpha), restingAlpha);
 
-            // Drop shadow
-            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 2f) * superScale, curW * superScale, curH * superScale, curR * superScale))
-            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(50 * Math.Min(1f, audioP * 2f)), 0, 0, 0)))
-            {
-                g.FillPath(brushShadow, shadowPath);
-            }
-
-            // Frosted glass capsule body
-            using var bodyPath = CreateRoundedRectanglePath(curX * superScale, curY * superScale, curW * superScale, curH * superScale, curR * superScale);
-            using (var brushBody = new LinearGradientBrush(
-                new RectangleF(curX * superScale, curY * superScale, curW * superScale, curH * superScale),
-                Color.FromArgb(55, 255, 255, 255),
-                Color.FromArgb(22, 255, 255, 255),
-                90f))
-            {
-                g.FillPath(brushBody, bodyPath);
-            }
-            using (var penBorder = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
-            {
-                g.DrawPath(penBorder, bodyPath);
-            }
-
-            // Audio output speaker glyph at the left
-            DrawAudioOutputGlyph(g, 98f * superScale, ctrlY, 13f * superScale, 1.0f);
-
-            // Expanded content (Device chips + Close button) fades in
-            float alphaContent = Math.Clamp((audioEase - 0.20f) / 0.80f, 0f, 1f);
-            if (alphaContent > 0.01f)
-            {
-                var stateAudio = g.Save();
-                g.SetClip(bodyPath);
-
-                // Close button [✕] at the right end of the expanded capsule
-                float cW = 24f;
-                float cH = 22f;
-                float cX = curX + curW - 28f;
-                float cY = 109f;
-                float cR = 6f;
-                bool isCloseHovered = _hoveredAudioBtn == AudioBtnClose;
-
-                using (var pathClose = CreateRoundedRectanglePath(cX * superScale, cY * superScale, cW * superScale, cH * superScale, cR * superScale))
-                {
-                    using var brushClose = new SolidBrush(Color.FromArgb((int)((isCloseHovered ? 65 : 32) * alphaContent), 255, 255, 255));
-                    g.FillPath(brushClose, pathClose);
-                    using var penClose = new Pen(Color.FromArgb((int)(70 * alphaContent), 255, 255, 255), 1.0f * superScale);
-                    g.DrawPath(penClose, pathClose);
-                }
-
-                using (var penX = new Pen(Color.FromArgb((int)(240 * alphaContent), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    float xMid = (cX + cW * 0.5f) * superScale;
-                    float yMid = (cY + cH * 0.5f) * superScale;
-                    float d = 4.0f * superScale;
-                    g.DrawLine(penX, xMid - d, yMid - d, xMid + d, yMid + d);
-                    g.DrawLine(penX, xMid + d, yMid - d, xMid - d, yMid + d);
-                }
-
-                // Device chips in middle
-                float startX = 117f;
-                float endX = cX - 6f;
-                float availW = endX - startX;
-                var devices = AudioDeviceManager.GetDevices();
-                var shown = devices.Count > 0 ? devices.Take(3).ToList() : new List<AudioDeviceInfo>
-                {
-                    new AudioDeviceInfo { Name = "Speakers", ShortName = "Speakers", IsDefault = true },
-                    new AudioDeviceInfo { Name = "Headphones", ShortName = "Headphones", IsDefault = false }
-                };
-
-                float gap = 5f;
-                float chipW = Math.Max(50f, (availW - gap * (shown.Count - 1)) / shown.Count);
-                using var fontChip = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
-
-                for (int i = 0; i < shown.Count; i++)
-                {
-                    float chX = startX + i * (chipW + gap);
-                    float chY = 109f;
-                    float chH = 22f;
-                    float chR = 6f;
-                    bool isDevHovered = _hoveredAudioBtn == AudioBtnChip0 + i;
-                    bool isDefault = shown[i].IsDefault;
-
-                    using var pathChip = CreateRoundedRectanglePath(chX * superScale, chY * superScale, chipW * superScale, chH * superScale, chR * superScale);
-                    if (isDefault)
-                    {
-                        // Inverted active chip
-                        using var brushActive = new SolidBrush(Color.FromArgb((int)(220 * alphaContent), 255, 255, 255));
-                        g.FillPath(brushActive, pathChip);
-                        using var brushDarkText = new SolidBrush(Color.FromArgb((int)(240 * alphaContent), 25, 28, 35));
-                        string label = "✓ " + shown[i].ShortName;
-                        var sz = g.MeasureString(label, fontChip, PointF.Empty, StringFormat.GenericTypographic);
-                        g.DrawString(label, fontChip, brushDarkText, (chX + (chipW - sz.Width / superScale) * 0.5f) * superScale, (chY + (chH - sz.Height / superScale) * 0.5f) * superScale, StringFormat.GenericTypographic);
-                    }
-                    else
-                    {
-                        // Frosted glass chip
-                        using var brushNorm = new SolidBrush(Color.FromArgb((int)((isDevHovered ? 65 : 30) * alphaContent), 255, 255, 255));
-                        g.FillPath(brushNorm, pathChip);
-                        using var penNorm = new Pen(Color.FromArgb((int)(65 * alphaContent), 255, 255, 255), 1.0f * superScale);
-                        g.DrawPath(penNorm, pathChip);
-                        using var brushLightText = new SolidBrush(Color.FromArgb((int)(230 * alphaContent), 255, 255, 255));
-                        string label = shown[i].ShortName;
-                        var sz = g.MeasureString(label, fontChip, PointF.Empty, StringFormat.GenericTypographic);
-                        g.DrawString(label, fontChip, brushLightText, (chX + (chipW - sz.Width / superScale) * 0.5f) * superScale, (chY + (chH - sz.Height / superScale) * 0.5f) * superScale, StringFormat.GenericTypographic);
-                    }
-                }
-
-                g.Restore(stateAudio);
-            }
-        }
-
-        // -------------------------------------------------------------
-        // 2. CENTER TRANSPORT CONTROLS (FADES OUT DURING EXPANSION)
-        // -------------------------------------------------------------
-        if (centerAlpha > 0.01f)
-        {
+            // Center Transport Controls
             DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
                 hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
-                () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false, centerAlpha), centerAlpha);
+                () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false, restingAlpha), restingAlpha);
 
             DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
                 hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
-                () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying, centerAlpha), centerAlpha);
+                () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying, restingAlpha), restingAlpha);
 
             DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
                 hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
-                () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true, centerAlpha), centerAlpha);
-        }
+                () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true, restingAlpha), restingAlpha);
 
-        // -------------------------------------------------------------
-        // 3. RIGHT BUTTON: SLEEP TIMER / EXPANDING SLEEP PICKER
-        // -------------------------------------------------------------
-        if (sleepP < 0.001f)
-        {
+            // Right resting Sleep Timer button
             bool isHoveredSleep = hoveredButton == BtnSleepTimer;
             bool hasTimerValue = _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && DateTime.UtcNow < _sleepTimerTargetUtc;
             bool showRemainingOnHover = hasTimerValue && isHoveredSleep;
 
             if (_sleepTimerActive)
             {
-                // Inverted tactile button for active sleep timer
                 float halfSize = 15f * superScale;
                 float cornerRadius = 7f * superScale;
                 float x = 432f * superScale - halfSize;
                 float y = ctrlY - halfSize;
                 float size = halfSize * 2f;
 
-                // Soft shadow
                 using (var shadowPath = CreateRoundedRectanglePath(x, y + 2f * superScale, size, size, cornerRadius))
-                using (var brushShadow = new SolidBrush(Color.FromArgb(50, 0, 0, 0)))
+                using (var brushShadow = new SolidBrush(Color.FromArgb((int)(50 * restingAlpha), 0, 0, 0)))
                 {
                     g.FillPath(brushShadow, shadowPath);
                 }
 
-                // Inverted bright frosted glass body
                 using (var bodyPath = CreateRoundedRectanglePath(x, y, size, size, cornerRadius))
-                using (var brushBody = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
+                using (var brushBody = new SolidBrush(Color.FromArgb((int)(235 * restingAlpha), 255, 255, 255)))
                 {
                     g.FillPath(brushBody, bodyPath);
                 }
@@ -4257,144 +4191,418 @@ internal sealed class OverlayForm : Form
                     }
                     using var fontCountdown = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
                     var sz = g.MeasureString(timeText, fontCountdown, PointF.Empty, StringFormat.GenericTypographic);
-                    using var brushDarkText = new SolidBrush(Color.FromArgb(240, 25, 28, 35));
+                    using var brushDarkText = new SolidBrush(Color.FromArgb((int)(240 * restingAlpha), 25, 28, 35));
                     g.DrawString(timeText, fontCountdown, brushDarkText, 432f * superScale - sz.Width * 0.5f, ctrlY - sz.Height * 0.5f, StringFormat.GenericTypographic);
                 }
                 else
                 {
-                    using var brushDarkMoon = new SolidBrush(Color.FromArgb(240, 25, 28, 35));
+                    using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * restingAlpha), 25, 28, 35));
                     DrawMoonWithStars(g, brushDarkMoon, 432f * superScale, ctrlY, 7.5f * superScale);
                 }
             }
             else
             {
-                // Standard projected button with light moon glyph
                 DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 15f * superScale, 7f * superScale,
                     isHoveredSleep, clickedButton == BtnSleepTimer, clickAnimProgress, superScale,
                     () =>
                     {
-                        using var brushLightMoon = new SolidBrush(Color.FromArgb(225, 255, 255, 255));
+                        using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * restingAlpha), 255, 255, 255));
                         DrawMoonWithStars(g, brushLightMoon, 432f * superScale, ctrlY, 7.5f * superScale);
-                    });
+                    }, restingAlpha);
             }
         }
-        else
-        {
-            // Fluid expansion leftwards: right edge stays at X=447, width grows from 30px to 188px
-            float baseW = 30f;
-            float maxW = 188f;
-            float curW = baseW + (maxW - baseW) * sleepEase;
-            float curX = 447f - curW;
-            float curH = 30f;
-            float curY = 105f;
-            float curR = 8f + 7f * (1f - sleepEase);
 
-            // Drop shadow
-            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 2f) * superScale, curW * superScale, curH * superScale, curR * superScale))
-            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(50 * Math.Min(1f, sleepP * 2f)), 0, 0, 0)))
+        // -------------------------------------------------------------
+        // EXPANDED LIQUID GLASS PANEL (EXPANDS TO FILL RED-BOX BOUNDS)
+        // -------------------------------------------------------------
+        if (expandEase > 0.005f)
+        {
+            float curX, curY, curW, curH, curR;
+            bool isAudioMode = audioP >= sleepP;
+
+            if (isAudioMode)
+            {
+                // Expands from Audio Button on left (98, 120, size 30x30)
+                float oX = 83f, oY = 105f, oW = 30f, oH = 30f, oR = 15f;
+                float tX = 84f, tY = 38f, tW = 362f, tH = 100f, tR = 14f;
+                curX = oX + (tX - oX) * audioEase;
+                curY = oY + (tY - oY) * audioEase;
+                curW = oW + (tW - oW) * audioEase;
+                curH = oH + (tH - oH) * audioEase;
+                curR = oR + (tR - oR) * audioEase;
+            }
+            else
+            {
+                // Expands from Sleep Timer Button on right (432, 120, size 30x30)
+                float oX = 417f, oY = 105f, oW = 30f, oH = 30f, oR = 15f;
+                float tX = 84f, tY = 38f, tW = 362f, tH = 100f, tR = 14f;
+                curX = oX + (tX - oX) * sleepEase;
+                curY = oY + (tY - oY) * sleepEase;
+                curW = oW + (tW - oW) * sleepEase;
+                curH = oH + (tH - oH) * sleepEase;
+                curR = oR + (tR - oR) * sleepEase;
+            }
+
+            // 1. Soft physical contact drop shadow
+            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 2.5f) * superScale, curW * superScale, curH * superScale, curR * superScale))
+            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(55 * Math.Min(1f, expandEase * 1.5f)), 0, 0, 0)))
             {
                 g.FillPath(brushShadow, shadowPath);
             }
 
-            // Frosted glass capsule body
+            // 2. Translucent Liquid Glass Body
             using var bodyPath = CreateRoundedRectanglePath(curX * superScale, curY * superScale, curW * superScale, curH * superScale, curR * superScale);
-            if (_sleepTimerActive)
+
+            // 2a. Smoky acrylic backing
+            using (var brushBacking = new SolidBrush(Color.FromArgb((int)(46 * expandEase), 14, 18, 26)))
             {
-                int invA = (int)(32 + (235 - 32) * (1f - sleepEase));
-                using var brushTimer = new SolidBrush(Color.FromArgb(invA, 255, 255, 255));
-                g.FillPath(brushTimer, bodyPath);
-            }
-            else
-            {
-                using var brushTimer = new SolidBrush(Color.FromArgb(40, 255, 255, 255));
-                g.FillPath(brushTimer, bodyPath);
-            }
-            using (var penBorder = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
-            {
-                g.DrawPath(penBorder, bodyPath);
+                g.FillPath(brushBacking, bodyPath);
             }
 
-            // Moon glyph fades out at right anchor as it expands
-            float moonAlpha = Math.Clamp(1f - sleepEase * 2.8f, 0f, 1f);
-            if (moonAlpha > 0.01f)
+            // 2b. Multi-stop vertical frosted glass sheen
+            using (var brushBody = new LinearGradientBrush(
+                new RectangleF(curX * superScale, curY * superScale, curW * superScale, curH * superScale),
+                Color.FromArgb((int)(60 * expandEase), 255, 255, 255),
+                Color.FromArgb((int)(18 * expandEase), 255, 255, 255),
+                90f))
             {
-                var stateMoon = g.Save();
+                g.FillPath(brushBody, bodyPath);
+            }
+
+            // 2c. Specular Top Meniscus Highlight
+            using (var brushTopRim = new LinearGradientBrush(
+                new RectangleF(curX * superScale, curY * superScale, curW * superScale, 20f * superScale),
+                Color.FromArgb((int)(85 * expandEase), 255, 255, 255),
+                Color.FromArgb(0, 255, 255, 255),
+                90f))
+            {
+                var stateTop = g.Save();
                 g.SetClip(bodyPath);
-                if (_sleepTimerActive)
+                g.FillRectangle(brushTopRim, curX * superScale, curY * superScale, curW * superScale, 20f * superScale);
+                g.Restore(stateTop);
+            }
+
+            // 2d. Specular Outer Rim Pen
+            using (var penRim = new Pen(Color.FromArgb((int)(78 * expandEase), 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawPath(penRim, bodyPath);
+            }
+
+            // 3. Expanded Panel Content (Fades in as card expands)
+            float contentAlpha = Math.Clamp((expandEase - 0.20f) / 0.80f, 0f, 1f);
+            if (contentAlpha > 0.01f)
+            {
+                var stateContent = g.Save();
+                g.SetClip(bodyPath);
+
+                using var fontHeader = GetPremiumFont(9.5f * superScale, FontStyle.Bold);
+                using var fontSub = GetPremiumFont(7.0f * superScale, FontStyle.Regular);
+                using var brushTitle = new SolidBrush(Color.FromArgb((int)(250 * contentAlpha), 255, 255, 255));
+                using var brushSub = new SolidBrush(Color.FromArgb((int)(160 * contentAlpha), 255, 255, 255));
+                using var penDivider = new Pen(Color.FromArgb((int)(40 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+
+                if (isAudioMode)
                 {
-                    using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * moonAlpha), 25, 28, 35));
-                    DrawMoonWithStars(g, brushDarkMoon, 432f * superScale, ctrlY, 7.5f * superScale);
+                    // === AUDIO OUTPUT PICKER CONTENT ===
+                    DrawAudioOutputGlyph(g, 102f * superScale, 52f * superScale, 11f * superScale, contentAlpha);
+                    var szAudioHdr = g.MeasureString("Audio Output", fontHeader, PointF.Empty, StringFormat.GenericTypographic);
+                    g.DrawString("Audio Output", fontHeader, brushTitle, 116f * superScale, 45f * superScale, StringFormat.GenericTypographic);
+                    g.DrawString("Select playback device", fontSub, brushSub, (116f + szAudioHdr.Width / superScale + 10f) * superScale, 47.5f * superScale, StringFormat.GenericTypographic);
+
+                    // Close Button [✕]
+                    float cX = 416f, cY = 43f, cW = 22f, cH = 22f, cR = 11f;
+                    bool isCloseHov = _hoveredAudioBtn == AudioBtnClose;
+                    using (var pathClose = CreateRoundedRectanglePath(cX * superScale, cY * superScale, cW * superScale, cH * superScale, cR * superScale))
+                    {
+                        using var brushClose = new SolidBrush(Color.FromArgb((int)((isCloseHov ? 75 : 35) * contentAlpha), 255, 255, 255));
+                        g.FillPath(brushClose, pathClose);
+                        using var penClose = new Pen(Color.FromArgb((int)(70 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                        g.DrawPath(penClose, pathClose);
+                    }
+                    using (var penX = new Pen(Color.FromArgb((int)(240 * contentAlpha), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    {
+                        float xm = (cX + cW * 0.5f) * superScale;
+                        float ym = (cY + cH * 0.5f) * superScale;
+                        float d = 3.8f * superScale;
+                        g.DrawLine(penX, xm - d, ym - d, xm + d, ym + d);
+                        g.DrawLine(penX, xm + d, ym - d, xm - d, ym + d);
+                    }
+
+                    // Hairline Divider
+                    g.DrawLine(penDivider, 96f * superScale, 64f * superScale, 434f * superScale, 64f * superScale);
+
+                    // Device Cards Row
+                    var devices = AudioDeviceManager.GetDevices();
+                    var shown = devices.Count > 0 ? devices.Take(3).ToList() : new List<AudioDeviceInfo>
+                    {
+                        new AudioDeviceInfo { Name = "Speakers", ShortName = "Speakers", IsDefault = true },
+                        new AudioDeviceInfo { Name = "Headphones", ShortName = "Headphones", IsDefault = false }
+                    };
+
+                    int count = Math.Min(3, shown.Count);
+                    float gap = 8f;
+                    float cardW = (338f - (count - 1) * gap) / count;
+                    float cardH = 58f;
+                    float cardY = 70f;
+                    float cardR = 9f;
+
+                    using var fontDevName = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+                    using var fontDevSub = GetPremiumFont(6.8f * superScale, FontStyle.Regular);
+
+                    for (int i = 0; i < count; i++)
+                    {
+                        float cardX = 96f + i * (cardW + gap);
+                        bool isDevHovered = _hoveredAudioBtn == AudioBtnChip0 + i;
+                        bool isDefault = shown[i].IsDefault;
+
+                        using var pathCard = CreateRoundedRectanglePath(cardX * superScale, cardY * superScale, cardW * superScale, cardH * superScale, cardR * superScale);
+                        if (isDefault)
+                        {
+                            // Inverted active liquid glass tile
+                            using var brushActive = new SolidBrush(Color.FromArgb((int)(232 * contentAlpha), 255, 255, 255));
+                            g.FillPath(brushActive, pathCard);
+                            using var penActive = new Pen(Color.FromArgb((int)(255 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            g.DrawPath(penActive, pathCard);
+
+                            // Dark speaker glyph
+                            DrawAudioOutputGlyph(g, (cardX + 17f) * superScale, (cardY + 29f) * superScale, 11f * superScale, contentAlpha, isDark: true);
+
+                            using var brushDarkText = new SolidBrush(Color.FromArgb((int)(245 * contentAlpha), 20, 24, 30));
+                            g.DrawString(shown[i].ShortName, fontDevName, brushDarkText, (cardX + 32f) * superScale, (cardY + 14f) * superScale, StringFormat.GenericTypographic);
+
+                            // Badge: "✓ Active"
+                            using var brushBadge = new SolidBrush(Color.FromArgb((int)(40 * contentAlpha), 0, 0, 0));
+                            using var pathBadge = CreateRoundedRectanglePath((cardX + 32f) * superScale, (cardY + 34f) * superScale, 48f * superScale, 15f * superScale, 4f * superScale);
+                            g.FillPath(brushBadge, pathBadge);
+                            using var brushBadgeText = new SolidBrush(Color.FromArgb((int)(225 * contentAlpha), 20, 24, 30));
+                            g.DrawString("✓ Active", fontDevSub, brushBadgeText, (cardX + 35f) * superScale, (cardY + 36f) * superScale, StringFormat.GenericTypographic);
+                        }
+                        else
+                        {
+                            // Frosted glass tile
+                            using var brushNorm = new SolidBrush(Color.FromArgb((int)((isDevHovered ? 65 : 30) * contentAlpha), 255, 255, 255));
+                            g.FillPath(brushNorm, pathCard);
+                            using var penNorm = new Pen(Color.FromArgb((int)((isDevHovered ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            g.DrawPath(penNorm, pathCard);
+
+                            // Light speaker glyph
+                            DrawAudioOutputGlyph(g, (cardX + 17f) * superScale, (cardY + 29f) * superScale, 11f * superScale, contentAlpha, isDark: false);
+
+                            using var brushLightText = new SolidBrush(Color.FromArgb((int)(240 * contentAlpha), 255, 255, 255));
+                            g.DrawString(shown[i].ShortName, fontDevName, brushLightText, (cardX + 32f) * superScale, (cardY + 14f) * superScale, StringFormat.GenericTypographic);
+
+                            using var brushSubText = new SolidBrush(Color.FromArgb((int)(160 * contentAlpha), 255, 255, 255));
+                            g.DrawString("Tap to connect", fontDevSub, brushSubText, (cardX + 32f) * superScale, (cardY + 35f) * superScale, StringFormat.GenericTypographic);
+                        }
+                    }
                 }
                 else
                 {
-                    using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * moonAlpha), 255, 255, 255));
-                    DrawMoonWithStars(g, brushLightMoon, 432f * superScale, ctrlY, 7.5f * superScale);
+                    // === SLEEP TIMER PICKER CONTENT ===
+                    using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(240 * contentAlpha), 255, 255, 255));
+                    DrawMoonWithStars(g, brushLightMoon, 102f * superScale, 52f * superScale, 7.5f * superScale);
+
+                    var szSleepHdr = g.MeasureString("Sleep Timer", fontHeader, PointF.Empty, StringFormat.GenericTypographic);
+                    g.DrawString("Sleep Timer", fontHeader, brushTitle, 116f * superScale, 45f * superScale, StringFormat.GenericTypographic);
+                    string sleepSub = _sleepTimerActive ? "Media will pause when time runs out" : "Pause audio playback automatically";
+                    g.DrawString(sleepSub, fontSub, brushSub, (116f + szSleepHdr.Width / superScale + 10f) * superScale, 47.5f * superScale, StringFormat.GenericTypographic);
+
+                    // Header Stop button if active
+                    if (_sleepTimerActive)
+                    {
+                        float stX = 338f, stY = 43f, stW = 68f, stH = 22f, stR = 6f;
+                        bool isStopHov = _hoveredMusicSleepBtn == MusicSleepBtnCancel;
+                        using (var pathStop = CreateRoundedRectanglePath(stX * superScale, stY * superScale, stW * superScale, stH * superScale, stR * superScale))
+                        {
+                            using var brushStop = new SolidBrush(Color.FromArgb((int)((isStopHov ? 70 : 35) * contentAlpha), 255, 75, 75));
+                            g.FillPath(brushStop, pathStop);
+                            using var penStop = new Pen(Color.FromArgb((int)(100 * contentAlpha), 255, 100, 100), 1.0f * superScale);
+                            g.DrawPath(penStop, pathStop);
+                        }
+                        using var brushStopText = new SolidBrush(Color.FromArgb((int)(250 * contentAlpha), 255, 200, 200));
+                        using var fontStop = GetPremiumFont(7.2f * superScale, FontStyle.Bold);
+                        var szSt = g.MeasureString("✕ Stop", fontStop, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("✕ Stop", fontStop, brushStopText, (stX + (stW - szSt.Width / superScale) * 0.5f) * superScale, (stY + (stH - szSt.Height / superScale) * 0.5f) * superScale, StringFormat.GenericTypographic);
+                    }
+
+                    // Close Button [✕]
+                    float cX = 416f, cY = 43f, cW = 22f, cH = 22f, cR = 11f;
+                    bool isCloseHov = _hoveredMusicSleepBtn == MusicSleepBtnClose;
+                    using (var pathClose = CreateRoundedRectanglePath(cX * superScale, cY * superScale, cW * superScale, cH * superScale, cR * superScale))
+                    {
+                        using var brushClose = new SolidBrush(Color.FromArgb((int)((isCloseHov ? 75 : 35) * contentAlpha), 255, 255, 255));
+                        g.FillPath(brushClose, pathClose);
+                        using var penClose = new Pen(Color.FromArgb((int)(70 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                        g.DrawPath(penClose, pathClose);
+                    }
+                    using (var penX = new Pen(Color.FromArgb((int)(240 * contentAlpha), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                    {
+                        float xm = (cX + cW * 0.5f) * superScale;
+                        float ym = (cY + cH * 0.5f) * superScale;
+                        float d = 3.8f * superScale;
+                        g.DrawLine(penX, xm - d, ym - d, xm + d, ym + d);
+                        g.DrawLine(penX, xm + d, ym - d, xm - d, ym + d);
+                    }
+
+                    // Hairline Divider
+                    g.DrawLine(penDivider, 96f * superScale, 64f * superScale, 434f * superScale, 64f * superScale);
+
+                    // Body Area
+                    if (_sleepTimerActive && _sleepTimerTargetUtc > DateTime.UtcNow)
+                    {
+                        // === ACTIVE COUNTDOWN DISPLAY ===
+                        TimeSpan rem = _sleepTimerTargetUtc - DateTime.UtcNow;
+                        string clockText;
+                        if (DebugSleepTimerInSeconds)
+                        {
+                            clockText = $"{(int)Math.Max(0, rem.TotalSeconds)}s";
+                        }
+                        else
+                        {
+                            int remMin = Math.Max(0, (int)rem.TotalMinutes);
+                            int remSec = Math.Max(0, rem.Seconds);
+                            clockText = $"{remMin}:{remSec:D2}";
+                        }
+
+                        // Left card: Digital countdown clock
+                        float cLeftX = 96f, cLeftY = 70f, cLeftW = 154f, cLeftH = 58f, cLeftR = 9f;
+                        using (var pathLeft = CreateRoundedRectanglePath(cLeftX * superScale, cLeftY * superScale, cLeftW * superScale, cLeftH * superScale, cLeftR * superScale))
+                        {
+                            using var brushLeft = new SolidBrush(Color.FromArgb((int)(38 * contentAlpha), 255, 255, 255));
+                            g.FillPath(brushLeft, pathLeft);
+                            using var penLeft = new Pen(Color.FromArgb((int)(65 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            g.DrawPath(penLeft, pathLeft);
+                        }
+
+                        using var fontClock = GetPremiumFont(17.5f * superScale, FontStyle.Bold);
+                        var szClock = g.MeasureString(clockText, fontClock, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString(clockText, fontClock, brushTitle, (cLeftX + 16f) * superScale, (cLeftY + 8f) * superScale, StringFormat.GenericTypographic);
+
+                        using var fontClockLabel = GetPremiumFont(6.5f * superScale, FontStyle.Regular);
+                        using var brushClockLabel = new SolidBrush(Color.FromArgb((int)(160 * contentAlpha), 255, 255, 255));
+                        g.DrawString("REMAINING TIME", fontClockLabel, brushClockLabel, (cLeftX + 16f) * superScale, (cLeftY + 36f) * superScale, StringFormat.GenericTypographic);
+
+                        // Mini progress rail
+                        double totalSec = DebugSleepTimerInSeconds ? _sleepTimerDurationMinutes : (_sleepTimerDurationMinutes * 60.0);
+                        double elapsedRatio = totalSec > 0 ? Math.Clamp(1.0 - (rem.TotalSeconds / totalSec), 0.0, 1.0) : 0.0;
+                        float pRailX = cLeftX + 16f, pRailY = cLeftY + 47f, pRailW = cLeftW - 32f;
+                        using (var penPRail = new Pen(Color.FromArgb((int)(40 * contentAlpha), 255, 255, 255), 2.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                        {
+                            g.DrawLine(penPRail, pRailX * superScale, pRailY * superScale, (pRailX + pRailW) * superScale, pRailY * superScale);
+                        }
+                        if (elapsedRatio > 0.01)
+                        {
+                            using var penPFill = new Pen(Color.FromArgb((int)(220 * contentAlpha), 255, 255, 255), 2.0f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                            g.DrawLine(penPFill, pRailX * superScale, pRailY * superScale, (pRailX + (float)(pRailW * elapsedRatio)) * superScale, pRailY * superScale);
+                        }
+
+                        // Right buttons: [+5m] at [260, 314], [+15m] at [320, 374], [✕ Stop] at [380, 434]
+                        float bH = 58f, bR = 9f;
+
+                        // [+5m]
+                        bool isAdd5Hov = _hoveredMusicSleepBtn == MusicSleepBtnAdd5m;
+                        using (var pathAdd5 = CreateRoundedRectanglePath(260f * superScale, 70f * superScale, 54f * superScale, bH * superScale, bR * superScale))
+                        {
+                            using var brushAdd5 = new SolidBrush(Color.FromArgb((int)((isAdd5Hov ? 65 : 30) * contentAlpha), 255, 255, 255));
+                            g.FillPath(brushAdd5, pathAdd5);
+                            using var penAdd5 = new Pen(Color.FromArgb((int)((isAdd5Hov ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            g.DrawPath(penAdd5, pathAdd5);
+                        }
+                        using var fontAdjNum = GetPremiumFont(11.5f * superScale, FontStyle.Bold);
+                        using var fontAdjSub = GetPremiumFont(6.2f * superScale, FontStyle.Regular);
+                        string lblAdd5 = DebugSleepTimerInSeconds ? "+5s" : "+5m";
+                        var szA5 = g.MeasureString(lblAdd5, fontAdjNum, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString(lblAdd5, fontAdjNum, brushTitle, (260f + (54f - szA5.Width / superScale) * 0.5f) * superScale, 80f * superScale, StringFormat.GenericTypographic);
+                        var szA5Sub = g.MeasureString("ADD", fontAdjSub, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("ADD", fontAdjSub, brushClockLabel, (260f + (54f - szA5Sub.Width / superScale) * 0.5f) * superScale, 104f * superScale, StringFormat.GenericTypographic);
+
+                        // [+15m]
+                        bool isAdd15Hov = _hoveredMusicSleepBtn == MusicSleepBtn30m;
+                        using (var pathAdd15 = CreateRoundedRectanglePath(320f * superScale, 70f * superScale, 54f * superScale, bH * superScale, bR * superScale))
+                        {
+                            using var brushAdd15 = new SolidBrush(Color.FromArgb((int)((isAdd15Hov ? 65 : 30) * contentAlpha), 255, 255, 255));
+                            g.FillPath(brushAdd15, pathAdd15);
+                            using var penAdd15 = new Pen(Color.FromArgb((int)((isAdd15Hov ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                            g.DrawPath(penAdd15, pathAdd15);
+                        }
+                        string lblAdd15 = DebugSleepTimerInSeconds ? "+15s" : "+15m";
+                        var szA15 = g.MeasureString(lblAdd15, fontAdjNum, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString(lblAdd15, fontAdjNum, brushTitle, (320f + (54f - szA15.Width / superScale) * 0.5f) * superScale, 80f * superScale, StringFormat.GenericTypographic);
+                        var szA15Sub = g.MeasureString("EXTEND", fontAdjSub, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("EXTEND", fontAdjSub, brushClockLabel, (320f + (54f - szA15Sub.Width / superScale) * 0.5f) * superScale, 104f * superScale, StringFormat.GenericTypographic);
+
+                        // [✕ Stop]
+                        bool isStopBodyHov = _hoveredMusicSleepBtn == MusicSleepBtnCancel;
+                        using (var pathStopBody = CreateRoundedRectanglePath(380f * superScale, 70f * superScale, 54f * superScale, bH * superScale, bR * superScale))
+                        {
+                            using var brushStopBody = new SolidBrush(Color.FromArgb((int)((isStopBodyHov ? 70 : 35) * contentAlpha), 255, 75, 75));
+                            g.FillPath(brushStopBody, pathStopBody);
+                            using var penStopBody = new Pen(Color.FromArgb((int)(100 * contentAlpha), 255, 100, 100), 1.0f * superScale);
+                            g.DrawPath(penStopBody, pathStopBody);
+                        }
+                        using var brushStopTextB = new SolidBrush(Color.FromArgb((int)(250 * contentAlpha), 255, 200, 200));
+                        var szStop = g.MeasureString("✕", fontAdjNum, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("✕", fontAdjNum, brushStopTextB, (380f + (54f - szStop.Width / superScale) * 0.5f) * superScale, 80f * superScale, StringFormat.GenericTypographic);
+                        var szStopSub = g.MeasureString("STOP", fontAdjSub, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString("STOP", fontAdjSub, brushStopTextB, (380f + (54f - szStopSub.Width / superScale) * 0.5f) * superScale, 104f * superScale, StringFormat.GenericTypographic);
+                    }
+                    else
+                    {
+                        // === PRESET DURATION SELECTION CARDS (15, 30, 45, 60) ===
+                        int[] presets = new int[] { 15, 30, 45, 60 };
+                        int[] ids = new int[] { MusicSleepBtn15m, MusicSleepBtn30m, MusicSleepBtn45m, MusicSleepBtn60m };
+                        float gap = 8f;
+                        float cardW = (338f - 3 * gap) / 4f;
+                        float cardH = 58f;
+                        float cardY = 70f;
+                        float cardR = 9f;
+
+                        using var fontNum = GetPremiumFont(14.5f * superScale, FontStyle.Bold);
+                        using var fontUnit = GetPremiumFont(6.5f * superScale, FontStyle.Regular);
+                        string unitStr = DebugSleepTimerInSeconds ? "SECONDS" : "MINUTES";
+
+                        for (int j = 0; j < 4; j++)
+                        {
+                            float cardX = 96f + j * (cardW + gap);
+                            bool isHovered = _hoveredMusicSleepBtn == ids[j];
+                            bool isCurrentVal = _sleepTimerActive && _sleepTimerDurationMinutes == presets[j];
+
+                            using var pathPreset = CreateRoundedRectanglePath(cardX * superScale, cardY * superScale, cardW * superScale, cardH * superScale, cardR * superScale);
+                            if (isCurrentVal)
+                            {
+                                using var brushActive = new SolidBrush(Color.FromArgb((int)(230 * contentAlpha), 255, 255, 255));
+                                g.FillPath(brushActive, pathPreset);
+                                using var penActive = new Pen(Color.FromArgb((int)(255 * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                                g.DrawPath(penActive, pathPreset);
+
+                                using var brushDark = new SolidBrush(Color.FromArgb((int)(245 * contentAlpha), 20, 24, 30));
+                                string num = presets[j].ToString();
+                                var szN = g.MeasureString(num, fontNum, PointF.Empty, StringFormat.GenericTypographic);
+                                g.DrawString(num, fontNum, brushDark, (cardX + (cardW - szN.Width / superScale) * 0.5f) * superScale, 77f * superScale, StringFormat.GenericTypographic);
+
+                                var szU = g.MeasureString(unitStr, fontUnit, PointF.Empty, StringFormat.GenericTypographic);
+                                g.DrawString(unitStr, fontUnit, brushDark, (cardX + (cardW - szU.Width / superScale) * 0.5f) * superScale, 104f * superScale, StringFormat.GenericTypographic);
+                            }
+                            else
+                            {
+                                using var brushCard = new SolidBrush(Color.FromArgb((int)((isHovered ? 65 : 30) * contentAlpha), 255, 255, 255));
+                                g.FillPath(brushCard, pathPreset);
+                                using var penCard = new Pen(Color.FromArgb((int)((isHovered ? 100 : 55) * contentAlpha), 255, 255, 255), 1.0f * superScale);
+                                g.DrawPath(penCard, pathPreset);
+
+                                string num = presets[j].ToString();
+                                var szN = g.MeasureString(num, fontNum, PointF.Empty, StringFormat.GenericTypographic);
+                                g.DrawString(num, fontNum, brushTitle, (cardX + (cardW - szN.Width / superScale) * 0.5f) * superScale, 77f * superScale, StringFormat.GenericTypographic);
+
+                                using var brushUnit = new SolidBrush(Color.FromArgb((int)(160 * contentAlpha), 255, 255, 255));
+                                var szU = g.MeasureString(unitStr, fontUnit, PointF.Empty, StringFormat.GenericTypographic);
+                                g.DrawString(unitStr, fontUnit, brushUnit, (cardX + (cardW - szU.Width / superScale) * 0.5f) * superScale, 104f * superScale, StringFormat.GenericTypographic);
+                            }
+                        }
+                    }
                 }
-                g.Restore(stateMoon);
-            }
 
-            // Template preset buttons [15m], [30m], [45m], [✕] fade in
-            float alphaPresets = Math.Clamp((sleepEase - 0.20f) / 0.80f, 0f, 1f);
-            if (alphaPresets > 0.01f)
-            {
-                var statePresets = g.Save();
-                g.SetClip(bodyPath);
-
-                float padX = (curW - 138f) * 0.5f;
-                float bY = 109f;
-                float bH = 22f;
-                float bR = 6f;
-
-                string lbl15 = DebugSleepTimerInSeconds ? "15s" : "15m";
-                string lbl30 = DebugSleepTimerInSeconds ? "30s" : "30m";
-                string lbl45 = DebugSleepTimerInSeconds ? "45s" : "45m";
-
-                using var fontTimerBtn = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
-
-                // Button 1: 15
-                float b1X = curX + padX;
-                DrawSleepOptionPill(g, superScale, b1X * superScale, bY * superScale, 34f * superScale, bH * superScale, bR * superScale, lbl15, fontTimerBtn,
-                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 15,
-                    isHovered: _hoveredMusicSleepBtn == MusicSleepBtn15m,
-                    isCancel: false,
-                    alphaMul: alphaPresets);
-
-                // Button 2: 30
-                float b2X = b1X + 38f;
-                DrawSleepOptionPill(g, superScale, b2X * superScale, bY * superScale, 34f * superScale, bH * superScale, bR * superScale, lbl30, fontTimerBtn,
-                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 30,
-                    isHovered: _hoveredMusicSleepBtn == MusicSleepBtn30m,
-                    isCancel: false,
-                    alphaMul: alphaPresets);
-
-                // Button 3: 45
-                float b3X = b2X + 38f;
-                DrawSleepOptionPill(g, superScale, b3X * superScale, bY * superScale, 34f * superScale, bH * superScale, bR * superScale, lbl45, fontTimerBtn,
-                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 45,
-                    isHovered: _hoveredMusicSleepBtn == MusicSleepBtn45m,
-                    isCancel: false,
-                    alphaMul: alphaPresets);
-
-                // Button 4: Cancel ✕
-                float b4X = b3X + 38f;
-                bool isCancelHov = _hoveredMusicSleepBtn == MusicSleepBtnCancel;
-                using (var pathCancel = CreateRoundedRectanglePath(b4X * superScale, bY * superScale, 24f * superScale, bH * superScale, bR * superScale))
-                {
-                    using var brushCancel = new SolidBrush(Color.FromArgb((int)((isCancelHov ? 65 : 32) * alphaPresets), 255, 255, 255));
-                    g.FillPath(brushCancel, pathCancel);
-                    using var penCancel = new Pen(Color.FromArgb((int)(70 * alphaPresets), 255, 255, 255), 1.0f * superScale);
-                    g.DrawPath(penCancel, pathCancel);
-                }
-                using (var penX = new Pen(Color.FromArgb((int)(240 * alphaPresets), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
-                {
-                    float xMid = (b4X + 12f) * superScale;
-                    float yMid = (bY + bH * 0.5f) * superScale;
-                    float d = 4.0f * superScale;
-                    g.DrawLine(penX, xMid - d, yMid - d, xMid + d, yMid + d);
-                    g.DrawLine(penX, xMid + d, yMid - d, xMid - d, yMid + d);
-                }
-
-                g.Restore(statePresets);
+                g.Restore(stateContent);
             }
         }
     }
@@ -5667,7 +5875,7 @@ internal sealed class OverlayForm : Form
                 ProcessAndPresent(new Point(Location.X, Location.Y), geomAudio);
                 SaveDesktopScreenshotWithPill("screenshot_music_audio_expanded.png");
 
-                // 3. Sleep timer picker expanded
+                // 3. Sleep timer picker expanded (idle preset selection)
                 _audioPickerOpen = false;
                 _audioPickerExpandP = 0.0;
                 _musicSleepPickerOpen = true;
@@ -5679,6 +5887,21 @@ internal sealed class OverlayForm : Form
                 var geomSleep = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
                 ProcessAndPresent(new Point(Location.X, Location.Y), geomSleep);
                 SaveDesktopScreenshotWithPill("screenshot_music_sleep_expanded.png");
+
+                // 3b. Sleep timer picker expanded (active running countdown state)
+                _audioPickerOpen = false;
+                _audioPickerExpandP = 0.0;
+                _musicSleepPickerOpen = true;
+                _musicSleepExpandP = 1.0;
+                _sleepTimerActive = true;
+                _sleepTimerDurationMinutes = 15;
+                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(14).AddSeconds(28);
+                _hoveredMusicSleepBtn = BtnNone;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+                var geomSleepRun = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomSleepRun);
+                SaveDesktopScreenshotWithPill("screenshot_music_sleep_expanded_running.png");
 
                 // 4. Sleep timer active state (inverted bright button with dark moon)
                 _audioPickerOpen = false;
@@ -6326,8 +6549,19 @@ internal sealed class OverlayForm : Form
                 _needExpandedUpdate = true;
             }
 
-            // Live hover countdown ticker for Music Sleep Timer
-            if (_activeTab == TabMusic && _hoveredButton == BtnSleepTimer && _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && !_musicSleepPickerOpen)
+            // Live countdown ticker when Music Sleep Timer panel is open
+            if (_activeTab == TabMusic && _musicSleepPickerOpen && _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue)
+            {
+                int curVal = (int)Math.Max(0, Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds));
+                if (curVal != _lastMusicHoverCountdownSec)
+                {
+                    _lastMusicHoverCountdownSec = curVal;
+                    _tabBufferCache[TabMusic] = null;
+                    _needExpandedUpdate = true;
+                }
+            }
+            // Live hover countdown ticker for Music Sleep Timer resting button
+            else if (_activeTab == TabMusic && _hoveredButton == BtnSleepTimer && _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && !_musicSleepPickerOpen)
             {
                 int curVal = DebugSleepTimerInSeconds 
                     ? Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds))
@@ -6339,7 +6573,7 @@ internal sealed class OverlayForm : Form
                     _needExpandedUpdate = true;
                 }
             }
-            else if (_activeTab == TabMusic && _hoveredButton != BtnSleepTimer)
+            else if (_activeTab == TabMusic && _hoveredButton != BtnSleepTimer && !_musicSleepPickerOpen)
             {
                 _lastMusicHoverCountdownSec = -1;
             }
@@ -6657,6 +6891,39 @@ internal sealed class OverlayForm : Form
             const double H2z = 0.84;
             const double InvOneMinusH2z = 1.0 / (1.0 - H2z);
 
+            double panelExpandP = Math.Max(_audioPickerExpandP, _musicSleepExpandP);
+            bool hasExpandedMusicPanel = isMusicTabActive && (panelExpandP > 0.01);
+            double pcx = 0, pcy = 0, strW = 0, strH = 0, panelR = 0, panelEase = 0;
+            if (hasExpandedMusicPanel)
+            {
+                panelEase = panelExpandP * panelExpandP * (3.0 - 2.0 * panelExpandP);
+                double pX, pY, pW, pH;
+                if (_audioPickerExpandP >= _musicSleepExpandP)
+                {
+                    double oX = 70.0 + 83.0, oY = 38.0 + 105.0, oW = 30.0, oH = 30.0, oR = 15.0;
+                    double tX = 70.0 + 84.0, tY = 38.0 + 38.0, tW = 362.0, tH = 100.0, tR = 14.0;
+                    pX = oX + (tX - oX) * panelEase;
+                    pY = oY + (tY - oY) * panelEase;
+                    pW = oW + (tW - oW) * panelEase;
+                    pH = oH + (tH - oH) * panelEase;
+                    panelR = oR + (tR - oR) * panelEase;
+                }
+                else
+                {
+                    double oX = 70.0 + 417.0, oY = 38.0 + 105.0, oW = 30.0, oH = 30.0, oR = 15.0;
+                    double tX = 70.0 + 84.0, tY = 38.0 + 38.0, tW = 362.0, tH = 100.0, tR = 14.0;
+                    pX = oX + (tX - oX) * panelEase;
+                    pY = oY + (tY - oY) * panelEase;
+                    pW = oW + (tW - oW) * panelEase;
+                    pH = oH + (tH - oH) * panelEase;
+                    panelR = oR + (tR - oR) * panelEase;
+                }
+                pcx = pX + pW * 0.5;
+                pcy = pY + pH * 0.5;
+                strW = Math.Max(0.0, pW * 0.5 - panelR);
+                strH = Math.Max(0.0, pH * 0.5 - panelR);
+            }
+
             for (int y = 0; y < SurfaceHeight; y++)
             {
                 int rowIdx = y * SurfaceWidth;
@@ -6850,9 +7117,22 @@ internal sealed class OverlayForm : Form
                     int blurG = (int)(gStd * (1.0 - heavyBlend) + gHvy * heavyBlend);
                     int blurR = (int)(rStd * (1.0 - heavyBlend) + rHvy * heavyBlend);
 
-                    // Distinct blur under expanded music tab media buttons
+                    // Distinct blur under expanded music tab media buttons or expanded liquid glass panel
                     double btnBlurFactor = 0.0;
-                    if (isMusicTabActive && y >= 124 && y <= 168)
+                    if (hasExpandedMusicPanel)
+                    {
+                        double pqx = Math.Abs(x - pcx) - strW;
+                        double pqy = Math.Abs(y - pcy) - strH;
+                        double pOutDist = Math.Sqrt(Math.Max(0.0, pqx) * Math.Max(0.0, pqx) + Math.Max(0.0, pqy) * Math.Max(0.0, pqy));
+                        double pInDist = Math.Min(0.0, Math.Max(pqx, pqy));
+                        double panelSdf = pOutDist + pInDist - panelR;
+                        if (panelSdf <= 1.0)
+                        {
+                            double panelFactor = Math.Clamp(-panelSdf + 0.5, 0.0, 1.0) * panelEase * expAlpha * musicTabBlend;
+                            btnBlurFactor = Math.Max(btnBlurFactor, panelFactor);
+                        }
+                    }
+                    else if (isMusicTabActive && y >= 124 && y <= 168)
                     {
                         float bcx = 0, bhs = 0, br = 0;
                         if (x >= 152 && x <= 184) { bcx = 168f; bhs = 15f; br = 7f; }
