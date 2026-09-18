@@ -7,9 +7,164 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Windows.Media.Control;
+using Windows.Media.Devices;
+using Windows.Devices.Enumeration;
 using Windows.Storage.Streams;
 
 namespace LiquidGlassCircle;
+
+public sealed class AudioDeviceInfo
+{
+    public string Id { get; set; } = "";
+    public string EndpointId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string ShortName { get; set; } = "";
+    public bool IsDefault { get; set; }
+}
+
+internal static class AudioDeviceManager
+{
+    private static readonly object _lock = new();
+    private static List<AudioDeviceInfo> _cachedDevices = new();
+    private static DateTime _lastFetchTime = DateTime.MinValue;
+    private static bool _isRefreshing = false;
+
+    [ComImport]
+    [Guid("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")]
+    private class PolicyConfigClient { }
+
+    [ComImport]
+    [Guid("F8679F50-850A-41CF-9C72-430F290290C8")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface IPolicyConfig
+    {
+        [PreserveSig] int GetMixFormat(string pszDeviceName, IntPtr ppFormat);
+        [PreserveSig] int GetDeviceFormat(string pszDeviceName, int bDefault, IntPtr ppFormat);
+        [PreserveSig] int ResetDeviceFormat(string pszDeviceName);
+        [PreserveSig] int SetDeviceFormat(string pszDeviceName, IntPtr pEndpointFormat, IntPtr mixFormat);
+        [PreserveSig] int GetProcessingPeriod(string pszDeviceName, int bDefault, IntPtr pmftDefaultPeriod, IntPtr pmftMinimumPeriod);
+        [PreserveSig] int SetProcessingPeriod(string pszDeviceName, IntPtr pmftPeriod);
+        [PreserveSig] int GetShareMode(string pszDeviceName, IntPtr pMode);
+        [PreserveSig] int SetShareMode(string pszDeviceName, IntPtr mode);
+        [PreserveSig] int GetPropertyValue(string pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
+        [PreserveSig] int SetPropertyValue(string pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
+        [PreserveSig] int SetDefaultEndpoint(string pszDeviceName, int role);
+        [PreserveSig] int SetEndpointVisibility(string pszDeviceName, int bVisible);
+    }
+
+    public static List<AudioDeviceInfo> GetDevices()
+    {
+        lock (_lock)
+        {
+            if ((DateTime.UtcNow - _lastFetchTime).TotalSeconds > 2.5 && !_isRefreshing)
+            {
+                _isRefreshing = true;
+                Task.Run(RefreshDevicesAsync);
+            }
+            return new List<AudioDeviceInfo>(_cachedDevices);
+        }
+    }
+
+    public static async Task RefreshDevicesAsync()
+    {
+        try
+        {
+            string defaultId = MediaDevice.GetDefaultAudioRenderId(AudioDeviceRole.Default);
+            var selector = MediaDevice.GetAudioRenderSelector();
+            var collection = await DeviceInformation.FindAllAsync(selector);
+
+            var list = new List<AudioDeviceInfo>();
+            foreach (var dev in collection)
+            {
+                if (!dev.IsEnabled) continue;
+
+                string fullId = dev.Id;
+                string endpointId = ExtractEndpointId(fullId);
+                bool isDef = string.Equals(fullId, defaultId, StringComparison.OrdinalIgnoreCase) ||
+                             (!string.IsNullOrEmpty(endpointId) && defaultId.Contains(endpointId, StringComparison.OrdinalIgnoreCase));
+
+                string name = dev.Name;
+                string shortName = SimplifyDeviceName(name);
+
+                list.Add(new AudioDeviceInfo
+                {
+                    Id = fullId,
+                    EndpointId = endpointId,
+                    Name = name,
+                    ShortName = shortName,
+                    IsDefault = isDef
+                });
+            }
+
+            lock (_lock)
+            {
+                _cachedDevices = list;
+                _lastFetchTime = DateTime.UtcNow;
+                _isRefreshing = false;
+            }
+        }
+        catch
+        {
+            lock (_lock) { _isRefreshing = false; }
+        }
+    }
+
+    public static string ExtractEndpointId(string winRtId)
+    {
+        if (string.IsNullOrEmpty(winRtId)) return "";
+        int idx = winRtId.IndexOf("{0.0.0.", StringComparison.OrdinalIgnoreCase);
+        if (idx >= 0)
+        {
+            int endIdx = winRtId.IndexOf('#', idx);
+            return endIdx >= 0 ? winRtId.Substring(idx, endIdx - idx) : winRtId.Substring(idx);
+        }
+        return winRtId;
+    }
+
+    private static string SimplifyDeviceName(string name)
+    {
+        if (string.IsNullOrEmpty(name)) return "Speaker";
+        int p = name.IndexOf('(');
+        if (p > 0)
+        {
+            name = name.Substring(0, p).Trim();
+        }
+        if (name.Length > 12)
+        {
+            name = name.Substring(0, 10).TrimEnd() + "…";
+        }
+        return name;
+    }
+
+    public static bool SetDefaultDevice(string endpointOrWinRtId)
+    {
+        try
+        {
+            string endpointId = ExtractEndpointId(endpointOrWinRtId);
+            if (string.IsNullOrEmpty(endpointId)) return false;
+
+            var policy = (IPolicyConfig)new PolicyConfigClient();
+            int hr0 = policy.SetDefaultEndpoint(endpointId, 0); // eConsole
+            int hr1 = policy.SetDefaultEndpoint(endpointId, 1); // eMultimedia
+            int hr2 = policy.SetDefaultEndpoint(endpointId, 2); // eCommunications
+
+            lock (_lock)
+            {
+                foreach (var d in _cachedDevices)
+                {
+                    d.IsDefault = (string.Equals(d.EndpointId, endpointId, StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(d.Id, endpointOrWinRtId, StringComparison.OrdinalIgnoreCase));
+                }
+            }
+            return hr0 == 0;
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"SetDefaultDevice error: {ex.Message}");
+            return false;
+        }
+    }
+}
 
 internal sealed class OverlayForm : Form
 {
@@ -678,11 +833,24 @@ internal sealed class OverlayForm : Form
 
     // Projected 3D Button IDs for Media Player tab
     private const int BtnNone = 0;
-    private const int BtnShuffle = 1;
+    private const int BtnAudioDevice = 1;
     private const int BtnPrev = 2;
     private const int BtnPlayPause = 3;
     private const int BtnNext = 4;
-    private const int BtnAirPlay = 5;
+    private const int BtnSleepTimer = 5;
+
+    // Expanded Audio Picker IDs
+    private const int AudioBtnChip0 = 10;
+    private const int AudioBtnChip1 = 11;
+    private const int AudioBtnChip2 = 12;
+    private const int AudioBtnChip3 = 13;
+    private const int AudioBtnClose = 14;
+
+    // Expanded Music Sleep Timer IDs
+    private const int MusicSleepBtn15m = 20;
+    private const int MusicSleepBtn30m = 21;
+    private const int MusicSleepBtn45m = 22;
+    private const int MusicSleepBtnCancel = 23;
 
     private int _activeTab = TabHome;
     private int _prevTab = TabHome;
@@ -743,6 +911,16 @@ internal sealed class OverlayForm : Form
     private static bool _hoveredHomeWeather = false;
     public static int WeatherCardStyle = 1;
 
+    // Music Tab Audio Picker & Sleep Timer States
+    private static bool _audioPickerOpen = false;
+    private static double _audioPickerExpandP = 0.0;
+    private static int _hoveredAudioBtn = BtnNone;
+
+    private static bool _musicSleepPickerOpen = false;
+    private static double _musicSleepExpandP = 0.0;
+    private static int _hoveredMusicSleepBtn = BtnNone;
+    private static int _lastMusicHoverCountdownSec = -1;
+
     // Chrono Tab Timer State & Physics
     private const int ChronoBtnNone = 0;
     private const int ChronoBtnIcon = 1;
@@ -776,8 +954,19 @@ internal sealed class OverlayForm : Form
 
         _homeSleepPickerOpen = false;
         _homeSleepExpandP = 0.0;
+        _audioPickerOpen = false;
+        _audioPickerExpandP = 0.0;
+        _hoveredAudioBtn = BtnNone;
+        _musicSleepPickerOpen = false;
+        _musicSleepExpandP = 0.0;
+        _hoveredMusicSleepBtn = BtnNone;
         _tabBufferCache[TabHome] = null;
+        _tabBufferCache[TabMusic] = null;
         _tabBufferCache[TabChrono] = null;
+        if (newTab == TabMusic)
+        {
+            Task.Run(AudioDeviceManager.RefreshDevicesAsync);
+        }
         if (newTab != TabHome)
         {
             _hoveredHomeWeather = false;
@@ -1119,6 +1308,7 @@ internal sealed class OverlayForm : Form
             Screen.PrimaryScreen?.Bounds.Top ?? 0);
 
         _sysMedia.MediaUpdated += OnSystemMediaUpdated;
+        Task.Run(AudioDeviceManager.RefreshDevicesAsync);
 
         Shown += async (_, _) =>
         {
@@ -1326,13 +1516,78 @@ internal sealed class OverlayForm : Form
     private static int HitTestMediaButton(float mx, float my)
     {
         float cy = 120f;
-        if (Math.Abs(my - cy) > 22f) return BtnNone;
+        if (my < 100f || my > 140f) return BtnNone;
 
-        if (Math.Abs(mx - 98f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnShuffle;
-        if (Math.Abs(mx - 217f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnPrev;
-        if (Math.Abs(mx - 265f) <= 21f && Math.Abs(my - cy) <= 21f) return BtnPlayPause;
-        if (Math.Abs(mx - 313f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnNext;
-        if (Math.Abs(mx - 432f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnAirPlay;
+        // 1. Audio output device picker expanded state
+        if (_audioPickerOpen || _audioPickerExpandP > 0.3)
+        {
+            float ease = (float)(_audioPickerExpandP * _audioPickerExpandP * (3.0 - 2.0 * _audioPickerExpandP));
+            float curW = 30f + (310f - 30f) * ease;
+            float curX = 83f;
+
+            if (mx >= curX && mx <= curX + curW)
+            {
+                // Close button at far right
+                float cX = curX + curW - 28f;
+                if (mx >= cX && mx <= cX + 24f) return AudioBtnClose;
+
+                // Device chips in middle
+                float startX = 117f;
+                float endX = cX - 6f;
+                float availW = endX - startX;
+                var devices = AudioDeviceManager.GetDevices();
+                int count = Math.Min(3, devices.Count > 0 ? devices.Count : 2);
+                float gap = 5f;
+                float chipW = Math.Max(50f, (availW - gap * (count - 1)) / count);
+
+                for (int i = 0; i < count; i++)
+                {
+                    float chX = startX + i * (chipW + gap);
+                    if (mx >= chX && mx <= chX + chipW)
+                    {
+                        return AudioBtnChip0 + i;
+                    }
+                }
+
+                return BtnAudioDevice;
+            }
+        }
+
+        // 2. Music sleep timer picker expanded state
+        if (_musicSleepPickerOpen || _musicSleepExpandP > 0.3)
+        {
+            float ease = (float)(_musicSleepExpandP * _musicSleepExpandP * (3.0 - 2.0 * _musicSleepExpandP));
+            float curW = 30f + (188f - 30f) * ease;
+            float curX = 447f - curW;
+
+            if (mx >= curX && mx <= 447f)
+            {
+                float padX = (curW - 138f) * 0.5f;
+                float b1X = curX + padX;
+                float b2X = b1X + 38f;
+                float b3X = b2X + 38f;
+                float b4X = b3X + 38f;
+
+                if (mx >= b1X && mx < b1X + 34f) return MusicSleepBtn15m;
+                if (mx >= b2X && mx < b2X + 34f) return MusicSleepBtn30m;
+                if (mx >= b3X && mx < b3X + 34f) return MusicSleepBtn45m;
+                if (mx >= b4X && mx <= b4X + 24f) return MusicSleepBtnCancel;
+
+                return BtnSleepTimer;
+            }
+        }
+
+        // 3. Resting / collapsed buttons
+        if (Math.Abs(mx - 98f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnAudioDevice;
+        if (Math.Abs(mx - 432f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnSleepTimer;
+
+        // Transport controls (only active if neither picker is expanded)
+        if (_audioPickerExpandP < 0.2 && _musicSleepExpandP < 0.2)
+        {
+            if (Math.Abs(mx - 217f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnPrev;
+            if (Math.Abs(mx - 265f) <= 21f && Math.Abs(my - cy) <= 21f) return BtnPlayPause;
+            if (Math.Abs(mx - 313f) <= 17f && Math.Abs(my - cy) <= 17f) return BtnNext;
+        }
 
         return BtnNone;
     }
@@ -1463,15 +1718,128 @@ internal sealed class OverlayForm : Form
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
 
-            int btn = HitTestMediaButton(mx, my);
-            if (btn != BtnNone)
+            // Handle Audio Picker Expanded Clicks
+            if (_audioPickerOpen)
             {
-                _clickedButton = btn;
+                int btn = HitTestMediaButton(mx, my);
+                if (btn == AudioBtnClose)
+                {
+                    _audioPickerOpen = false;
+                    _tabBufferCache[TabMusic] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn >= AudioBtnChip0 && btn <= AudioBtnChip3)
+                {
+                    int devIdx = btn - AudioBtnChip0;
+                    var devices = AudioDeviceManager.GetDevices();
+                    if (devIdx < devices.Count)
+                    {
+                        AudioDeviceManager.SetDefaultDevice(devices[devIdx].Id);
+                    }
+                    _tabBufferCache[TabMusic] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else
+                {
+                    float ease = (float)(_audioPickerExpandP * _audioPickerExpandP * (3.0 - 2.0 * _audioPickerExpandP));
+                    float curW = 30f + (310f - 30f) * ease;
+                    float curX = 83f;
+                    if (mx < curX || mx > curX + curW || my < 100f || my > 140f)
+                    {
+                        _audioPickerOpen = false;
+                        _tabBufferCache[TabMusic] = null;
+                        _needExpandedUpdate = true;
+                    }
+                }
+            }
+
+            // Handle Music Sleep Picker Expanded Clicks
+            if (_musicSleepPickerOpen)
+            {
+                int btn = HitTestMediaButton(mx, my);
+                if (btn == MusicSleepBtn15m)
+                {
+                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(15) : DateTime.UtcNow.AddMinutes(15);
+                    _sleepTimerDurationMinutes = 15;
+                    _sleepTimerActive = true;
+                    _musicSleepPickerOpen = false;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtn30m)
+                {
+                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(30) : DateTime.UtcNow.AddMinutes(30);
+                    _sleepTimerDurationMinutes = 30;
+                    _sleepTimerActive = true;
+                    _musicSleepPickerOpen = false;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtn45m)
+                {
+                    _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(45) : DateTime.UtcNow.AddMinutes(45);
+                    _sleepTimerDurationMinutes = 45;
+                    _sleepTimerActive = true;
+                    _musicSleepPickerOpen = false;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else if (btn == MusicSleepBtnCancel)
+                {
+                    _sleepTimerActive = false;
+                    _sleepTimerTargetUtc = DateTime.MinValue;
+                    _sleepTimerDurationMinutes = 0;
+                    _musicSleepPickerOpen = false;
+                    _tabBufferCache[TabMusic] = null;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                    return true;
+                }
+                else
+                {
+                    float ease = (float)(_musicSleepExpandP * _musicSleepExpandP * (3.0 - 2.0 * _musicSleepExpandP));
+                    float curW = 30f + (188f - 30f) * ease;
+                    float curX = 447f - curW;
+                    if (mx < curX || mx > 447f || my < 100f || my > 140f)
+                    {
+                        _musicSleepPickerOpen = false;
+                        _tabBufferCache[TabMusic] = null;
+                        _needExpandedUpdate = true;
+                    }
+                }
+            }
+
+            int standardBtn = HitTestMediaButton(mx, my);
+            if (standardBtn != BtnNone)
+            {
+                _clickedButton = standardBtn;
                 _clickAnimTimer = 1.0;
                 UpdateExpandedMask();
 
-                switch (btn)
+                switch (standardBtn)
                 {
+                    case BtnAudioDevice:
+                        _audioPickerOpen = !_audioPickerOpen;
+                        if (_audioPickerOpen) _musicSleepPickerOpen = false;
+                        _tabBufferCache[TabMusic] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+
+                    case BtnSleepTimer:
+                        _musicSleepPickerOpen = !_musicSleepPickerOpen;
+                        if (_musicSleepPickerOpen) _audioPickerOpen = false;
+                        _tabBufferCache[TabMusic] = null;
+                        _needExpandedUpdate = true;
+                        return true;
+
                     case BtnPlayPause:
                         if (_sysMedia.HasActiveSession)
                         {
@@ -1498,21 +1866,6 @@ internal sealed class OverlayForm : Form
                         {
                             await _sysMedia.SkipPreviousAsync();
                         }
-                        return true;
-
-                    case BtnShuffle:
-                        if (_sysMedia.HasActiveSession)
-                        {
-                            await _sysMedia.ChangeShuffleAsync(!_isShuffle);
-                        }
-                        else
-                        {
-                            _isShuffle = !_isShuffle;
-                            UpdateExpandedMask();
-                        }
-                        return true;
-
-                    case BtnAirPlay:
                         return true;
                 }
             }
@@ -2037,8 +2390,10 @@ internal sealed class OverlayForm : Form
         bool isClicked,
         double clickProgress,
         float superScale,
-        Action drawGlyph)
+        Action drawGlyph,
+        float alpha = 1.0f)
     {
+        if (alpha <= 0.01f) return;
         var state = g.Save();
 
         // Tactile micro-spring press on click
@@ -2059,7 +2414,7 @@ internal sealed class OverlayForm : Form
         // 1. Soft Ambient Drop Shadow underneath the rounded square
         float shadowOffset = 2.0f * superScale;
         using (var shadowPath = CreateRoundedRectanglePath(x, y + shadowOffset, size, size, cornerRadius))
-        using (var brushShadow = new SolidBrush(Color.FromArgb(50, 0, 0, 0)))
+        using (var brushShadow = new SolidBrush(Color.FromArgb((int)(50 * alpha), 0, 0, 0)))
         {
             g.FillPath(brushShadow, shadowPath);
         }
@@ -2072,8 +2427,8 @@ internal sealed class OverlayForm : Form
                 // Darkened glass interaction on mouse hover
                 using var brushBody = new LinearGradientBrush(
                     new RectangleF(x, y, size, size),
-                    Color.FromArgb(160, 10, 15, 25),
-                    Color.FromArgb(195, 5, 8, 15),
+                    Color.FromArgb((int)(160 * alpha), 10, 15, 25),
+                    Color.FromArgb((int)(195 * alpha), 5, 8, 15),
                     90f);
                 g.FillPath(brushBody, bodyPath);
             }
@@ -2082,8 +2437,8 @@ internal sealed class OverlayForm : Form
                 // Distinct frosted diffusion glass fill (translucent frosted density, completely without outline)
                 using var brushBody = new LinearGradientBrush(
                     new RectangleF(x, y, size, size),
-                    Color.FromArgb(50, 255, 255, 255),
-                    Color.FromArgb(18, 255, 255, 255),
+                    Color.FromArgb((int)(50 * alpha), 255, 255, 255),
+                    Color.FromArgb((int)(18 * alpha), 255, 255, 255),
                     90f);
                 g.FillPath(brushBody, bodyPath);
             }
@@ -2095,10 +2450,11 @@ internal sealed class OverlayForm : Form
         g.Restore(state);
     }
 
-    private static void DrawPlayPauseGlyph(Graphics g, float cx, float cy, float radius, bool isPlaying)
+    private static void DrawPlayPauseGlyph(Graphics g, float cx, float cy, float radius, bool isPlaying, float alpha = 1.0f)
     {
+        if (alpha <= 0.01f) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brushGlyph = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+        using var brushGlyph = new SolidBrush(Color.FromArgb((int)(255 * alpha), 255, 255, 255));
         if (isPlaying)
         {
             float barW = radius * 0.22f;
@@ -2130,10 +2486,11 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawTrackSkipGlyph(Graphics g, float cx, float cy, float size, bool isNext)
+    private static void DrawTrackSkipGlyph(Graphics g, float cx, float cy, float size, bool isNext, float alpha = 1.0f)
     {
+        if (alpha <= 0.01f) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
+        using var brush = new SolidBrush(Color.FromArgb((int)(240 * alpha), 255, 255, 255));
 
         float dir = isNext ? 1.0f : -1.0f;
         float h = size * 0.65f;
@@ -2155,6 +2512,34 @@ internal sealed class OverlayForm : Form
             new PointF(cx + (gap * 0.5f) * dir, cy + h * 0.5f)
         };
         g.FillPolygon(brush, tri2);
+    }
+
+    private static void DrawAudioOutputGlyph(Graphics g, float cx, float cy, float size, float alpha = 1.0f)
+    {
+        if (alpha <= 0.01f) return;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        int a = (int)(235 * alpha);
+        using var pen = new Pen(Color.FromArgb(a, 255, 255, 255), 1.5f * (size / 13f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var brush = new SolidBrush(Color.FromArgb(a, 255, 255, 255));
+
+        float s = size * 0.5f;
+        PointF[] speakerPts = new[]
+        {
+            new PointF(cx - s * 0.65f, cy - s * 0.35f),
+            new PointF(cx - s * 0.20f, cy - s * 0.35f),
+            new PointF(cx + s * 0.22f, cy - s * 0.72f),
+            new PointF(cx + s * 0.22f, cy + s * 0.72f),
+            new PointF(cx - s * 0.20f, cy + s * 0.35f),
+            new PointF(cx - s * 0.65f, cy + s * 0.35f)
+        };
+        g.FillPolygon(brush, speakerPts);
+
+        // Sound waves
+        float r1 = s * 0.58f;
+        g.DrawArc(pen, cx + s * 0.05f - r1, cy - r1, r1 * 2f, r1 * 2f, -38f, 76f);
+
+        float r2 = s * 0.95f;
+        g.DrawArc(pen, cx + s * 0.05f - r2, cy - r2, r2 * 2f, r2 * 2f, -38f, 76f);
     }
 
     private static void DrawShuffleGlyph(Graphics g, float cx, float cy, float size, bool isActive)
@@ -3667,26 +4052,351 @@ internal sealed class OverlayForm : Form
 
         float ctrlY = 120f * superScale;
 
-        // Tactile Rounded Square Glass Buttons with Different Blur Intensity, Dark Hover, and Click Animation (NO OUTLINE)
-        DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
-            hoveredButton == BtnShuffle, clickedButton == BtnShuffle, clickAnimProgress, superScale,
-            () => DrawShuffleGlyph(g, 98f * superScale, ctrlY, 13f * superScale, isShuffle));
+        // Fluid expansion ease progress
+        float audioP = (float)Math.Clamp(_audioPickerExpandP, 0.0, 1.0);
+        float audioEase = audioP * audioP * (3f - 2f * audioP);
 
-        DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
-            hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
-            () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false));
+        float sleepP = (float)Math.Clamp(_musicSleepExpandP, 0.0, 1.0);
+        float sleepEase = sleepP * sleepP * (3f - 2f * sleepP);
 
-        DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
-            hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
-            () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying));
+        // Center Transport Controls Alpha (Prev, Play/Pause, Next)
+        float centerAlpha = Math.Clamp(1f - Math.Max(audioEase, sleepEase) * 2.5f, 0f, 1f);
 
-        DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
-            hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
-            () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true));
+        // -------------------------------------------------------------
+        // 1. LEFT BUTTON: AUDIO OUTPUT DEVICE / EXPANDING AUDIO PICKER
+        // -------------------------------------------------------------
+        if (audioP < 0.001f)
+        {
+            DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
+                hoveredButton == BtnAudioDevice, clickedButton == BtnAudioDevice, clickAnimProgress, superScale,
+                () => DrawAudioOutputGlyph(g, 98f * superScale, ctrlY, 13f * superScale));
+        }
+        else
+        {
+            // Fluid expansion rightwards: starts at X=83, width grows from 30px to 310px
+            float baseW = 30f;
+            float maxW = 310f;
+            float curW = baseW + (maxW - baseW) * audioEase;
+            float curX = 83f;
+            float curH = 30f;
+            float curY = 105f;
+            float curR = 8f + 7f * (1f - audioEase);
 
-        DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 15f * superScale, 7f * superScale,
-            hoveredButton == BtnAirPlay, clickedButton == BtnAirPlay, clickAnimProgress, superScale,
-            () => DrawAirPlayGlyph(g, 432f * superScale, ctrlY, 12f * superScale));
+            // Drop shadow
+            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 2f) * superScale, curW * superScale, curH * superScale, curR * superScale))
+            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(50 * Math.Min(1f, audioP * 2f)), 0, 0, 0)))
+            {
+                g.FillPath(brushShadow, shadowPath);
+            }
+
+            // Frosted glass capsule body
+            using var bodyPath = CreateRoundedRectanglePath(curX * superScale, curY * superScale, curW * superScale, curH * superScale, curR * superScale);
+            using (var brushBody = new LinearGradientBrush(
+                new RectangleF(curX * superScale, curY * superScale, curW * superScale, curH * superScale),
+                Color.FromArgb(55, 255, 255, 255),
+                Color.FromArgb(22, 255, 255, 255),
+                90f))
+            {
+                g.FillPath(brushBody, bodyPath);
+            }
+            using (var penBorder = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawPath(penBorder, bodyPath);
+            }
+
+            // Audio output speaker glyph at the left
+            DrawAudioOutputGlyph(g, 98f * superScale, ctrlY, 13f * superScale, 1.0f);
+
+            // Expanded content (Device chips + Close button) fades in
+            float alphaContent = Math.Clamp((audioEase - 0.20f) / 0.80f, 0f, 1f);
+            if (alphaContent > 0.01f)
+            {
+                var stateAudio = g.Save();
+                g.SetClip(bodyPath);
+
+                // Close button [✕] at the right end of the expanded capsule
+                float cW = 24f;
+                float cH = 22f;
+                float cX = curX + curW - 28f;
+                float cY = 109f;
+                float cR = 6f;
+                bool isCloseHovered = _hoveredAudioBtn == AudioBtnClose;
+
+                using (var pathClose = CreateRoundedRectanglePath(cX * superScale, cY * superScale, cW * superScale, cH * superScale, cR * superScale))
+                {
+                    using var brushClose = new SolidBrush(Color.FromArgb((int)((isCloseHovered ? 65 : 32) * alphaContent), 255, 255, 255));
+                    g.FillPath(brushClose, pathClose);
+                    using var penClose = new Pen(Color.FromArgb((int)(70 * alphaContent), 255, 255, 255), 1.0f * superScale);
+                    g.DrawPath(penClose, pathClose);
+                }
+
+                using (var penX = new Pen(Color.FromArgb((int)(240 * alphaContent), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    float xMid = (cX + cW * 0.5f) * superScale;
+                    float yMid = (cY + cH * 0.5f) * superScale;
+                    float d = 4.0f * superScale;
+                    g.DrawLine(penX, xMid - d, yMid - d, xMid + d, yMid + d);
+                    g.DrawLine(penX, xMid + d, yMid - d, xMid - d, yMid + d);
+                }
+
+                // Device chips in middle
+                float startX = 117f;
+                float endX = cX - 6f;
+                float availW = endX - startX;
+                var devices = AudioDeviceManager.GetDevices();
+                var shown = devices.Count > 0 ? devices.Take(3).ToList() : new List<AudioDeviceInfo>
+                {
+                    new AudioDeviceInfo { Name = "Speakers", ShortName = "Speakers", IsDefault = true },
+                    new AudioDeviceInfo { Name = "Headphones", ShortName = "Headphones", IsDefault = false }
+                };
+
+                float gap = 5f;
+                float chipW = Math.Max(50f, (availW - gap * (shown.Count - 1)) / shown.Count);
+                using var fontChip = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
+
+                for (int i = 0; i < shown.Count; i++)
+                {
+                    float chX = startX + i * (chipW + gap);
+                    float chY = 109f;
+                    float chH = 22f;
+                    float chR = 6f;
+                    bool isDevHovered = _hoveredAudioBtn == AudioBtnChip0 + i;
+                    bool isDefault = shown[i].IsDefault;
+
+                    using var pathChip = CreateRoundedRectanglePath(chX * superScale, chY * superScale, chipW * superScale, chH * superScale, chR * superScale);
+                    if (isDefault)
+                    {
+                        // Inverted active chip
+                        using var brushActive = new SolidBrush(Color.FromArgb((int)(220 * alphaContent), 255, 255, 255));
+                        g.FillPath(brushActive, pathChip);
+                        using var brushDarkText = new SolidBrush(Color.FromArgb((int)(240 * alphaContent), 25, 28, 35));
+                        string label = "✓ " + shown[i].ShortName;
+                        var sz = g.MeasureString(label, fontChip, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString(label, fontChip, brushDarkText, (chX + (chipW - sz.Width / superScale) * 0.5f) * superScale, (chY + (chH - sz.Height / superScale) * 0.5f) * superScale, StringFormat.GenericTypographic);
+                    }
+                    else
+                    {
+                        // Frosted glass chip
+                        using var brushNorm = new SolidBrush(Color.FromArgb((int)((isDevHovered ? 65 : 30) * alphaContent), 255, 255, 255));
+                        g.FillPath(brushNorm, pathChip);
+                        using var penNorm = new Pen(Color.FromArgb((int)(65 * alphaContent), 255, 255, 255), 1.0f * superScale);
+                        g.DrawPath(penNorm, pathChip);
+                        using var brushLightText = new SolidBrush(Color.FromArgb((int)(230 * alphaContent), 255, 255, 255));
+                        string label = shown[i].ShortName;
+                        var sz = g.MeasureString(label, fontChip, PointF.Empty, StringFormat.GenericTypographic);
+                        g.DrawString(label, fontChip, brushLightText, (chX + (chipW - sz.Width / superScale) * 0.5f) * superScale, (chY + (chH - sz.Height / superScale) * 0.5f) * superScale, StringFormat.GenericTypographic);
+                    }
+                }
+
+                g.Restore(stateAudio);
+            }
+        }
+
+        // -------------------------------------------------------------
+        // 2. CENTER TRANSPORT CONTROLS (FADES OUT DURING EXPANSION)
+        // -------------------------------------------------------------
+        if (centerAlpha > 0.01f)
+        {
+            DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
+                hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
+                () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false, centerAlpha), centerAlpha);
+
+            DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
+                hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
+                () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying, centerAlpha), centerAlpha);
+
+            DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
+                hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
+                () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true, centerAlpha), centerAlpha);
+        }
+
+        // -------------------------------------------------------------
+        // 3. RIGHT BUTTON: SLEEP TIMER / EXPANDING SLEEP PICKER
+        // -------------------------------------------------------------
+        if (sleepP < 0.001f)
+        {
+            bool isHoveredSleep = hoveredButton == BtnSleepTimer;
+            bool hasTimerValue = _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && DateTime.UtcNow < _sleepTimerTargetUtc;
+            bool showRemainingOnHover = hasTimerValue && isHoveredSleep;
+
+            if (_sleepTimerActive)
+            {
+                // Inverted tactile button for active sleep timer
+                float halfSize = 15f * superScale;
+                float cornerRadius = 7f * superScale;
+                float x = 432f * superScale - halfSize;
+                float y = ctrlY - halfSize;
+                float size = halfSize * 2f;
+
+                // Soft shadow
+                using (var shadowPath = CreateRoundedRectanglePath(x, y + 2f * superScale, size, size, cornerRadius))
+                using (var brushShadow = new SolidBrush(Color.FromArgb(50, 0, 0, 0)))
+                {
+                    g.FillPath(brushShadow, shadowPath);
+                }
+
+                // Inverted bright frosted glass body
+                using (var bodyPath = CreateRoundedRectanglePath(x, y, size, size, cornerRadius))
+                using (var brushBody = new SolidBrush(Color.FromArgb(235, 255, 255, 255)))
+                {
+                    g.FillPath(brushBody, bodyPath);
+                }
+
+                if (showRemainingOnHover)
+                {
+                    string timeText;
+                    if (DebugSleepTimerInSeconds)
+                    {
+                        int remainingSec = Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - DateTime.UtcNow).TotalSeconds));
+                        timeText = $"{remainingSec}s";
+                    }
+                    else
+                    {
+                        int remainingMin = Math.Max(1, (int)Math.Ceiling((_sleepTimerTargetUtc - DateTime.UtcNow).TotalMinutes));
+                        timeText = $"{remainingMin}m";
+                    }
+                    using var fontCountdown = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+                    var sz = g.MeasureString(timeText, fontCountdown, PointF.Empty, StringFormat.GenericTypographic);
+                    using var brushDarkText = new SolidBrush(Color.FromArgb(240, 25, 28, 35));
+                    g.DrawString(timeText, fontCountdown, brushDarkText, 432f * superScale - sz.Width * 0.5f, ctrlY - sz.Height * 0.5f, StringFormat.GenericTypographic);
+                }
+                else
+                {
+                    using var brushDarkMoon = new SolidBrush(Color.FromArgb(240, 25, 28, 35));
+                    DrawMoonWithStars(g, brushDarkMoon, 432f * superScale, ctrlY, 7.5f * superScale);
+                }
+            }
+            else
+            {
+                // Standard projected button with light moon glyph
+                DrawProjectedButtonContainer(g, 432f * superScale, ctrlY, 15f * superScale, 7f * superScale,
+                    isHoveredSleep, clickedButton == BtnSleepTimer, clickAnimProgress, superScale,
+                    () =>
+                    {
+                        using var brushLightMoon = new SolidBrush(Color.FromArgb(225, 255, 255, 255));
+                        DrawMoonWithStars(g, brushLightMoon, 432f * superScale, ctrlY, 7.5f * superScale);
+                    });
+            }
+        }
+        else
+        {
+            // Fluid expansion leftwards: right edge stays at X=447, width grows from 30px to 188px
+            float baseW = 30f;
+            float maxW = 188f;
+            float curW = baseW + (maxW - baseW) * sleepEase;
+            float curX = 447f - curW;
+            float curH = 30f;
+            float curY = 105f;
+            float curR = 8f + 7f * (1f - sleepEase);
+
+            // Drop shadow
+            using (var shadowPath = CreateRoundedRectanglePath(curX * superScale, (curY + 2f) * superScale, curW * superScale, curH * superScale, curR * superScale))
+            using (var brushShadow = new SolidBrush(Color.FromArgb((int)(50 * Math.Min(1f, sleepP * 2f)), 0, 0, 0)))
+            {
+                g.FillPath(brushShadow, shadowPath);
+            }
+
+            // Frosted glass capsule body
+            using var bodyPath = CreateRoundedRectanglePath(curX * superScale, curY * superScale, curW * superScale, curH * superScale, curR * superScale);
+            if (_sleepTimerActive)
+            {
+                int invA = (int)(32 + (235 - 32) * (1f - sleepEase));
+                using var brushTimer = new SolidBrush(Color.FromArgb(invA, 255, 255, 255));
+                g.FillPath(brushTimer, bodyPath);
+            }
+            else
+            {
+                using var brushTimer = new SolidBrush(Color.FromArgb(40, 255, 255, 255));
+                g.FillPath(brushTimer, bodyPath);
+            }
+            using (var penBorder = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawPath(penBorder, bodyPath);
+            }
+
+            // Moon glyph fades out at right anchor as it expands
+            float moonAlpha = Math.Clamp(1f - sleepEase * 2.8f, 0f, 1f);
+            if (moonAlpha > 0.01f)
+            {
+                var stateMoon = g.Save();
+                g.SetClip(bodyPath);
+                if (_sleepTimerActive)
+                {
+                    using var brushDarkMoon = new SolidBrush(Color.FromArgb((int)(240 * moonAlpha), 25, 28, 35));
+                    DrawMoonWithStars(g, brushDarkMoon, 432f * superScale, ctrlY, 7.5f * superScale);
+                }
+                else
+                {
+                    using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(225 * moonAlpha), 255, 255, 255));
+                    DrawMoonWithStars(g, brushLightMoon, 432f * superScale, ctrlY, 7.5f * superScale);
+                }
+                g.Restore(stateMoon);
+            }
+
+            // Template preset buttons [15m], [30m], [45m], [✕] fade in
+            float alphaPresets = Math.Clamp((sleepEase - 0.20f) / 0.80f, 0f, 1f);
+            if (alphaPresets > 0.01f)
+            {
+                var statePresets = g.Save();
+                g.SetClip(bodyPath);
+
+                float padX = (curW - 138f) * 0.5f;
+                float bY = 109f;
+                float bH = 22f;
+                float bR = 6f;
+
+                string lbl15 = DebugSleepTimerInSeconds ? "15s" : "15m";
+                string lbl30 = DebugSleepTimerInSeconds ? "30s" : "30m";
+                string lbl45 = DebugSleepTimerInSeconds ? "45s" : "45m";
+
+                using var fontTimerBtn = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
+
+                // Button 1: 15
+                float b1X = curX + padX;
+                DrawSleepOptionPill(g, superScale, b1X * superScale, bY * superScale, 34f * superScale, bH * superScale, bR * superScale, lbl15, fontTimerBtn,
+                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 15,
+                    isHovered: _hoveredMusicSleepBtn == MusicSleepBtn15m,
+                    isCancel: false,
+                    alphaMul: alphaPresets);
+
+                // Button 2: 30
+                float b2X = b1X + 38f;
+                DrawSleepOptionPill(g, superScale, b2X * superScale, bY * superScale, 34f * superScale, bH * superScale, bR * superScale, lbl30, fontTimerBtn,
+                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 30,
+                    isHovered: _hoveredMusicSleepBtn == MusicSleepBtn30m,
+                    isCancel: false,
+                    alphaMul: alphaPresets);
+
+                // Button 3: 45
+                float b3X = b2X + 38f;
+                DrawSleepOptionPill(g, superScale, b3X * superScale, bY * superScale, 34f * superScale, bH * superScale, bR * superScale, lbl45, fontTimerBtn,
+                    isActive: _sleepTimerActive && _sleepTimerDurationMinutes == 45,
+                    isHovered: _hoveredMusicSleepBtn == MusicSleepBtn45m,
+                    isCancel: false,
+                    alphaMul: alphaPresets);
+
+                // Button 4: Cancel ✕
+                float b4X = b3X + 38f;
+                bool isCancelHov = _hoveredMusicSleepBtn == MusicSleepBtnCancel;
+                using (var pathCancel = CreateRoundedRectanglePath(b4X * superScale, bY * superScale, 24f * superScale, bH * superScale, bR * superScale))
+                {
+                    using var brushCancel = new SolidBrush(Color.FromArgb((int)((isCancelHov ? 65 : 32) * alphaPresets), 255, 255, 255));
+                    g.FillPath(brushCancel, pathCancel);
+                    using var penCancel = new Pen(Color.FromArgb((int)(70 * alphaPresets), 255, 255, 255), 1.0f * superScale);
+                    g.DrawPath(penCancel, pathCancel);
+                }
+                using (var penX = new Pen(Color.FromArgb((int)(240 * alphaPresets), 255, 255, 255), 1.3f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+                {
+                    float xMid = (b4X + 12f) * superScale;
+                    float yMid = (bY + bH * 0.5f) * superScale;
+                    float d = 4.0f * superScale;
+                    g.DrawLine(penX, xMid - d, yMid - d, xMid + d, yMid + d);
+                    g.DrawLine(penX, xMid + d, yMid - d, xMid - d, yMid + d);
+                }
+
+                g.Restore(statePresets);
+            }
+        }
     }
 
     private static void DrawTabWeatherContent(
@@ -4402,9 +5112,34 @@ internal sealed class OverlayForm : Form
 
             Rectangle bounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
             using var bmp = new Bitmap(bounds.Width, bounds.Height, PixelFormat.Format32bppRgb);
+            string dir = AppDomain.CurrentDomain.BaseDirectory;
+            string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
+            string parentDir = Path.GetFullPath(Path.Combine(rootDir, @".."));
+
+            // Also export crisp 600x250 transparent pill PNG directly
+            try
+            {
+                using var pillBmp = new Bitmap(SurfaceWidth, SurfaceHeight, PixelFormat.Format32bppArgb);
+                var pillData = pillBmp.LockBits(new Rectangle(0, 0, SurfaceWidth, SurfaceHeight), ImageLockMode.WriteOnly, PixelFormat.Format32bppArgb);
+                unsafe
+                {
+                    System.Buffer.MemoryCopy((void*)surface.BitsPtr, (void*)pillData.Scan0, SurfaceWidth * SurfaceHeight * 4, SurfaceWidth * SurfaceHeight * 4);
+                }
+                pillBmp.UnlockBits(pillData);
+                pillBmp.Save(Path.Combine(rootDir, "pill_" + filename), ImageFormat.Png);
+            }
+            catch { }
+
             using (var g = Graphics.FromImage(bmp))
             {
-                g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+                try
+                {
+                    g.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size);
+                }
+                catch
+                {
+                    g.Clear(Color.FromArgb(20, 22, 28));
+                }
             }
 
             int posX = Location.X;
@@ -4456,14 +5191,19 @@ internal sealed class OverlayForm : Form
             }
             bmp.UnlockBits(data);
 
-            string dir = AppDomain.CurrentDomain.BaseDirectory;
-            string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
-            string parentDir = Path.GetFullPath(Path.Combine(rootDir, @".."));
-
             bmp.Save(Path.Combine(rootDir, filename), ImageFormat.Png);
             bmp.Save(Path.Combine(parentDir, filename), ImageFormat.Png);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            try
+            {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
+                File.WriteAllText(Path.Combine(rootDir, "screenshot_error.txt"), ex.ToString());
+            }
+            catch { }
+        }
     }
 
     private int _screenshotFrameCounter = 0;
@@ -4892,8 +5632,109 @@ internal sealed class OverlayForm : Form
 
                 File.Delete(chronoTriggerPath);
             }
+
+            string musicTriggerPath = Path.Combine(rootDir, "take_music_all.trigger");
+            if (File.Exists(musicTriggerPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+
+                // 1. Music tab resting state (left: audio device icon, right: sleep timer moon)
+                SwitchTab(TabMusic, immediate: true);
+                _audioPickerOpen = false;
+                _audioPickerExpandP = 0.0;
+                _musicSleepPickerOpen = false;
+                _musicSleepExpandP = 0.0;
+                _sleepTimerActive = false;
+                _hoveredButton = BtnNone;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+                var geomResting = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomResting);
+                SaveDesktopScreenshotWithPill("screenshot_music_resting.png");
+
+                // 2. Audio output device picker expanded
+                _audioPickerOpen = true;
+                _audioPickerExpandP = 1.0;
+                _musicSleepPickerOpen = false;
+                _musicSleepExpandP = 0.0;
+                _sleepTimerActive = false;
+                _hoveredAudioBtn = AudioBtnChip0;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+                var geomAudio = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomAudio);
+                SaveDesktopScreenshotWithPill("screenshot_music_audio_expanded.png");
+
+                // 3. Sleep timer picker expanded
+                _audioPickerOpen = false;
+                _audioPickerExpandP = 0.0;
+                _musicSleepPickerOpen = true;
+                _musicSleepExpandP = 1.0;
+                _sleepTimerActive = false;
+                _hoveredMusicSleepBtn = MusicSleepBtn15m;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+                var geomSleep = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomSleep);
+                SaveDesktopScreenshotWithPill("screenshot_music_sleep_expanded.png");
+
+                // 4. Sleep timer active state (inverted bright button with dark moon)
+                _audioPickerOpen = false;
+                _audioPickerExpandP = 0.0;
+                _musicSleepPickerOpen = false;
+                _musicSleepExpandP = 0.0;
+                _sleepTimerActive = true;
+                _sleepTimerDurationMinutes = 15;
+                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(14);
+                _hoveredButton = BtnNone;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+                var geomActive = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomActive);
+                SaveDesktopScreenshotWithPill("screenshot_music_sleep_active.png");
+
+                // 5. Sleep timer active hovered state (shows countdown "14m" or "28s")
+                _audioPickerOpen = false;
+                _audioPickerExpandP = 0.0;
+                _musicSleepPickerOpen = false;
+                _musicSleepExpandP = 0.0;
+                _sleepTimerActive = true;
+                _sleepTimerDurationMinutes = 15;
+                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(14);
+                _hoveredButton = BtnSleepTimer;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+                var geomActiveHover = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), geomActiveHover);
+                SaveDesktopScreenshotWithPill("screenshot_music_sleep_active_hover.png");
+
+                // Reset
+                _audioPickerOpen = false;
+                _audioPickerExpandP = 0.0;
+                _musicSleepPickerOpen = false;
+                _musicSleepExpandP = 0.0;
+                _sleepTimerActive = false;
+                _hoveredButton = BtnNone;
+                _hoveredAudioBtn = BtnNone;
+                _hoveredMusicSleepBtn = BtnNone;
+                _tabBufferCache[TabMusic] = null;
+                UpdateExpandedMask();
+
+                File.Delete(musicTriggerPath);
+            }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            try
+            {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
+                File.WriteAllText(Path.Combine(rootDir, "trigger_error.txt"), ex.ToString());
+            }
+            catch { }
+        }
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -4986,6 +5827,8 @@ internal sealed class OverlayForm : Form
                                    (_progress > 0.001 && _progress < 0.999) ||
                                    (Math.Abs(_hoverVel) > 0.001) ||
                                    (Math.Abs(_homeSleepExpandP - (_homeSleepPickerOpen ? 1.0 : 0.0)) > 0.001) ||
+                                   (Math.Abs(_audioPickerExpandP - (_audioPickerOpen ? 1.0 : 0.0)) > 0.001) ||
+                                   (Math.Abs(_musicSleepExpandP - (_musicSleepPickerOpen ? 1.0 : 0.0)) > 0.001) ||
                                    (_chronoMorphTimer > 0.0) ||
                                    (!_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - (_chronoTimerHovered ? 200.0 : 44.0)) > 0.5) ||
                                    (_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - ChronoActiveWidth) > 0.5) ||
@@ -5142,12 +5985,17 @@ internal sealed class OverlayForm : Form
                         if (hoveredBtn != _hoveredButton)
                         {
                             _hoveredButton = hoveredBtn;
+                            _hoveredAudioBtn = hoveredBtn;
+                            _hoveredMusicSleepBtn = hoveredBtn;
+                            _tabBufferCache[TabMusic] = null;
                             UpdateExpandedMask();
                         }
                     }
                     else if (_hoveredButton != BtnNone)
                     {
                         _hoveredButton = BtnNone;
+                        _hoveredAudioBtn = BtnNone;
+                        _hoveredMusicSleepBtn = BtnNone;
                         UpdateExpandedMask();
                     }
 
@@ -5263,15 +6111,18 @@ internal sealed class OverlayForm : Form
                 }
             }
 
-            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _hoveredHomeWeather || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone))
+            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _hoveredHomeWeather || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone || _hoveredAudioBtn != BtnNone || _hoveredMusicSleepBtn != BtnNone))
             {
                 _hoveredButton = BtnNone;
+                _hoveredAudioBtn = BtnNone;
+                _hoveredMusicSleepBtn = BtnNone;
                 _hoveredHomeSleepBtn = HomeSleepBtnNone;
                 _hoveredHomeWeather = false;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = false;
                 _hoveredChronoBtn = ChronoBtnNone;
                 _tabBufferCache[TabHome] = null;
+                _tabBufferCache[TabMusic] = null;
                 _tabBufferCache[TabChrono] = null;
                 UpdateExpandedMask();
             }
@@ -5447,6 +6298,50 @@ internal sealed class OverlayForm : Form
                 }
                 _tabBufferCache[TabHome] = null;
                 _needExpandedUpdate = true;
+            }
+
+            // Smoothly animate audio output picker expand / collapse progress
+            double targetAudioP = _audioPickerOpen ? 1.0 : 0.0;
+            if (Math.Abs(_audioPickerExpandP - targetAudioP) > 0.001)
+            {
+                _audioPickerExpandP += (targetAudioP - _audioPickerExpandP) * Math.Min(1.0, 8.5 * dt);
+                if (Math.Abs(_audioPickerExpandP - targetAudioP) < 0.001)
+                {
+                    _audioPickerExpandP = targetAudioP;
+                }
+                _tabBufferCache[TabMusic] = null;
+                _needExpandedUpdate = true;
+            }
+
+            // Smoothly animate music sleep timer picker expand / collapse progress
+            double targetMusicSleepP = _musicSleepPickerOpen ? 1.0 : 0.0;
+            if (Math.Abs(_musicSleepExpandP - targetMusicSleepP) > 0.001)
+            {
+                _musicSleepExpandP += (targetMusicSleepP - _musicSleepExpandP) * Math.Min(1.0, 8.5 * dt);
+                if (Math.Abs(_musicSleepExpandP - targetMusicSleepP) < 0.001)
+                {
+                    _musicSleepExpandP = targetMusicSleepP;
+                }
+                _tabBufferCache[TabMusic] = null;
+                _needExpandedUpdate = true;
+            }
+
+            // Live hover countdown ticker for Music Sleep Timer
+            if (_activeTab == TabMusic && _hoveredButton == BtnSleepTimer && _sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && !_musicSleepPickerOpen)
+            {
+                int curVal = DebugSleepTimerInSeconds 
+                    ? Math.Max(0, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds))
+                    : Math.Max(1, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalMinutes));
+                if (curVal != _lastMusicHoverCountdownSec)
+                {
+                    _lastMusicHoverCountdownSec = curVal;
+                    _tabBufferCache[TabMusic] = null;
+                    _needExpandedUpdate = true;
+                }
+            }
+            else if (_activeTab == TabMusic && _hoveredButton != BtnSleepTimer)
+            {
+                _lastMusicHoverCountdownSec = -1;
             }
 
             // Live hover countdown ticker: when hovering over the active sleep timer button, invalidate cache when remaining value changes
