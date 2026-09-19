@@ -3621,93 +3621,141 @@ internal sealed class OverlayForm : Form
 
     private static void DrawWeatherStyle1_Bauhaus(Graphics g, float superScale, float cardX, float c2Y, float cardW, float c2H, float cardR, GraphicsPath pathC2)
     {
-        // 1. Constructivist Diagonal Chromatic Wash
+        // 1. Midnight Bauhaus Sky Atmosphere Gradient
         using (var brushAtmosphere = new LinearGradientBrush(
             new PointF(cardX, c2Y),
             new PointF(cardX + cardW, c2Y + c2H),
-            Color.FromArgb(20, 100, 190, 255),
-            Color.FromArgb(_hoveredHomeWeather ? 60 : 42, 255, 175, 45)))
+            Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 12, 24, 40),
+            Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 18, 52, 75)))
         {
             g.FillPath(brushAtmosphere, pathC2);
         }
 
-        // Geometric Center Anchors
-        float sunCx = cardX + cardW - 36f * superScale;
-        float sunCy = c2Y + c2H * 0.46f;
-        float sunR = 14f * superScale;
+        // Geometric Center & Bounds for Artwork (Right Anchor)
+        float groundY = c2Y + c2H + 2f * superScale;
 
-        float moonCx = cardX + cardW - 20f * superScale;
-        float moonCy = c2Y + c2H * 0.54f;
-        float moonR = 16.5f * superScale;
+        // 2. Rising Radiant Spherical Sun
+        float sunCx = cardX + cardW - 38f * superScale;
+        float sunCy = c2Y + 14f * superScale;
+        float sunR = 12f * superScale;
 
-        // 2. Ultra-thin Concentric Swiss Orbit Arcs
-        using (var penArc = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale))
+        // Sun Diffuse Luminous Halo
+        using (var brushHalo = new SolidBrush(Color.FromArgb(_hoveredHomeWeather ? 60 : 42, 255, 175, 35)))
         {
-            g.DrawArc(penArc, sunCx - 24f * superScale, sunCy - 24f * superScale, 48f * superScale, 48f * superScale, 120, 210);
-            g.DrawArc(penArc, sunCx - 32f * superScale, sunCy - 32f * superScale, 64f * superScale, 64f * superScale, 140, 180);
+            float haloR = sunR + 10f * superScale;
+            g.FillEllipse(brushHalo, sunCx - haloR, sunCy - haloR, haloR * 2f, haloR * 2f);
         }
 
-        // 3. Precision 45-degree Tangent Line (Bauhaus constructivism)
-        using (var penTangent = new Pen(Color.FromArgb(55, 255, 255, 255), 1.0f * superScale))
+        // Sun Sphere (Amber to Ochre Gold Gradient)
+        using (var brushSun = new LinearGradientBrush(
+            new PointF(sunCx - sunR, sunCy - sunR),
+            new PointF(sunCx + sunR, sunCy + sunR),
+            Color.FromArgb(255, 255, 218, 70),
+            Color.FromArgb(255, 248, 138, 24)))
         {
-            g.DrawLine(penTangent, sunCx - 38f * superScale, c2Y + c2H, sunCx + 26f * superScale, c2Y);
+            g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
         }
 
-        // 4. Primary Solar Disc (Warm Bauhaus Ochre-Gold)
-        using (var brushSolar = new SolidBrush(Color.FromArgb(240, 255, 205, 50)))
+        // 3. Ultra-thin Concentric Swiss Orbit Arcs
+        using (var penArc = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
         {
-            g.FillEllipse(brushSolar, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
+            float arc1R = sunR + 7f * superScale;
+            g.DrawArc(penArc, sunCx - arc1R, sunCy - arc1R, arc1R * 2f, arc1R * 2f, 130, 190);
+            float arc2R = sunR + 15f * superScale;
+            g.DrawArc(penArc, sunCx - arc2R, sunCy - arc2R, arc2R * 2f, arc2R * 2f, 150, 160);
         }
 
-        // 5. Intersecting Atmosphere Disc (Translucent Frosted Ice-Cyan)
-        using (var brushIce = new SolidBrush(Color.FromArgb(135, 160, 230, 255)))
+        // 4. Precision 45-degree Tangent Line (Bauhaus constructivism)
+        using (var penTangent = new Pen(Color.FromArgb(60, 255, 255, 255), 1.0f * superScale))
         {
-            g.FillEllipse(brushIce, moonCx - moonR, moonCy - moonR, moonR * 2f, moonR * 2f);
+            g.DrawLine(penTangent, sunCx - 40f * superScale, c2Y + c2H, sunCx + 24f * superScale, c2Y);
         }
 
-        // 6. Geometric Intersection Rim / Lens Specular Highlight
-        using (var penLensRim = new Pen(Color.FromArgb(170, 255, 255, 255), 1.2f * superScale))
+        // 5. Layered Semicircular Horizon Arcs (Constructivist Rolling Hills)
+        // Back Arc: Deep Oceanic Teal (#16495b)
+        float h1R = 26f * superScale;
+        float h1Cx = cardX + cardW - 52f * superScale;
+        using (var brushH1 = new SolidBrush(Color.FromArgb(235, 22, 73, 91)))
         {
-            g.DrawArc(penLensRim, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f, 180, 150);
-            g.DrawArc(penLensRim, moonCx - moonR, moonCy - moonR, moonR * 2f, moonR * 2f, 90, 140);
+            g.FillPie(brushH1, h1Cx - h1R, groundY - h1R, h1R * 2f, h1R * 2f, 180, 180);
+        }
+        using (var penH1 = new Pen(Color.FromArgb(100, 255, 255, 255), 1.0f * superScale))
+        {
+            g.DrawArc(penH1, h1Cx - h1R, groundY - h1R, h1R * 2f, h1R * 2f, 180, 180);
         }
 
-        // 7. Typography (Swiss Modernist Grid)
-        float tempX = cardX + 14f * superScale;
+        // Mid Arc: Vibrant Sea-Teal (#237a8d)
+        float h2R = 24f * superScale;
+        float h2Cx = cardX + cardW - 22f * superScale;
+        using (var brushH2 = new SolidBrush(Color.FromArgb(245, 35, 122, 141)))
+        {
+            g.FillPie(brushH2, h2Cx - h2R, groundY - h2R, h2R * 2f, h2R * 2f, 180, 180);
+        }
+        using (var penH2 = new Pen(Color.FromArgb(110, 255, 255, 255), 1.0f * superScale))
+        {
+            g.DrawArc(penH2, h2Cx - h2R, groundY - h2R, h2R * 2f, h2R * 2f, 180, 180);
+        }
+
+        // Foreground Arc: Luminous Aqua-Cyan (#3daebd)
+        float h3R = 18f * superScale;
+        float h3Cx = cardX + cardW - 36f * superScale;
+        using (var brushH3 = new SolidBrush(Color.FromArgb(255, 61, 174, 189)))
+        {
+            g.FillPie(brushH3, h3Cx - h3R, groundY - h3R, h3R * 2f, h3R * 2f, 180, 180);
+        }
+        using (var penH3 = new Pen(Color.FromArgb(150, 255, 255, 255), 1.2f * superScale))
+        {
+            g.DrawArc(penH3, h3Cx - h3R, groundY - h3R, h3R * 2f, h3R * 2f, 180, 180);
+        }
+
+        // 6. Typography (Swiss Modernist Grid)
+        var now = DateTime.Now;
+        float tempX = cardX + 12f * superScale;
         float textStartX = tempX;
-        using (var fontTemp = GetPremiumFont(20.0f * superScale, FontStyle.Bold))
+
+        // Micro Header Label: Day & City (e.g. "TUE · SF")
+        string dayCity = $"{now:ddd} · SF".ToUpperInvariant();
+        using (var fontMicro = GetPremiumFont(6.8f * superScale, FontStyle.Bold))
+        using (var brushMicro = new SolidBrush(Color.FromArgb(175, 210, 240, 255)))
+        {
+            g.DrawString(dayCity, fontMicro, brushMicro, tempX, c2Y + 6f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Hero Temperature Numerals (24°)
+        using (var fontTemp = GetPremiumFont(19.0f * superScale, FontStyle.Bold))
         {
             var tSize = g.MeasureString("24°", fontTemp, PointF.Empty, StringFormat.GenericTypographic);
-            float tempY = c2Y + (c2H - tSize.Height) * 0.5f;
+            float tempY = c2Y + 16f * superScale;
 
-            using (var brushGlow = new SolidBrush(Color.FromArgb(25, 255, 210, 80)))
+            using (var brushGlow = new SolidBrush(Color.FromArgb(28, 255, 210, 80)))
             {
                 g.FillEllipse(brushGlow, tempX - 4f * superScale, tempY - 2f * superScale, tSize.Width + 8f * superScale, tSize.Height + 4f * superScale);
             }
 
             using var brushT = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
             g.DrawString("24°", fontTemp, brushT, tempX, tempY, StringFormat.GenericTypographic);
-            textStartX = tempX + tSize.Width + 12f * superScale;
+            textStartX = tempX + tSize.Width + 10f * superScale;
         }
 
-        using (var fontCond = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
-        using (var fontSub = GetPremiumFont(7.5f * superScale, FontStyle.Regular))
+        // Condition & Micro Range
+        using (var fontCond = GetPremiumFont(7.8f * superScale, FontStyle.Bold))
+        using (var fontSub = GetPremiumFont(7.0f * superScale, FontStyle.Regular))
         {
-            float condY = c2Y + 10f * superScale;
+            float condY = c2Y + 16.5f * superScale;
             using var brushCond = new SolidBrush(Color.FromArgb(250, 255, 255, 255));
             g.DrawString("PARTLY CLOUDY", fontCond, brushCond, textStartX, condY, StringFormat.GenericTypographic);
 
-            float subY = c2Y + 23.5f * superScale;
-            using var brushSub = new SolidBrush(Color.FromArgb(175, 255, 255, 255));
-            g.DrawString("H: 28°  L: 19°  ·  SF", fontSub, brushSub, textStartX, subY, StringFormat.GenericTypographic);
+            float subY = c2Y + 28f * superScale;
+            using var brushSub = new SolidBrush(Color.FromArgb(170, 210, 235, 255));
+            g.DrawString("H: 28°  L: 19°", fontSub, brushSub, textStartX, subY, StringFormat.GenericTypographic);
         }
 
         // Interactive Cue
         if (_hoveredHomeWeather)
         {
-            using var brushArrow = new SolidBrush(Color.FromArgb(160, 255, 255, 255));
+            using var brushArrow = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
             using var fontArrow = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
-            g.DrawString("›", fontArrow, brushArrow, cardX + cardW - 13f * superScale, c2Y + c2H * 0.5f - 7f * superScale, StringFormat.GenericDefault);
+            g.DrawString("›", fontArrow, brushArrow, cardX + cardW - 12f * superScale, c2Y + c2H * 0.5f - 7f * superScale, StringFormat.GenericDefault);
         }
     }
 
@@ -4698,67 +4746,245 @@ internal sealed class OverlayForm : Form
         float superScale,
         int targetW)
     {
-        using var fontLarge = GetPremiumFont(22.0f * superScale, FontStyle.Bold);
-        using var fontMedium = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
-        using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
-        using var fontTab = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+        var now = DateTime.Now;
 
-        float wX = 24f * superScale;
-        float wY = 46f * superScale;
+        // Content Area Bounds
+        float wX = 22f * superScale;
+        float wY = 34f * superScale;
+        float totalW = targetW * superScale - 44f * superScale;
+        float totalH = 104f * superScale;
 
-        float sunX = wX + 22f * superScale;
-        float sunY = wY + 22f * superScale;
-        using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 210, 60)))
+        // ----------------------------------------------------
+        // 1. Hero Bauhaus Abstract Geometric Art Canvas (Left)
+        // ----------------------------------------------------
+        float artW = 114f * superScale;
+        float artH = totalH;
+        float artR = 14f * superScale;
+
+        using (var pathArt = CreateRoundedRectPath(wX, wY, artW, artH, artR, artR, artR, artR))
         {
-            g.FillEllipse(brushSun, sunX - 14f * superScale, sunY - 14f * superScale, 28f * superScale, 28f * superScale);
+            // Midnight Sky Liquid Glass Gradient
+            using (var brushArtBg = new LinearGradientBrush(
+                new PointF(wX, wY),
+                new PointF(wX + artW, wY + artH),
+                Color.FromArgb(240, 11, 23, 40),
+                Color.FromArgb(240, 18, 52, 75)))
+            {
+                g.FillPath(brushArtBg, pathArt);
+            }
+
+            var stateArt = g.Save();
+            g.SetClip(pathArt);
+
+            // Radiant Spherical Sun (Rising at center horizon)
+            float sunCx = wX + artW * 0.5f;
+            float sunCy = wY + 38f * superScale;
+            float sunR = 18f * superScale;
+
+            // Diffuse Warm Aura
+            using (var brushHalo = new SolidBrush(Color.FromArgb(48, 255, 175, 35)))
+            {
+                float haloR = sunR + 16f * superScale;
+                g.FillEllipse(brushHalo, sunCx - haloR, sunCy - haloR, haloR * 2f, haloR * 2f);
+            }
+
+            // Sun Sphere
+            using (var brushSun = new LinearGradientBrush(
+                new PointF(sunCx - sunR, sunCy - sunR),
+                new PointF(sunCx + sunR, sunCy + sunR),
+                Color.FromArgb(255, 255, 220, 75),
+                Color.FromArgb(255, 248, 138, 24)))
+            {
+                g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
+            }
+
+            // Concentric Swiss Orbit Arcs
+            using (var penOrbit = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
+            {
+                float o1R = sunR + 10f * superScale;
+                g.DrawArc(penOrbit, sunCx - o1R, sunCy - o1R, o1R * 2f, o1R * 2f, 130, 200);
+                float o2R = sunR + 22f * superScale;
+                g.DrawArc(penOrbit, sunCx - o2R, sunCy - o2R, o2R * 2f, o2R * 2f, 145, 170);
+            }
+
+            // Precision 45-degree Tangent Ray
+            using (var penTangent = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawLine(penTangent, wX - 10f * superScale, wY + artH + 10f * superScale, wX + artW + 10f * superScale, wY - 10f * superScale);
+            }
+
+            // Layered Semicircular Horizon Arcs (Rolling Constructivist Hills)
+            float groundY = wY + artH + 4f * superScale;
+
+            // Back Left Arc (#154859)
+            float h1R = 40f * superScale;
+            float h1Cx = wX + 32f * superScale;
+            using (var brushH1 = new SolidBrush(Color.FromArgb(235, 21, 72, 89)))
+            {
+                g.FillPie(brushH1, h1Cx - h1R, groundY - h1R, h1R * 2f, h1R * 2f, 180, 180);
+            }
+            using (var penH1 = new Pen(Color.FromArgb(100, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawArc(penH1, h1Cx - h1R, groundY - h1R, h1R * 2f, h1R * 2f, 180, 180);
+            }
+
+            // Back Right Arc (#22778c)
+            float h2R = 44f * superScale;
+            float h2Cx = wX + artW - 28f * superScale;
+            using (var brushH2 = new SolidBrush(Color.FromArgb(245, 34, 119, 140)))
+            {
+                g.FillPie(brushH2, h2Cx - h2R, groundY - h2R, h2R * 2f, h2R * 2f, 180, 180);
+            }
+            using (var penH2 = new Pen(Color.FromArgb(110, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawArc(penH2, h2Cx - h2R, groundY - h2R, h2R * 2f, h2R * 2f, 180, 180);
+            }
+
+            // Foreground Center Arc (#3daebd)
+            float h3R = 34f * superScale;
+            float h3Cx = wX + artW * 0.5f;
+            using (var brushH3 = new SolidBrush(Color.FromArgb(255, 61, 174, 189)))
+            {
+                g.FillPie(brushH3, h3Cx - h3R, groundY - h3R, h3R * 2f, h3R * 2f, 180, 180);
+            }
+            using (var penH3 = new Pen(Color.FromArgb(160, 255, 255, 255), 1.2f * superScale))
+            {
+                g.DrawArc(penH3, h3Cx - h3R, groundY - h3R, h3R * 2f, h3R * 2f, 180, 180);
+            }
+
+            g.Restore(stateArt);
+
+            // Outer Liquid Glass Specular Rim on Artwork Card
+            using (var penArtRim = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
+            {
+                g.DrawPath(penArtRim, pathArt);
+            }
         }
-        using (var brushCloud = new SolidBrush(Color.FromArgb(210, 255, 255, 255)))
+
+        // ----------------------------------------------------
+        // 2. Swiss Typographic Block (Right)
+        // ----------------------------------------------------
+        float infoX = wX + artW + 16f * superScale;
+        float infoW = totalW - artW - 16f * superScale;
+
+        // Top Row: Day/Date & Location
+        string dayString = now.ToString("dddd, MMM d").ToUpperInvariant();
+        using (var fontDay = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
+        using (var brushDay = new SolidBrush(Color.FromArgb(180, 215, 245, 255)))
         {
-            g.FillEllipse(brushCloud, sunX - 8f * superScale, sunY - 2f * superScale, 22f * superScale, 18f * superScale);
-            g.FillEllipse(brushCloud, sunX + 4f * superScale, sunY + 2f * superScale, 18f * superScale, 14f * superScale);
-            g.FillEllipse(brushCloud, sunX - 16f * superScale, sunY + 4f * superScale, 16f * superScale, 12f * superScale);
+            g.DrawString(dayString, fontDay, brushDay, infoX, wY + 2f * superScale, StringFormat.GenericTypographic);
         }
 
-        float tempX = wX + 68f * superScale;
-        using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        using (var fontCity = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
+        using (var brushCity = new SolidBrush(Color.FromArgb(220, 240, 255, 255)))
         {
-            g.DrawString("24°", fontLarge, brushTemp, tempX, wY - 2f * superScale, StringFormat.GenericDefault);
+            var cSize = g.MeasureString("SAN FRANCISCO", fontCity, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString("SAN FRANCISCO", fontCity, brushCity, infoX + infoW - cSize.Width, wY + 2f * superScale, StringFormat.GenericTypographic);
         }
 
-        using (var brushCond = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+        // Middle Row: Hero Temperature & Condition
+        float tempBlockY = wY + 18f * superScale;
+        float textStartX = infoX;
+        using (var fontTemp = GetPremiumFont(27.0f * superScale, FontStyle.Bold))
         {
-            g.DrawString("Partly Cloudy", fontMedium, brushCond, tempX + 58f * superScale, wY + 2f * superScale, StringFormat.GenericDefault);
+            var tSize = g.MeasureString("24°", fontTemp, PointF.Empty, StringFormat.GenericTypographic);
+
+            // Ambient warmth underglow
+            using (var brushGlow = new SolidBrush(Color.FromArgb(32, 255, 210, 80)))
+            {
+                g.FillEllipse(brushGlow, infoX - 4f * superScale, tempBlockY - 2f * superScale, tSize.Width + 8f * superScale, tSize.Height + 4f * superScale);
+            }
+
+            using var brushT = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+            g.DrawString("24°", fontTemp, brushT, infoX, tempBlockY, StringFormat.GenericTypographic);
+            textStartX = infoX + tSize.Width + 12f * superScale;
         }
-        using (var brushLoc = new SolidBrush(Color.FromArgb(170, 255, 255, 255)))
+
+        using (var fontCond = GetPremiumFont(10.5f * superScale, FontStyle.Bold))
+        using (var fontSub = GetPremiumFont(8.0f * superScale, FontStyle.Regular))
         {
-            g.DrawString("San Francisco • High: 28° Low: 19°", fontArtist, brushLoc, tempX + 58f * superScale, wY + 20f * superScale, StringFormat.GenericDefault);
+            using var brushCond = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+            g.DrawString("PARTLY CLOUDY", fontCond, brushCond, textStartX, tempBlockY + 2f * superScale, StringFormat.GenericTypographic);
+
+            using var brushSub = new SolidBrush(Color.FromArgb(180, 215, 240, 255));
+            g.DrawString("High: 28°  ·  Low: 19°  ·  Feels: 23°", fontSub, brushSub, textStartX, tempBlockY + 18f * superScale, StringFormat.GenericTypographic);
         }
 
-        string[] metrics = new[] { "HUMIDITY  62%", "WIND  14 km/h", "UV INDEX  3 Mod" };
-        float badgeStartX = wX + 8f * superScale;
-        float badgeW = 126f * superScale;
-        float badgeY = wY + 52f * superScale;
-        float badgeH = 22f * superScale;
+        // ----------------------------------------------------
+        // 3. Three Bauhaus Micro-Telemetry Chips (Base)
+        // ----------------------------------------------------
+        float chipY = wY + 68f * superScale;
+        float chipH = 34f * superScale;
+        float chipGap = 8f * superScale;
+        float chipW = (infoW - chipGap * 2f) / 3f;
+        float chipR = 9f * superScale;
 
-        for (int m = 0; m < 3; m++)
+        string[,] chipData = new string[,]
         {
-            float bx = badgeStartX + m * (badgeW + 12f * superScale);
-            using var pathBadge = new GraphicsPath();
-            float br = badgeH * 0.5f;
-            pathBadge.AddArc(bx, badgeY, br * 2, br * 2, 180, 90);
-            pathBadge.AddArc(bx + badgeW - br * 2, badgeY, br * 2, br * 2, 270, 90);
-            pathBadge.AddArc(bx + badgeW - br * 2, badgeY + badgeH - br * 2, br * 2, br * 2, 0, 90);
-            pathBadge.AddArc(bx, badgeY + badgeH - br * 2, br * 2, br * 2, 90, 90);
-            pathBadge.CloseFigure();
+            { "WIND", "14 km/h" },
+            { "HUMIDITY", "62%" },
+            { "UV INDEX", "3 Mod" }
+        };
 
-            using var brushBadgeBg = new SolidBrush(Color.FromArgb(30, 255, 255, 255));
-            g.FillPath(brushBadgeBg, pathBadge);
-            using var penBadge = new Pen(Color.FromArgb(80, 255, 255, 255), 1.0f * superScale);
-            g.DrawPath(penBadge, pathBadge);
+        using var fontChipLbl = GetPremiumFont(6.8f * superScale, FontStyle.Bold);
+        using var fontChipVal = GetPremiumFont(8.8f * superScale, FontStyle.Bold);
+        using var brushChipLbl = new SolidBrush(Color.FromArgb(165, 205, 235, 255));
+        using var brushChipVal = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+        using var penChipBorder = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale);
+        using var brushChipBg = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
 
-            using var brushMetric = new SolidBrush(Color.FromArgb(235, 255, 255, 255));
-            var mSize = g.MeasureString(metrics[m], fontTab, PointF.Empty, StringFormat.GenericDefault);
-            g.DrawString(metrics[m], fontTab, brushMetric, bx + (badgeW - mSize.Width) * 0.5f, badgeY + (badgeH - mSize.Height) * 0.5f, StringFormat.GenericDefault);
+        for (int i = 0; i < 3; i++)
+        {
+            float cx = infoX + i * (chipW + chipGap);
+            using var pathChip = CreateRoundedRectPath(cx, chipY, chipW, chipH, chipR, chipR, chipR, chipR);
+
+            // Frosted glass background & specular rim
+            g.FillPath(brushChipBg, pathChip);
+            g.DrawPath(penChipBorder, pathChip);
+
+            // Left mini glyph
+            float glyphX = cx + 8f * superScale;
+            float glyphY = chipY + chipH * 0.5f;
+
+            if (i == 0)
+            {
+                // Wind: Geometric aerodynamic streamline vectors
+                using var penWind = new Pen(Color.FromArgb(220, 61, 174, 189), 1.2f * superScale);
+                penWind.StartCap = LineCap.Round;
+                penWind.EndCap = LineCap.Round;
+                g.DrawLine(penWind, glyphX, glyphY - 3f * superScale, glyphX + 11f * superScale, glyphY - 3f * superScale);
+                g.DrawLine(penWind, glyphX + 2f * superScale, glyphY + 2f * superScale, glyphX + 13f * superScale, glyphY + 2f * superScale);
+                g.DrawLine(penWind, glyphX + 10f * superScale, glyphY - 5f * superScale, glyphX + 13f * superScale, glyphY - 3f * superScale);
+            }
+            else if (i == 1)
+            {
+                // Humidity: 3-bar vertical histogram glyph
+                using var brushBar = new SolidBrush(Color.FromArgb(220, 61, 174, 189));
+                float bW = 2.5f * superScale;
+                float bBaseY = glyphY + 6f * superScale;
+                g.FillRectangle(brushBar, glyphX, bBaseY - 5f * superScale, bW, 5f * superScale);
+                g.FillRectangle(brushBar, glyphX + 4f * superScale, bBaseY - 9f * superScale, bW, 9f * superScale);
+                g.FillRectangle(brushBar, glyphX + 8f * superScale, bBaseY - 13f * superScale, bW, 13f * superScale);
+            }
+            else
+            {
+                // UV Index: Bauhaus Sun Disc with radial ticks
+                float sR = 4f * superScale;
+                float sCx = glyphX + 6f * superScale;
+                float sCy = glyphY;
+                using var brushUvSun = new SolidBrush(Color.FromArgb(255, 255, 190, 50));
+                g.FillEllipse(brushUvSun, sCx - sR, sCy - sR, sR * 2f, sR * 2f);
+                using var penUvRay = new Pen(Color.FromArgb(200, 255, 200, 60), 1.0f * superScale);
+                g.DrawLine(penUvRay, sCx, sCy - sR - 2.5f * superScale, sCx, sCy - sR - 0.5f * superScale);
+                g.DrawLine(penUvRay, sCx, sCy + sR + 0.5f * superScale, sCx, sCy + sR + 2.5f * superScale);
+                g.DrawLine(penUvRay, sCx - sR - 2.5f * superScale, sCy, sCx - sR - 0.5f * superScale, sCy);
+                g.DrawLine(penUvRay, sCx + sR + 0.5f * superScale, sCy, sCx + sR + 2.5f * superScale, sCy);
+            }
+
+            // Text layout inside chip
+            float tx = glyphX + 18f * superScale;
+            g.DrawString(chipData[i, 0], fontChipLbl, brushChipLbl, tx, chipY + 4f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(chipData[i, 1], fontChipVal, brushChipVal, tx, chipY + 16f * superScale, StringFormat.GenericTypographic);
         }
     }
 
@@ -5543,6 +5769,10 @@ internal sealed class OverlayForm : Form
                 var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
                 ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
                 SaveDesktopScreenshotWithPill("screenshot_expanded.png");
+                if (reqTab == TabWeather)
+                {
+                    SaveDesktopScreenshotWithPill("screenshot_weather_tab.png");
+                }
                 File.Delete(expTriggerPath);
             }
 
