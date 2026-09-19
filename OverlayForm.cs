@@ -275,6 +275,9 @@ internal sealed class OverlayForm : Form
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out POINT lpPoint);
 
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+
     [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", SetLastError = true)]
     private static extern uint TimeBeginPeriod(uint uMilliseconds);
 
@@ -914,6 +917,9 @@ internal sealed class OverlayForm : Form
     private static int _lastHoverCountdownSec = -1;
     private static bool _hoveredHomeWeather = false;
     public static int WeatherCardStyle = 1;
+    public const int MaxWeatherCardStyles = 4;
+    private static bool _prevSKeyDown = false;
+    private static DateTime _debugStyleToastUntil = DateTime.MinValue;
 
     // Music Tab Audio Picker & Sleep Timer States
     private static bool _audioPickerOpen = false;
@@ -1377,7 +1383,11 @@ internal sealed class OverlayForm : Form
                     await _sysMedia.SkipPreviousAsync();
                 }
             }
-            else if (e.KeyCode is Keys.S or Keys.Z or Keys.U)
+            else if (e.KeyCode == Keys.S)
+            {
+                CycleWeatherCardStyle();
+            }
+            else if (e.KeyCode is Keys.Z or Keys.U)
             {
                 if (_sysMedia.HasActiveSession)
                 {
@@ -3610,12 +3620,20 @@ internal sealed class OverlayForm : Form
                     DrawWeatherStyle2_Precision(g, superScale, cardX, c2Y, cardW, c2H, cardR, pathC2);
                     break;
                 case 3:
-                default:
                     DrawWeatherStyle3_Prismatic(g, superScale, cardX, c2Y, cardW, c2H, cardR, pathC2);
+                    break;
+                case 4:
+                default:
+                    DrawWeatherStyle4_Bento(g, superScale, cardX, c2Y, cardW, c2H, cardR, pathC2);
                     break;
             }
 
             g.Restore(stateC2);
+        }
+
+        if (DateTime.UtcNow < _debugStyleToastUntil)
+        {
+            DrawWeatherStyleToast(g, superScale, targetW);
         }
     }
 
@@ -3964,6 +3982,141 @@ internal sealed class OverlayForm : Form
             using var fontArrow = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
             g.DrawString("›", fontArrow, brushArrow, cardX + cardW - 13f * superScale, c2Y + c2H * 0.5f - 7f * superScale, StringFormat.GenericDefault);
         }
+    }
+
+    private static void DrawWeatherStyle4_Bento(Graphics g, float superScale, float cardX, float c2Y, float cardW, float c2H, float cardR, GraphicsPath pathC2)
+    {
+        // 1. Deep Smoked Obsidian Base
+        using (var brushBg = new LinearGradientBrush(
+            new PointF(cardX, c2Y),
+            new PointF(cardX + cardW, c2Y + c2H),
+            Color.FromArgb(_hoveredHomeWeather ? 60 : 40, 20, 24, 34),
+            Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 14, 18, 26)))
+        {
+            g.FillPath(brushBg, pathC2);
+        }
+
+        float tempX = cardX + 11f * superScale;
+        float textStartX = tempX;
+
+        // Top line
+        var now = DateTime.Now;
+        string dayCity = $"{now:ddd} · LONDON".ToUpperInvariant();
+        using (var fontMicro = GetPremiumFont(6.8f * superScale, FontStyle.Bold))
+        using (var brushMicro = new SolidBrush(Color.FromArgb(170, 195, 220, 255)))
+        {
+            g.DrawString(dayCity, fontMicro, brushMicro, tempX, c2Y + 6f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Temperature (18°)
+        using (var fontTemp = GetPremiumFont(19.0f * superScale, FontStyle.Bold))
+        {
+            var tSize = g.MeasureString("18°", fontTemp, PointF.Empty, StringFormat.GenericTypographic);
+            float tempY = c2Y + 16f * superScale;
+
+            using var brushT = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+            g.DrawString("18°", fontTemp, brushT, tempX, tempY, StringFormat.GenericTypographic);
+            textStartX = tempX + tSize.Width + 8f * superScale;
+        }
+
+        // Condition & Micro Range (Right of 18°)
+        using (var fontCond = GetPremiumFont(7.0f * superScale, FontStyle.Bold))
+        using (var fontSub = GetPremiumFont(6.2f * superScale, FontStyle.Regular))
+        {
+            float condY = c2Y + 16.5f * superScale;
+            using var brushCond = new SolidBrush(Color.FromArgb(245, 250, 255, 255));
+            g.DrawString("PARTLY CLOUDY", fontCond, brushCond, textStartX, condY, StringFormat.GenericTypographic);
+
+            float subY = c2Y + 28f * superScale;
+            using var brushSub = new SolidBrush(Color.FromArgb(165, 190, 215, 255));
+            g.DrawString("1014 hPa · 15km", fontSub, brushSub, textStartX, subY, StringFormat.GenericTypographic);
+        }
+
+        // 2 Right-side Mini Bento Tiles
+        float tileGap = 4f * superScale;
+        float tileW = 33f * superScale;
+        float tileH = c2H - 12f * superScale;
+        float tileY = c2Y + 6f * superScale;
+        float tile2X = cardX + cardW - tileW - 8f * superScale;
+        float tile1X = tile2X - tileW - tileGap;
+
+        // Tile 1: Wind
+        using (var pathT1 = CreateRoundedRectPath(tile1X, tileY, tileW, tileH, 6f * superScale, 6f * superScale, 6f * superScale, 6f * superScale))
+        {
+            using var brushTileBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
+            g.FillPath(brushTileBg, pathT1);
+            using var penTile = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penTile, pathT1);
+
+            using var fontTLbl = GetPremiumFont(5.5f * superScale, FontStyle.Bold);
+            using var fontTVal = GetPremiumFont(6.8f * superScale, FontStyle.Bold);
+            using var brushTLbl = new SolidBrush(Color.FromArgb(170, 200, 230, 255));
+            using var brushTVal = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+
+            var sz1 = g.MeasureString("WND", fontTLbl, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString("WND", fontTLbl, brushTLbl, tile1X + (tileW - sz1.Width) * 0.5f, tileY + 4f * superScale, StringFormat.GenericTypographic);
+            var sz2 = g.MeasureString("12kph", fontTVal, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString("12kph", fontTVal, brushTVal, tile1X + (tileW - sz2.Width) * 0.5f, tileY + 16f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Tile 2: Humidity
+        using (var pathT2 = CreateRoundedRectPath(tile2X, tileY, tileW, tileH, 6f * superScale, 6f * superScale, 6f * superScale, 6f * superScale))
+        {
+            using var brushTileBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
+            g.FillPath(brushTileBg, pathT2);
+            using var penTile = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penTile, pathT2);
+
+            using var fontTLbl = GetPremiumFont(5.5f * superScale, FontStyle.Bold);
+            using var fontTVal = GetPremiumFont(6.8f * superScale, FontStyle.Bold);
+            using var brushTLbl = new SolidBrush(Color.FromArgb(170, 200, 230, 255));
+            using var brushTVal = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+
+            var sz1 = g.MeasureString("HUM", fontTLbl, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString("HUM", fontTLbl, brushTLbl, tile2X + (tileW - sz1.Width) * 0.5f, tileY + 4f * superScale, StringFormat.GenericTypographic);
+            var sz2 = g.MeasureString("68%", fontTVal, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString("68%", fontTVal, brushTVal, tile2X + (tileW - sz2.Width) * 0.5f, tileY + 16f * superScale, StringFormat.GenericTypographic);
+        }
+
+        if (_hoveredHomeWeather)
+        {
+            using var brushArrow = new SolidBrush(Color.FromArgb(200, 255, 255, 255));
+            using var fontArrow = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
+            g.DrawString("›", fontArrow, brushArrow, cardX + cardW - 7f * superScale, c2Y + c2H * 0.5f - 7f * superScale, StringFormat.GenericDefault);
+        }
+    }
+
+    private static void DrawWeatherStyleToast(Graphics g, float superScale, int targetW)
+    {
+        string styleName = WeatherCardStyle switch
+        {
+            1 => "LOOK 1/4: BAUHAUS GEOMETRIC [S]",
+            2 => "LOOK 2/4: MINIMALIST PRECISION [S]",
+            3 => "LOOK 3/4: PRISMATIC OPTICAL [S]",
+            4 => "LOOK 4/4: BENTO-GRID GLASS [S]",
+            _ => $"LOOK {WeatherCardStyle} [S]"
+        };
+
+        using var fontToast = GetPremiumFont(7.0f * superScale, FontStyle.Bold);
+        var tSize = g.MeasureString(styleName, fontToast, PointF.Empty, StringFormat.GenericTypographic);
+
+        float padX = 8f * superScale;
+        float padY = 3.5f * superScale;
+        float pillW = tSize.Width + padX * 2f;
+        float pillH = tSize.Height + padY * 2f;
+        float pillX = targetW * superScale - pillW - 14f * superScale;
+        float pillY = 8f * superScale;
+        float pillR = pillH * 0.5f;
+
+        using var pathToast = CreateRoundedRectPath(pillX, pillY, pillW, pillH, pillR, pillR, pillR, pillR);
+        using var brushBg = new SolidBrush(Color.FromArgb(220, 10, 16, 26));
+        g.FillPath(brushBg, pathToast);
+
+        using var penBorder = new Pen(Color.FromArgb(130, 255, 255, 255), 1.0f * superScale);
+        g.DrawPath(penBorder, pathToast);
+
+        using var brushText = new SolidBrush(Color.FromArgb(255, 255, 215, 75)); // amber highlight
+        g.DrawString(styleName, fontToast, brushText, pillX + padX, pillY + padY, StringFormat.GenericTypographic);
     }
 
     private static GraphicsPath CreateRoundedRectPath(float x, float y, float w, float h, float rtl, float rtr, float rbr, float rbl)
@@ -4746,6 +4899,34 @@ internal sealed class OverlayForm : Form
         float superScale,
         int targetW)
     {
+        switch (WeatherCardStyle)
+        {
+            case 1:
+                DrawTabWeatherStyle1_Bauhaus(g, superScale, targetW);
+                break;
+            case 2:
+                DrawTabWeatherStyle2_Precision(g, superScale, targetW);
+                break;
+            case 3:
+                DrawTabWeatherStyle3_Prismatic(g, superScale, targetW);
+                break;
+            case 4:
+            default:
+                DrawTabWeatherStyle4_Bento(g, superScale, targetW);
+                break;
+        }
+
+        if (DateTime.UtcNow < _debugStyleToastUntil)
+        {
+            DrawWeatherStyleToast(g, superScale, targetW);
+        }
+    }
+
+    private static void DrawTabWeatherStyle1_Bauhaus(
+        Graphics g,
+        float superScale,
+        int targetW)
+    {
         var now = DateTime.Now;
 
         // Content Area Bounds
@@ -4985,6 +5166,313 @@ internal sealed class OverlayForm : Form
             float tx = glyphX + 18f * superScale;
             g.DrawString(chipData[i, 0], fontChipLbl, brushChipLbl, tx, chipY + 4f * superScale, StringFormat.GenericTypographic);
             g.DrawString(chipData[i, 1], fontChipVal, brushChipVal, tx, chipY + 16f * superScale, StringFormat.GenericTypographic);
+        }
+    }
+
+    private static void DrawTabWeatherStyle2_Precision(
+        Graphics g,
+        float superScale,
+        int targetW)
+    {
+        float wX = 22f * superScale;
+        float wY = 34f * superScale;
+        float totalW = targetW * superScale - 44f * superScale;
+        float totalH = 104f * superScale;
+
+        // Container with dark technical glass
+        using (var pathMain = CreateRoundedRectPath(wX, wY, totalW, totalH, 14f * superScale, 14f * superScale, 14f * superScale, 14f * superScale))
+        {
+            using var brushBg = new SolidBrush(Color.FromArgb(40, 8, 14, 22));
+            g.FillPath(brushBg, pathMain);
+            using var penMain = new Pen(Color.FromArgb(50, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penMain, pathMain);
+        }
+
+        // Header
+        using (var fontHead = GetPremiumFont(7.8f * superScale, FontStyle.Bold))
+        using (var brushHead = new SolidBrush(Color.FromArgb(180, 205, 235, 255)))
+        {
+            g.DrawString("STOCKHOLM / 19°C · SUNNY", fontHead, brushHead, wX + 16f * superScale, wY + 10f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Hero 19°
+        using (var fontTemp = GetPremiumFont(24.0f * superScale, FontStyle.Bold))
+        using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString("19°", fontTemp, brushTemp, wX + 16f * superScale, wY + 22f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Dynamic 24-hour Bezier Temperature Curve (Middle right)
+        float curveX = wX + 85f * superScale;
+        float curveW = totalW - 105f * superScale;
+        float curveBaseY = wY + 54f * superScale;
+
+        PointF p0 = new PointF(curveX, curveBaseY);
+        PointF p1 = new PointF(curveX + curveW * 0.5f, curveBaseY - 26f * superScale); // Apex at 3pm (19°)
+        PointF p2 = new PointF(curveX + curveW, curveBaseY - 6f * superScale); // 10pm (14°)
+
+        PointF cp1 = new PointF(curveX + curveW * 0.22f, curveBaseY - 26f * superScale);
+        PointF cp2 = new PointF(curveX + curveW * 0.78f, curveBaseY - 26f * superScale);
+
+        using (var pathCurve = new GraphicsPath())
+        {
+            pathCurve.AddBezier(p0, cp1, cp2, p2);
+
+            // Translucent cyan area fill under curve
+            using (var pathFill = (GraphicsPath)pathCurve.Clone())
+            {
+                pathFill.AddLine(p2.X, curveBaseY + 6f * superScale, p0.X, curveBaseY + 6f * superScale);
+                pathFill.CloseFigure();
+                using var brushCurveGrad = new LinearGradientBrush(
+                    new PointF(p1.X, p1.Y),
+                    new PointF(p1.X, curveBaseY + 6f * superScale),
+                    Color.FromArgb(55, 50, 205, 255),
+                    Color.FromArgb(0, 50, 205, 255));
+                g.FillPath(brushCurveGrad, pathFill);
+            }
+
+            // Glowing Bezier Curve stroke
+            using var penCurve = new Pen(Color.FromArgb(240, 50, 205, 255), 2.0f * superScale);
+            g.DrawPath(penCurve, pathCurve);
+        }
+
+        // Active node at apex
+        using (var brushNodeHalo = new SolidBrush(Color.FromArgb(80, 50, 205, 255)))
+        {
+            g.FillEllipse(brushNodeHalo, p1.X - 6f * superScale, p1.Y - 6f * superScale, 12f * superScale, 12f * superScale);
+        }
+        using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.FillEllipse(brushNode, p1.X - 2.5f * superScale, p1.Y - 2.5f * superScale, 5f * superScale, 5f * superScale);
+        }
+
+        // Apex temp label
+        using (var fontMini = GetPremiumFont(7.0f * superScale, FontStyle.Bold))
+        using (var brushMini = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            var szA = g.MeasureString("19°", fontMini, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString("19°", fontMini, brushMini, p1.X - szA.Width * 0.5f, p1.Y - 12f * superScale, StringFormat.GenericTypographic);
+
+            // Time marks
+            using var brushTime = new SolidBrush(Color.FromArgb(160, 255, 255, 255));
+            g.DrawString("8am: 12°", fontMini, brushTime, p0.X - 8f * superScale, curveBaseY + 4f * superScale, StringFormat.GenericTypographic);
+            g.DrawString("3pm", fontMini, brushTime, p1.X - 8f * superScale, curveBaseY + 4f * superScale, StringFormat.GenericTypographic);
+            g.DrawString("10pm: 14°", fontMini, brushTime, p2.X - 24f * superScale, curveBaseY + 4f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Base: 4 Precision Telemetry Capsules
+        float pillY = wY + 76f * superScale;
+        float pillH = 22f * superScale;
+        float pillGap = 6f * superScale;
+        float pillW = (totalW - 24f * superScale - pillGap * 3f) / 4f;
+
+        string[] caps = { "FEELS 17°", "WIND 10km/h", "HUMID 65%", "RAIN 5%" };
+        using var fontCap = GetPremiumFont(7.2f * superScale, FontStyle.Bold);
+        using var brushCapText = new SolidBrush(Color.FromArgb(240, 255, 255, 255));
+        using var penCapBorder = new Pen(Color.FromArgb(85, 50, 205, 255), 1.0f * superScale);
+        using var brushCapBg = new SolidBrush(Color.FromArgb(25, 255, 255, 255));
+
+        for (int i = 0; i < 4; i++)
+        {
+            float px = wX + 12f * superScale + i * (pillW + pillGap);
+            using var pathP = CreateRoundedRectPath(px, pillY, pillW, pillH, pillH * 0.5f, pillH * 0.5f, pillH * 0.5f, pillH * 0.5f);
+            g.FillPath(brushCapBg, pathP);
+            g.DrawPath(penCapBorder, pathP);
+
+            var sz = g.MeasureString(caps[i], fontCap, PointF.Empty, StringFormat.GenericTypographic);
+            g.DrawString(caps[i], fontCap, brushCapText, px + (pillW - sz.Width) * 0.5f, pillY + (pillH - sz.Height) * 0.5f, StringFormat.GenericTypographic);
+        }
+    }
+
+    private static void DrawTabWeatherStyle3_Prismatic(
+        Graphics g,
+        float superScale,
+        int targetW)
+    {
+        float wX = 22f * superScale;
+        float wY = 34f * superScale;
+        float totalW = targetW * superScale - 44f * superScale;
+        float totalH = 104f * superScale;
+
+        // Container with iridescent chromatic rim
+        using (var pathMain = CreateRoundedRectPath(wX, wY, totalW, totalH, 14f * superScale, 14f * superScale, 14f * superScale, 14f * superScale))
+        {
+            using var brushBg = new SolidBrush(Color.FromArgb(50, 10, 16, 26));
+            g.FillPath(brushBg, pathMain);
+
+            // Iridescent chromatic gradient border (rainbow light refraction)
+            using var brushIridescent = new LinearGradientBrush(
+                new PointF(wX, wY),
+                new PointF(wX + totalW, wY + totalH),
+                Color.FromArgb(180, 255, 110, 180),
+                Color.FromArgb(180, 70, 210, 255));
+            ColorBlend cb = new ColorBlend(5)
+            {
+                Colors = new[] {
+                    Color.FromArgb(200, 255, 90, 160),
+                    Color.FromArgb(200, 100, 180, 255),
+                    Color.FromArgb(200, 80, 240, 210),
+                    Color.FromArgb(200, 255, 210, 70),
+                    Color.FromArgb(200, 255, 90, 160)
+                },
+                Positions = new[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }
+            };
+            brushIridescent.InterpolationColors = cb;
+
+            using var penIridescent = new Pen(brushIridescent, 1.5f * superScale);
+            g.DrawPath(penIridescent, pathMain);
+        }
+
+        // Left Header: NEW YORK / 21°C · MOSTLY CLEAR
+        using (var fontHead = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
+        using (var brushHead = new SolidBrush(Color.FromArgb(200, 230, 255, 255)))
+        {
+            g.DrawString("NEW YORK / 21°C · MOSTLY CLEAR", fontHead, brushHead, wX + 16f * superScale, wY + 10f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Hero 21°
+        using (var fontTemp = GetPremiumFont(27.0f * superScale, FontStyle.Bold))
+        using (var brushTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString("21°", fontTemp, brushTemp, wX + 16f * superScale, wY + 24f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Prismatic Rainbow Cloud & Sun Glyph (Right of 21°)
+        float iconX = wX + 90f * superScale;
+        float iconY = wY + 38f * superScale;
+        using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 205, 50)))
+        {
+            g.FillEllipse(brushSun, iconX + 12f * superScale, iconY - 14f * superScale, 18f * superScale, 18f * superScale);
+        }
+        using (var brushCloud = new LinearGradientBrush(
+            new PointF(iconX, iconY - 6f),
+            new PointF(iconX + 36f, iconY + 14f),
+            Color.FromArgb(220, 140, 210, 255),
+            Color.FromArgb(220, 255, 170, 220)))
+        {
+            g.FillEllipse(brushCloud, iconX, iconY - 6f * superScale, 24f * superScale, 18f * superScale);
+            g.FillEllipse(brushCloud, iconX + 14f * superScale, iconY - 2f * superScale, 20f * superScale, 15f * superScale);
+            g.FillEllipse(brushCloud, iconX - 6f * superScale, iconY, 18f * superScale, 14f * superScale);
+        }
+
+        // 4 Floating Glass Bento Pills (Right side)
+        float bentoX = wX + 175f * superScale;
+        float bentoW = totalW - 190f * superScale;
+        float bGap = 6f * superScale;
+        float colW = (bentoW - bGap) / 2f;
+        float rowH = 26f * superScale;
+
+        string[,] pData = {
+            { "WND 14 km/h S", "HUM 58%" },
+            { "UV 5 Mod", "PRE 1016 hPa" }
+        };
+
+        using var fontP = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
+        using var brushPText = new SolidBrush(Color.FromArgb(245, 255, 255, 255));
+        using var brushPBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
+        using var penPBorder = new Pen(Color.FromArgb(80, 255, 255, 255), 1.0f * superScale);
+
+        for (int r = 0; r < 2; r++)
+        {
+            for (int c = 0; c < 2; c++)
+            {
+                float px = bentoX + c * (colW + bGap);
+                float py = wY + 22f * superScale + r * (rowH + bGap);
+                using var pathP = CreateRoundedRectPath(px, py, colW, rowH, 8f * superScale, 8f * superScale, 8f * superScale, 8f * superScale);
+                g.FillPath(brushPBg, pathP);
+                g.DrawPath(penPBorder, pathP);
+
+                var sz = g.MeasureString(pData[r, c], fontP, PointF.Empty, StringFormat.GenericTypographic);
+                g.DrawString(pData[r, c], fontP, brushPText, px + (colW - sz.Width) * 0.5f, py + (rowH - sz.Height) * 0.5f, StringFormat.GenericTypographic);
+            }
+        }
+    }
+
+    private static void DrawTabWeatherStyle4_Bento(
+        Graphics g,
+        float superScale,
+        int targetW)
+    {
+        float wX = 22f * superScale;
+        float wY = 34f * superScale;
+        float totalW = targetW * superScale - 44f * superScale;
+        float totalH = 104f * superScale;
+
+        // Outer smoked container
+        using (var pathMain = CreateRoundedRectPath(wX, wY, totalW, totalH, 14f * superScale, 14f * superScale, 14f * superScale, 14f * superScale))
+        {
+            using var brushBg = new SolidBrush(Color.FromArgb(45, 14, 18, 28));
+            g.FillPath(brushBg, pathMain);
+            using var penMain = new Pen(Color.FromArgb(60, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penMain, pathMain);
+        }
+
+        // Left Hero Tile
+        float leftW = 120f * superScale;
+        float leftH = totalH - 16f * superScale;
+        using (var pathLeft = CreateRoundedRectPath(wX + 8f * superScale, wY + 8f * superScale, leftW, leftH, 10f * superScale, 10f * superScale, 10f * superScale, 10f * superScale))
+        {
+            using var brushLBg = new SolidBrush(Color.FromArgb(35, 255, 255, 255));
+            g.FillPath(brushLBg, pathLeft);
+            using var penLBorder = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penLBorder, pathLeft);
+        }
+
+        using (var fontLHead = GetPremiumFont(7.5f * superScale, FontStyle.Bold))
+        using (var brushLHead = new SolidBrush(Color.FromArgb(170, 205, 235, 255)))
+        {
+            g.DrawString("LONDON / 18°C", fontLHead, brushLHead, wX + 16f * superScale, wY + 16f * superScale, StringFormat.GenericTypographic);
+            g.DrawString("Partly Cloudy", fontLHead, brushLHead, wX + 16f * superScale, wY + 28f * superScale, StringFormat.GenericTypographic);
+        }
+
+        using (var fontLTemp = GetPremiumFont(24.0f * superScale, FontStyle.Bold))
+        using (var brushLTemp = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+        {
+            g.DrawString("18°", fontLTemp, brushLTemp, wX + 16f * superScale, wY + 44f * superScale, StringFormat.GenericTypographic);
+        }
+
+        // Minimal sun icon in hero tile
+        using (var brushSun = new SolidBrush(Color.FromArgb(255, 255, 200, 50)))
+        {
+            g.FillEllipse(brushSun, wX + 88f * superScale, wY + 50f * superScale, 18f * superScale, 18f * superScale);
+        }
+
+        // Right 2x3 Bento Grid of Metrics
+        float bentoX = wX + leftW + 16f * superScale;
+        float bentoW = totalW - leftW - 24f * superScale;
+        float bGap = 6f * superScale;
+        float tileW = (bentoW - bGap) / 2f;
+        float tileH = (totalH - 16f * superScale - bGap * 2f) / 3f;
+
+        string[,] bentoItems = {
+            { "Wind", "12 km/h W", "Humidity", "68%" },
+            { "UV Index", "4 Low", "Feels Like", "16°C" },
+            { "Pressure", "1014 hPa", "Rain", "10%" }
+        };
+
+        using var fontLbl = GetPremiumFont(6.0f * superScale, FontStyle.Regular);
+        using var fontVal = GetPremiumFont(7.8f * superScale, FontStyle.Bold);
+        using var brushLbl = new SolidBrush(Color.FromArgb(160, 200, 235, 255));
+        using var brushVal = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
+        using var brushTile = new SolidBrush(Color.FromArgb(30, 255, 255, 255));
+        using var penTile = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale);
+
+        for (int r = 0; r < 3; r++)
+        {
+            for (int c = 0; c < 2; c++)
+            {
+                float tx = bentoX + c * (tileW + bGap);
+                float ty = wY + 8f * superScale + r * (tileH + bGap);
+
+                using var pathT = CreateRoundedRectPath(tx, ty, tileW, tileH, 8f * superScale, 8f * superScale, 8f * superScale, 8f * superScale);
+                g.FillPath(brushTile, pathT);
+                g.DrawPath(penTile, pathT);
+
+                string l = bentoItems[r, c * 2];
+                string v = bentoItems[r, c * 2 + 1];
+                g.DrawString(l, fontLbl, brushLbl, tx + 7f * superScale, ty + 3f * superScale, StringFormat.GenericTypographic);
+                g.DrawString(v, fontVal, brushVal, tx + 7f * superScale, ty + 13.5f * superScale, StringFormat.GenericTypographic);
+            }
         }
     }
 
@@ -5542,6 +6030,22 @@ internal sealed class OverlayForm : Form
         _renderSignal.Set();
     }
 
+    public void CycleWeatherCardStyle()
+    {
+        WeatherCardStyle++;
+        if (WeatherCardStyle > MaxWeatherCardStyles)
+        {
+            WeatherCardStyle = 1;
+        }
+
+        _debugStyleToastUntil = DateTime.UtcNow.AddSeconds(2.0);
+        _tabBufferCache[TabHome] = null;
+        _tabBufferCache[TabWeather] = null;
+        _needExpandedUpdate = true;
+        UpdateExpandedMask();
+        _renderSignal.Set();
+    }
+
     public void StepBackward()
     {
         _animDirection = -1.0;
@@ -6031,6 +6535,81 @@ internal sealed class OverlayForm : Form
                 File.Delete(previewStyle3Path);
             }
 
+            string previewStyle4Path = Path.Combine(rootDir, "take_preview_style4.trigger");
+            if (File.Exists(previewStyle4Path))
+            {
+                WeatherCardStyle = 4;
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+                SwitchTab(TabHome, immediate: true);
+                _hoveredHomeWeather = false;
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
+                SaveDesktopScreenshotWithPill("screenshot_style4_bento.png");
+                File.Delete(previewStyle4Path);
+            }
+
+            string previewAllWeatherPath = Path.Combine(rootDir, "take_preview_all_weather.trigger");
+            if (File.Exists(previewAllWeatherPath))
+            {
+                _progress = 1.0;
+                _hoverPos = 1.0;
+                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                _isPlaying = true;
+                _hasActiveMedia = true;
+                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
+                {
+                    _currentTrack.Title = "Midnight City";
+                    _currentTrack.Artist = "M83";
+                }
+
+                // 1. Capture 4 Home Tab styles
+                string[] homeNames = { "screenshot_style1_bauhaus.png", "screenshot_style2_precision.png", "screenshot_style3_prismatic.png", "screenshot_style4_bento.png" };
+                for (int s = 1; s <= 4; s++)
+                {
+                    WeatherCardStyle = s;
+                    SwitchTab(TabHome, immediate: true);
+                    _tabBufferCache[TabHome] = null;
+                    UpdateExpandedMask();
+                    var geom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                    ProcessAndPresent(new Point(Location.X, Location.Y), geom);
+                    SaveDesktopScreenshotWithPill(homeNames[s - 1]);
+                }
+
+                // 2. Capture 4 Weather Tab styles
+                string[] weatherNames = { "screenshot_weather_tab_style1.png", "screenshot_weather_tab_style2.png", "screenshot_weather_tab_style3.png", "screenshot_weather_tab_style4.png" };
+                for (int s = 1; s <= 4; s++)
+                {
+                    WeatherCardStyle = s;
+                    SwitchTab(TabWeather, immediate: true);
+                    _tabBufferCache[TabWeather] = null;
+                    UpdateExpandedMask();
+                    var geom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                    ProcessAndPresent(new Point(Location.X, Location.Y), geom);
+                    SaveDesktopScreenshotWithPill(weatherNames[s - 1]);
+                }
+
+                // Restore Style 1
+                WeatherCardStyle = 1;
+                SwitchTab(TabHome, immediate: true);
+                _tabBufferCache[TabHome] = null;
+                UpdateExpandedMask();
+                var resetGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                ProcessAndPresent(new Point(Location.X, Location.Y), resetGeom);
+
+                File.Delete(previewAllWeatherPath);
+            }
+
             string expandAnimTriggerPath = Path.Combine(rootDir, "take_home_expand_anim.trigger");
             if (File.Exists(expandAnimTriggerPath))
             {
@@ -6462,6 +7041,17 @@ internal sealed class OverlayForm : Form
                 }
 
                 cursorInPill = isInsideTriggerArea || isEdgeOrNotchHover;
+
+                // Debug Hotkey: Press 'S' to cycle through all weather looks
+                bool sPressed = (GetAsyncKeyState(0x53) & 0x8000) != 0; // 'S' key
+                if (sPressed && !_prevSKeyDown)
+                {
+                    if (cursorInPill || _hoverPos > 0.05 || _activeTab == TabWeather)
+                    {
+                        CycleWeatherCardStyle();
+                    }
+                }
+                _prevSKeyDown = sPressed;
 
                 // If user dismissed the island, keep it despawned until cursor moves away and re-enters notch
                 if (_userDismissed)
