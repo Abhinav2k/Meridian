@@ -917,9 +917,10 @@ internal sealed class OverlayForm : Form
     private static int _lastHoverCountdownSec = -1;
     private static bool _hoveredHomeWeather = false;
     public static int CurrentWeatherCondition = 1;
-    public const int MaxWeatherConditions = 6;
+    public const int MaxWeatherConditions = 15;
     public static int WeatherCardStyle { get => CurrentWeatherCondition; set => CurrentWeatherCondition = value; }
     public const int MaxWeatherCardStyles = MaxWeatherConditions;
+    public static bool IsLiveWeatherMode = true;
     private static bool _prevSKeyDown = false;
     private static DateTime _debugStyleToastUntil = DateTime.MinValue;
 
@@ -1321,6 +1322,8 @@ internal sealed class OverlayForm : Form
 
         _sysMedia.MediaUpdated += OnSystemMediaUpdated;
         Task.Run(AudioDeviceManager.RefreshDevicesAsync);
+        LiveWeatherService.WeatherUpdated += OnLiveWeatherUpdated;
+        LiveWeatherService.Initialize();
 
         Shown += async (_, _) =>
         {
@@ -1527,6 +1530,18 @@ internal sealed class OverlayForm : Form
             _renderSignal.Set();
         }
         catch { }
+    }
+
+    private void OnLiveWeatherUpdated()
+    {
+        if (IsLiveWeatherMode)
+        {
+            CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
+            _tabBufferCache[TabHome] = null;
+            _tabBufferCache[TabWeather] = null;
+            _needExpandedUpdate = true;
+            _renderSignal.Set();
+        }
     }
 
     private static int HitTestMediaButton(float mx, float my)
@@ -3679,64 +3694,80 @@ internal sealed class OverlayForm : Form
         g.FillPolygon(brushStar, starPts);
     }
 
-    private static void DrawHomeBauhausWeather(Graphics g, float superScale, float cardX, float c2Y, float cardW, float c2H, float cardR, GraphicsPath pathC2, int condition)
+private static void DrawHomeBauhausWeather(Graphics g, float superScale, float cardX, float c2Y, float cardW, float c2H, float cardR, GraphicsPath pathC2, int condition)
     {
         var now = DateTime.Now;
+        WeatherModel wModel = IsLiveWeatherMode ? LiveWeatherService.Current : LiveWeatherService.GetMockWeather(condition);
 
-        string dayCity;
-        string tempStr;
-        string condStr;
-        string subStr;
+        string dayCity = $"{now:ddd} · {wModel.City}".ToUpperInvariant();
+        string tempStr = wModel.FormattedTemp;
+        string condStr = wModel.ConditionName;
+        string subStr = wModel.Subtitle;
+
         Color skyTop, skyBottom;
-
         switch (condition)
         {
-            case 2: // Rain & Thunderstorm
-                dayCity = $"{now:ddd} · SEATTLE".ToUpperInvariant();
-                tempStr = "14°";
-                condStr = "THUNDERSTORM";
-                subStr = "Rain: 90% · 28kph";
-                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 14, 20, 32);
-                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 22, 36, 52);
+            case 1: // Sunny / Clear Day
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 11, 23, 40);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 18, 52, 75);
                 break;
-            case 3: // Partly Cloudy / Overcast
-                dayCity = $"{now:ddd} · LONDON".ToUpperInvariant();
-                tempStr = "19°";
-                condStr = "PARTLY CLOUDY";
-                subStr = "H: 22°  L: 15°";
-                skyTop = Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 16, 26, 38);
-                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 26, 42, 60);
-                break;
-            case 4: // Snow & Frost
-                dayCity = $"{now:ddd} · OSLO".ToUpperInvariant();
-                tempStr = "-3°";
-                condStr = "SNOW SHOWERS";
-                subStr = "Snow: 12cm · L: -8°";
-                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 10, 18, 34);
-                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 20, 44, 70);
-                break;
-            case 5: // Clear Night
-                dayCity = $"{now:ddd} · TOKYO".ToUpperInvariant();
-                tempStr = "13°";
-                condStr = "CLEAR NIGHT";
-                subStr = "Waxing Moon · 13°";
+            case 2: // Clear Night
                 skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 8, 10, 22);
                 skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 18, 16, 42);
                 break;
-            case 6: // Golden Sunset
-                dayCity = $"{now:ddd} · BCN".ToUpperInvariant();
-                tempStr = "22°";
-                condStr = "GOLDEN HOUR";
-                subStr = "Sunset at 7:42 PM";
+            case 3: // Partly Cloudy Day
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 16, 26, 38);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 26, 42, 60);
+                break;
+            case 4: // Partly Cloudy Night
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 10, 14, 26);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 18, 22, 42);
+                break;
+            case 5: // Overcast
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 18, 22, 28);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 28, 34, 42);
+                break;
+            case 6: // Fog & Mist
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 16, 28, 28);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 24, 42, 40);
+                break;
+            case 7: // Drizzle & Light Rain
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 16, 24, 34);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 24, 38, 52);
+                break;
+            case 8: // Rain & Downpour
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 14, 20, 32);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 22, 36, 52);
+                break;
+            case 9: // Freezing Rain & Sleet
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 12, 24, 34);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 18, 40, 56);
+                break;
+            case 10: // Light Snow & Flurries
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 14, 26, 42);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 22, 46, 70);
+                break;
+            case 11: // Heavy Snow & Blizzard
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 10, 18, 34);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 20, 44, 70);
+                break;
+            case 12: // Thunderstorm & Lightning
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 14, 18, 28);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 22, 32, 48);
+                break;
+            case 13: // Severe Hailstorm & Lightning
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 85 : 65, 24, 14, 34);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 100 : 80, 38, 22, 52);
+                break;
+            case 14: // Golden Sunset / Dusk
                 skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 36, 14, 28);
                 skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 62, 24, 40);
                 break;
-            case 1: // Sunny / Clear Day
+            case 15: // Windy / Gale / Squall
+                skyTop = Color.FromArgb(_hoveredHomeWeather ? 80 : 60, 12, 28, 38);
+                skyBottom = Color.FromArgb(_hoveredHomeWeather ? 95 : 75, 20, 46, 60);
+                break;
             default:
-                dayCity = $"{now:ddd} · SF".ToUpperInvariant();
-                tempStr = "28°";
-                condStr = "SUNNY";
-                subStr = "H: 31°  L: 19°";
                 skyTop = Color.FromArgb(_hoveredHomeWeather ? 75 : 55, 11, 23, 40);
                 skyBottom = Color.FromArgb(_hoveredHomeWeather ? 90 : 70, 18, 52, 75);
                 break;
@@ -3759,146 +3790,407 @@ internal sealed class OverlayForm : Form
 
         switch (condition)
         {
-            case 1: // Sunny: Radiant Golden Sun, Orbit Arcs, 45-deg Ray, Teal Horizon Arcs
+            case 1: // Sunny: Sun, Orbit Arc, Tangent Ray, Teal Horizons
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 22, 73, 91), 
-                    Color.FromArgb(245, 35, 122, 141), 
-                    Color.FromArgb(255, 61, 174, 189));
-
-                using var penRay = new Pen(Color.FromArgb(60, 255, 255, 255), 1.0f * superScale);
-                g.DrawLine(penRay, artCx - 40f * superScale, c2Y + c2H, artCx + 24f * superScale, c2Y);
-
-                using (var brushHalo = new SolidBrush(Color.FromArgb(_hoveredHomeWeather ? 60 : 42, 255, 175, 35)))
+                using (var penOrbit = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
                 {
-                    float haloR = 22f * superScale;
-                    g.FillEllipse(brushHalo, artCx - haloR, artCy - haloR, haloR * 2f, haloR * 2f);
+                    g.DrawArc(penOrbit, artCx - 14f * superScale, artCy - 14f * superScale, 28f * superScale, 28f * superScale, 190, 160);
                 }
 
-                float sunR = 12f * superScale;
+                using (var penTangent = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.DrawLine(penTangent, artCx - 20f * superScale, c2Y + c2H + 4f * superScale, artCx + 26f * superScale, c2Y - 4f * superScale);
+                }
+
+                using (var brushHalo = new SolidBrush(Color.FromArgb(50, 255, 175, 35)))
+                {
+                    g.FillEllipse(brushHalo, artCx - 15f * superScale, artCy - 15f * superScale, 30f * superScale, 30f * superScale);
+                }
+
                 using (var brushSun = new LinearGradientBrush(
-                    new PointF(artCx - sunR, artCy - sunR),
-                    new PointF(artCx + sunR, artCy + sunR),
-                    Color.FromArgb(255, 255, 218, 70),
+                    new PointF(artCx - 10f * superScale, artCy - 10f * superScale),
+                    new PointF(artCx + 10f * superScale, artCy + 10f * superScale),
+                    Color.FromArgb(255, 255, 225, 72),
                     Color.FromArgb(255, 248, 138, 24)))
                 {
-                    g.FillEllipse(brushSun, artCx - sunR, artCy - sunR, sunR * 2f, sunR * 2f);
+                    g.FillEllipse(brushSun, artCx - 10f * superScale, artCy - 10f * superScale, 20f * superScale, 20f * superScale);
                 }
 
-                using (var penArc = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 21, 72, 89), 
+                    Color.FromArgb(245, 34, 119, 140), 
+                    Color.FromArgb(255, 61, 174, 189));
+                break;
+            }
+
+            case 2: // Clear Night: Crescent Moon, Orbit Ring, Diamond Starbursts
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 18, 14, 40), 
+                    Color.FromArgb(245, 28, 24, 64), 
+                    Color.FromArgb(255, 42, 38, 94));
+
+                float moonR = 8.5f * superScale;
+                float mCx = artCx + 12f * superScale;
+                float mCy = artCy - 1f * superScale;
+
+                using (var pathMoon = new GraphicsPath())
                 {
-                    float a1 = sunR + 7f * superScale;
-                    g.DrawArc(penArc, artCx - a1, artCy - a1, a1 * 2f, a1 * 2f, 130, 190);
-                    float a2 = sunR + 15f * superScale;
-                    g.DrawArc(penArc, artCx - a2, artCy - a2, a2 * 2f, a2 * 2f, 150, 160);
+                    pathMoon.AddArc(mCx - moonR, mCy - moonR, moonR * 2f, moonR * 2f, -110, 220);
+                    float innerR = moonR * 1.15f;
+                    float innerOffset = 4.6f * superScale;
+                    pathMoon.AddArc(mCx - innerR + innerOffset, mCy - innerR, innerR * 2f, innerR * 2f, 85, -170);
+                    pathMoon.CloseFigure();
+
+                    using var brushMoon = new LinearGradientBrush(
+                        new PointF(mCx - moonR, mCy - moonR),
+                        new PointF(mCx + moonR, mCy + moonR),
+                        Color.FromArgb(255, 255, 242, 178),
+                        Color.FromArgb(255, 230, 202, 101));
+                    g.FillPath(brushMoon, pathMoon);
+                }
+
+                using (var penOrbit = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale))
+                {
+                    float oR = moonR + 6.0f * superScale;
+                    g.DrawArc(penOrbit, mCx - oR, mCy - oR, oR * 2f, oR * 2f, 115, 210);
+                }
+
+                DrawBauhausStar(g, superScale, artCx - 14f * superScale, artCy - 3f * superScale, 4.5f * superScale);
+                DrawBauhausStar(g, superScale, artCx + 13f * superScale, artCy + 10f * superScale, 3.2f * superScale);
+
+                using (var brushStarDot = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                {
+                    g.FillEllipse(brushStarDot, artCx - 8f * superScale, artCy + 15f * superScale, 2.0f * superScale, 2.0f * superScale);
+                    g.FillEllipse(brushStarDot, artCx + 11f * superScale, artCy - 6f * superScale, 1.8f * superScale, 1.8f * superScale);
                 }
                 break;
             }
 
-            case 2: // Rain & Thunderstorm: Dark Petrol Horizons, Slate Clouds, Diagonal Rain, Lightning Bolt
+            case 3: // Partly Cloudy Day: Peeking Sun, Overlapping Cloud Disks, Stratum Lines
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 20, 32, 42), 
-                    Color.FromArgb(245, 28, 44, 58), 
-                    Color.FromArgb(255, 40, 66, 84));
+                float sunR = 8.5f * superScale;
+                float sunCx = artCx + 13f * superScale;
+                float sunCy = artCy - 4f * superScale;
 
-                using (var brushCloud1 = new SolidBrush(Color.FromArgb(235, 36, 52, 72)))
-                using (var brushCloud2 = new SolidBrush(Color.FromArgb(245, 48, 68, 94)))
-                using (var penCloudRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
+                using (var brushSun = new LinearGradientBrush(
+                    new PointF(sunCx - sunR, sunCy - sunR),
+                    new PointF(sunCx + sunR, sunCy + sunR),
+                    Color.FromArgb(255, 255, 220, 75),
+                    Color.FromArgb(255, 248, 138, 24)))
                 {
-                    float c1R = 10f * superScale;
-                    float c1X = artCx - 6f * superScale;
-                    float c1Y = artCy - 1f * superScale;
-                    g.FillEllipse(brushCloud1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCloudRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                    float c2R = 8.5f * superScale;
-                    float c2X = artCx + 6f * superScale;
-                    float c2YCloud = artCy + 1f * superScale;
-                    g.FillEllipse(brushCloud2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCloudRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
                 }
 
-                using (var penRainCyan = new Pen(Color.FromArgb(190, 64, 196, 255), 1.0f * superScale))
-                using (var penRainWhite = new Pen(Color.FromArgb(140, 255, 255, 255), 1.0f * superScale))
+                using (var penOrbit = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.DrawArc(penOrbit, sunCx - 12f * superScale, sunCy - 12f * superScale, 24f * superScale, 24f * superScale, 160, 160);
+                }
+
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 24, 48, 58), 
+                    Color.FromArgb(245, 36, 70, 84), 
+                    Color.FromArgb(255, 54, 100, 116));
+
+                float c1X = artCx - 4f * superScale;
+                float c1Y = artCy + 4f * superScale;
+                float c1R = 12f * superScale;
+
+                float c2X = artCx + 11f * superScale;
+                float c2YCloud = artCy + 7f * superScale;
+                float c2R = 10f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(230, 64, 84, 110)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 82, 106, 136)))
+                using (var penCRim = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                }
+
+                using (var penStratum = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
+                using (var brushNode = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                {
+                    float l1Y = c2Y + 28f * superScale;
+                    g.DrawLine(penStratum, cardX + cardW - 68f * superScale, l1Y, cardX + cardW - 12f * superScale, l1Y);
+                    g.FillEllipse(brushNode, cardX + cardW - 54f * superScale, l1Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
+                }
+                break;
+            }
+
+            case 4: // Partly Cloudy Night: Peeking Moon, Nocturnal Clouds, Starlight
+            {
+                float moonR = 8.0f * superScale;
+                float mCx = artCx + 13f * superScale;
+                float mCy = artCy - 4f * superScale;
+
+                using (var pathMoon = new GraphicsPath())
+                {
+                    pathMoon.AddArc(mCx - moonR, mCy - moonR, moonR * 2f, moonR * 2f, -110, 220);
+                    float innerR = moonR * 1.15f;
+                    float innerOffset = 4.4f * superScale;
+                    pathMoon.AddArc(mCx - innerR + innerOffset, mCy - innerR, innerR * 2f, innerR * 2f, 85, -170);
+                    pathMoon.CloseFigure();
+
+                    using var brushMoon = new SolidBrush(Color.FromArgb(255, 255, 240, 180));
+                    g.FillPath(brushMoon, pathMoon);
+                }
+
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 16, 18, 38), 
+                    Color.FromArgb(245, 24, 28, 54), 
+                    Color.FromArgb(255, 36, 42, 78));
+
+                float c1X = artCx - 4f * superScale;
+                float c1Y = artCy + 4f * superScale;
+                float c1R = 12f * superScale;
+                float c2X = artCx + 10f * superScale;
+                float c2YCloud = artCy + 7f * superScale;
+                float c2R = 10f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(230, 28, 32, 56)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 38, 42, 72)))
+                using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                }
+
+                DrawBauhausStar(g, superScale, artCx - 14f * superScale, artCy - 4f * superScale, 3.8f * superScale);
+                break;
+            }
+
+            case 5: // Overcast: Layered Architectural Lead Strata & Overcast Disks
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 32, 38, 48), 
+                    Color.FromArgb(245, 44, 52, 64), 
+                    Color.FromArgb(255, 58, 68, 82));
+
+                float c1X = artCx - 8f * superScale;
+                float c1Y = artCy + 2f * superScale;
+                float c1R = 14f * superScale;
+
+                float c2X = artCx + 10f * superScale;
+                float c2YCloud = artCy + 5f * superScale;
+                float c2R = 12f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(240, 52, 60, 72)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 68, 78, 92)))
+                using (var penCRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                }
+
+                using (var penStratum = new Pen(Color.FromArgb(70, 255, 255, 255), 1.2f * superScale))
+                using (var brushNode = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+                {
+                    float l1Y = c2Y + 22f * superScale;
+                    g.DrawLine(penStratum, cardX + cardW - 65f * superScale, l1Y, cardX + cardW - 10f * superScale, l1Y);
+                    g.FillEllipse(brushNode, cardX + cardW - 48f * superScale, l1Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
+
+                    float l2Y = c2Y + 30f * superScale;
+                    g.DrawLine(penStratum, cardX + cardW - 55f * superScale, l2Y, cardX + cardW - 16f * superScale, l2Y);
+                }
+                break;
+            }
+
+            case 6: // Fog & Mist: Slotted Translucent Scanline Bands, Phantom Faded Circles
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 26, 46, 44), 
+                    Color.FromArgb(245, 36, 62, 58), 
+                    Color.FromArgb(255, 50, 84, 78));
+
+                using (var brushPhantom = new SolidBrush(Color.FromArgb(40, 200, 240, 235)))
+                {
+                    g.FillEllipse(brushPhantom, artCx - 6f * superScale, artCy - 6f * superScale, 22f * superScale, 22f * superScale);
+                }
+
+                using (var penScan = new Pen(Color.FromArgb(90, 220, 255, 250), 1.4f * superScale))
+                {
+                    for (int b = 0; b < 4; b++)
+                    {
+                        float sy = c2Y + 12f * superScale + b * 6.5f * superScale;
+                        float sx1 = cardX + cardW - 62f * superScale + (b % 2) * 8f * superScale;
+                        float sx2 = cardX + cardW - 10f * superScale - ((b + 1) % 2) * 6f * superScale;
+                        g.DrawLine(penScan, sx1, sy, sx2, sy);
+                    }
+                }
+                break;
+            }
+
+            case 7: // Drizzle: Fine Delicate 45-deg Micro-Dash Grid, Soft Clouds
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 22, 38, 52), 
+                    Color.FromArgb(245, 32, 54, 72), 
+                    Color.FromArgb(255, 46, 74, 98));
+
+                float c1X = artCx - 5f * superScale;
+                float c1Y = artCy + 2f * superScale;
+                float c1R = 12f * superScale;
+
+                float c2X = artCx + 11f * superScale;
+                float c2YCloud = artCy + 5f * superScale;
+                float c2R = 10f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(230, 42, 64, 86)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 58, 86, 114)))
+                using (var penCRim = new Pen(Color.FromArgb(80, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                }
+
+                using (var penDrizzle = new Pen(Color.FromArgb(190, 80, 210, 255), 1.0f * superScale))
+                {
+                    float dx = 4f * superScale;
+                    float dy = 6f * superScale;
+                    for (int d = 0; d < 5; d++)
+                    {
+                        float lx = cardX + cardW - 55f * superScale + d * 9f * superScale;
+                        float ly = c2Y + 22f * superScale + (d % 2) * 4f * superScale;
+                        g.DrawLine(penDrizzle, lx, ly, lx - dx, ly + dy);
+                    }
+                }
+                break;
+            }
+
+            case 8: // Rain & Downpour: Petrol Clouds, Steep Diagonal Rain Streaks, Ripple Arc
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 18, 28, 38), 
+                    Color.FromArgb(245, 27, 42, 56), 
+                    Color.FromArgb(255, 38, 62, 82));
+
+                float c1X = artCx - 6f * superScale;
+                float c1Y = artCy + 1f * superScale;
+                float c1R = 13f * superScale;
+
+                float c2X = artCx + 10f * superScale;
+                float c2YCloud = artCy + 4f * superScale;
+                float c2R = 11f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
+                using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
+                {
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                }
+
+                using (var penRainCyan = new Pen(Color.FromArgb(220, 64, 196, 255), 1.3f * superScale))
+                using (var penRainWhite = new Pen(Color.FromArgb(170, 255, 255, 255), 1.1f * superScale))
                 {
                     float dx = 6f * superScale;
                     float dy = 13f * superScale;
-                    g.DrawLine(penRainCyan, artCx - 14f * superScale, artCy + 9f * superScale, artCx - 14f * superScale - dx, artCy + 9f * superScale + dy);
-                    g.DrawLine(penRainWhite, artCx - 4f * superScale, artCy + 11f * superScale, artCx - 4f * superScale - dx, artCy + 11f * superScale + dy);
-                    g.DrawLine(penRainCyan, artCx + 6f * superScale, artCy + 10f * superScale, artCx + 6f * superScale - dx, artCy + 10f * superScale + dy);
-                    g.DrawLine(penRainWhite, artCx + 14f * superScale, artCy + 8f * superScale, artCx + 14f * superScale - dx, artCy + 8f * superScale + dy);
-                }
-
-                using (var brushBolt = new SolidBrush(Color.FromArgb(255, 255, 215, 20)))
-                using (var penBolt = new Pen(Color.FromArgb(255, 255, 255, 180), 0.8f * superScale))
-                {
-                    float bx = artCx + 1f * superScale;
-                    float by = artCy + 6f * superScale;
-                    PointF[] boltPts = {
-                        new PointF(bx, by),
-                        new PointF(bx - 3.5f * superScale, by + 8f * superScale),
-                        new PointF(bx - 0.5f * superScale, by + 8f * superScale),
-                        new PointF(bx - 5.0f * superScale, by + 18f * superScale),
-                        new PointF(bx + 1.5f * superScale, by + 9.5f * superScale),
-                        new PointF(bx - 1.5f * superScale, by + 9.5f * superScale)
-                    };
-                    g.FillPolygon(brushBolt, boltPts);
-                    g.DrawPolygon(penBolt, boltPts);
+                    for (int line = 0; line < 5; line++)
+                    {
+                        float lx = cardX + cardW - 56f * superScale + line * 10f * superScale;
+                        float ly = c2Y + 20f * superScale + (line % 2) * 3f * superScale;
+                        var penR = (line % 2 == 0) ? penRainCyan : penRainWhite;
+                        g.DrawLine(penR, lx, ly, lx - dx, ly + dy);
+                    }
                 }
                 break;
             }
 
-            case 3: // Partly Cloudy: Peeking Sun, Interlocking Clouds, Drafting Lines
+            case 9: // Freezing Rain & Sleet: Glacier Teal, Diamond Ice Crystals, Shard Lines
             {
                 DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 26, 50, 61), 
-                    Color.FromArgb(245, 37, 72, 85), 
-                    Color.FromArgb(255, 56, 102, 117));
+                    Color.FromArgb(235, 20, 44, 60), 
+                    Color.FromArgb(245, 28, 62, 82), 
+                    Color.FromArgb(255, 42, 88, 114));
 
-                float sunR = 9f * superScale;
-                float sX = artCx + 5f * superScale;
-                float sY = artCy - 2f * superScale;
-                using (var brushSun = new LinearGradientBrush(
-                    new PointF(sX - sunR, sY - sunR),
-                    new PointF(sX + sunR, sY + sunR),
-                    Color.FromArgb(255, 255, 218, 70),
-                    Color.FromArgb(255, 248, 138, 24)))
+                float c1X = artCx - 4f * superScale;
+                float c1Y = artCy + 2f * superScale;
+                float c1R = 12f * superScale;
+                float c2X = artCx + 11f * superScale;
+                float c2YCloud = artCy + 5f * superScale;
+                float c2R = 10f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(235, 38, 66, 88)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 52, 92, 122)))
+                using (var penCRim = new Pen(Color.FromArgb(110, 180, 240, 255), 1.0f * superScale))
                 {
-                    g.FillEllipse(brushSun, sX - sunR, sY - sunR, sunR * 2f, sunR * 2f);
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
                 }
 
-                using (var penArc = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale))
+                using (var penSleet = new Pen(Color.FromArgb(220, 140, 230, 255), 1.2f * superScale))
+                using (var brushDiamond = new SolidBrush(Color.FromArgb(240, 200, 245, 255)))
                 {
-                    g.DrawArc(penArc, sX - 14f * superScale, sY - 14f * superScale, 28f * superScale, 28f * superScale, 180, 140);
-                }
-
-                using (var brushCloudBack = new SolidBrush(Color.FromArgb(225, 68, 88, 114)))
-                using (var brushCloudFront = new SolidBrush(Color.FromArgb(245, 84, 108, 138)))
-                using (var penCloudRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                {
-                    float cbX = artCx - 6f * superScale;
-                    float cbY = artCy + 2f * superScale;
-                    float cbR = 9.5f * superScale;
-                    g.FillEllipse(brushCloudBack, cbX - cbR, cbY - cbR, cbR * 2f, cbR * 2f);
-                    g.DrawEllipse(penCloudRim, cbX - cbR, cbY - cbR, cbR * 2f, cbR * 2f);
-
-                    float cfX = artCx + 6f * superScale;
-                    float cfY = artCy + 5f * superScale;
-                    float cfR = 8f * superScale;
-                    g.FillEllipse(brushCloudFront, cfX - cfR, cfY - cfR, cfR * 2f, cfR * 2f);
-                    g.DrawEllipse(penCloudRim, cfX - cfR, cfY - cfR, cfR * 2f, cfR * 2f);
-                }
-
-                using (var penStratum = new Pen(Color.FromArgb(60, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.DrawLine(penStratum, artCx - 22f * superScale, artCy + 15f * superScale, artCx + 18f * superScale, artCy + 15f * superScale);
-                    g.DrawLine(penStratum, artCx - 14f * superScale, artCy + 19f * superScale, artCx + 12f * superScale, artCy + 19f * superScale);
+                    float dx = 5f * superScale;
+                    float dy = 11f * superScale;
+                    for (int s = 0; s < 4; s++)
+                    {
+                        float lx = cardX + cardW - 52f * superScale + s * 11f * superScale;
+                        float ly = c2Y + 20f * superScale + (s % 2) * 4f * superScale;
+                        g.DrawLine(penSleet, lx, ly, lx - dx, ly + dy);
+                        // Ice crystal diamond at tip
+                        float tipX = lx - dx;
+                        float tipY = ly + dy;
+                        PointF[] dPts = {
+                            new PointF(tipX, tipY - 2.2f * superScale),
+                            new PointF(tipX + 1.8f * superScale, tipY),
+                            new PointF(tipX, tipY + 2.2f * superScale),
+                            new PointF(tipX - 1.8f * superScale, tipY)
+                        };
+                        g.FillPolygon(brushDiamond, dPts);
+                    }
                 }
                 break;
             }
 
-            case 4: // Snow & Frost: Ice-Blue Horizons, Constructivist Snowflake, Falling Snow
+            case 10: // Light Snow: Pastel Azure, 4-Arm Snowflake, Snow Particles
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 24, 50, 74), 
+                    Color.FromArgb(245, 34, 70, 102), 
+                    Color.FromArgb(255, 48, 96, 138));
+
+                float sR = 7.5f * superScale;
+                using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                using (var penSpoke = new Pen(Color.FromArgb(240, 255, 255, 255), 1.2f * superScale))
+                {
+                    g.FillEllipse(brushNode, artCx - 1.8f * superScale, artCy - 1.8f * superScale, 3.6f * superScale, 3.6f * superScale);
+                    // 4 perpendicular spokes
+                    g.DrawLine(penSpoke, artCx - sR, artCy, artCx + sR, artCy);
+                    g.DrawLine(penSpoke, artCx, artCy - sR, artCx, artCy + sR);
+
+                    // Crossbar terminals
+                    float cLen = 2.5f * superScale;
+                    g.DrawLine(penSpoke, artCx - sR, artCy - cLen, artCx - sR, artCy + cLen);
+                    g.DrawLine(penSpoke, artCx + sR, artCy - cLen, artCx + sR, artCy + cLen);
+                    g.DrawLine(penSpoke, artCx - cLen, artCy - sR, artCx + cLen, artCy - sR);
+                    g.DrawLine(penSpoke, artCx - cLen, artCy + sR, artCx + cLen, artCy + sR);
+                }
+
+                using (var brushSnow = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+                {
+                    g.FillEllipse(brushSnow, artCx - 16f * superScale, artCy - 4f * superScale, 2.5f * superScale, 2.5f * superScale);
+                    g.FillEllipse(brushSnow, artCx + 14f * superScale, artCy + 8f * superScale, 3.0f * superScale, 3.0f * superScale);
+                    g.FillEllipse(brushSnow, artCx - 8f * superScale, artCy + 12f * superScale, 2.0f * superScale, 2.0f * superScale);
+                }
+                break;
+            }
+
+            case 11: // Heavy Snow & Blizzard: Arctic Cobalt, 6-Arm Snowflake, Wind-blown Drifts
             {
                 DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
                     Color.FromArgb(235, 26, 56, 88), 
@@ -3918,7 +4210,7 @@ internal sealed class OverlayForm : Form
                         float ex = artCx + spokeLen * cos;
                         float ey = artCy + spokeLen * sin;
                         g.DrawLine(penSpoke, artCx, artCy, ex, ey);
-                        g.FillEllipse(brushNode, ex - 1.2f * superScale, ey - 1.2f * superScale, 2.4f * superScale, 2.4f * superScale);
+                        g.FillEllipse(brushNode, ex - 1.1f * superScale, ey - 1.1f * superScale, 2.2f * superScale, 2.2f * superScale);
 
                         float bx = artCx + spokeLen * 0.55f * cos;
                         float by = artCy + spokeLen * 0.55f * sin;
@@ -3928,125 +4220,206 @@ internal sealed class OverlayForm : Form
                     }
                 }
 
-                using (var brushSnowDot = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+                // Blizzard flurry wind streaks
+                using (var penFlurry = new Pen(Color.FromArgb(170, 240, 255, 255), 1.0f * superScale))
                 {
-                    g.FillEllipse(brushSnowDot, artCx - 14f * superScale, artCy + 8f * superScale, 2.6f * superScale, 2.6f * superScale);
-                    g.FillEllipse(brushSnowDot, artCx + 13f * superScale, artCy - 4f * superScale, 2.0f * superScale, 2.0f * superScale);
-                    g.FillEllipse(brushSnowDot, artCx - 7f * superScale, artCy + 17f * superScale, 3.2f * superScale, 3.2f * superScale);
-                    g.FillEllipse(brushSnowDot, artCx + 10f * superScale, artCy + 14f * superScale, 2.2f * superScale, 2.2f * superScale);
+                    g.DrawLine(penFlurry, artCx - 24f * superScale, artCy - 8f * superScale, artCx - 6f * superScale, artCy - 2f * superScale);
+                    g.DrawLine(penFlurry, artCx - 18f * superScale, artCy + 14f * superScale, artCx + 2f * superScale, artCy + 19f * superScale);
+                }
+
+                using (var brushSnow = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+                {
+                    g.FillEllipse(brushSnow, artCx - 14f * superScale, artCy + 4f * superScale, 2.4f * superScale, 2.4f * superScale);
+                    g.FillEllipse(brushSnow, artCx + 16f * superScale, artCy - 6f * superScale, 2.0f * superScale, 2.0f * superScale);
                 }
                 break;
             }
 
-            case 5: // Clear Night: Crescent Moon, Concentric Orbit, Starbursts
+            case 12: // Thunderstorm: Storm Clouds, Diagonal Rain, Electric Gold Lightning Bolt
             {
                 DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 19, 16, 42), 
-                    Color.FromArgb(245, 30, 27, 66), 
-                    Color.FromArgb(255, 44, 41, 96));
+                    Color.FromArgb(235, 18, 28, 38), 
+                    Color.FromArgb(245, 27, 42, 56), 
+                    Color.FromArgb(255, 38, 62, 82));
 
-                float moonR = 10f * superScale;
-                float mCx = artCx;
-                float mCy = artCy;
-                using (var pathMoon = new GraphicsPath())
+                float c1X = artCx - 6f * superScale;
+                float c1Y = artCy + 1f * superScale;
+                float c1R = 13f * superScale;
+
+                float c2X = artCx + 10f * superScale;
+                float c2YCloud = artCy + 4f * superScale;
+                float c2R = 11f * superScale;
+
+                using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
+                using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
+                using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
                 {
-                    pathMoon.AddArc(mCx - moonR, mCy - moonR, moonR * 2f, moonR * 2f, -110, 220);
-                    float innerR = moonR * 1.15f;
-                    float innerOffset = 5.5f * superScale;
-                    pathMoon.AddArc(mCx - innerR + innerOffset, mCy - innerR, innerR * 2f, innerR * 2f, 85, -170);
-                    pathMoon.CloseFigure();
-
-                    using var brushMoon = new LinearGradientBrush(
-                        new PointF(mCx - moonR, mCy - moonR),
-                        new PointF(mCx + moonR, mCy + moonR),
-                        Color.FromArgb(255, 255, 242, 178),
-                        Color.FromArgb(255, 230, 202, 101));
-                    g.FillPath(brushMoon, pathMoon);
+                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
+                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
                 }
 
-                using (var penOrbit = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
+                using (var penRain = new Pen(Color.FromArgb(180, 64, 196, 255), 1.1f * superScale))
                 {
-                    float oR = moonR + 7f * superScale;
-                    g.DrawArc(penOrbit, mCx - oR, mCy - oR, oR * 2f, oR * 2f, 120, 200);
+                    g.DrawLine(penRain, cardX + cardW - 52f * superScale, c2Y + 22f * superScale, cardX + cardW - 57f * superScale, c2Y + 34f * superScale);
+                    g.DrawLine(penRain, cardX + cardW - 24f * superScale, c2Y + 24f * superScale, cardX + cardW - 29f * superScale, c2Y + 36f * superScale);
                 }
 
-                DrawBauhausStar(g, superScale, artCx - 14f * superScale, artCy - 3f * superScale, 4.5f * superScale);
-                DrawBauhausStar(g, superScale, artCx + 13f * superScale, artCy + 10f * superScale, 3.2f * superScale);
-
-                using (var brushStarDot = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                // Electric Gold Constructivist Lightning Bolt
+                using (var brushBolt = new SolidBrush(Color.FromArgb(255, 255, 215, 20)))
+                using (var penBolt = new Pen(Color.FromArgb(255, 255, 255, 220), 1.0f * superScale))
                 {
-                    g.FillEllipse(brushStarDot, artCx - 8f * superScale, artCy + 15f * superScale, 2.0f * superScale, 2.0f * superScale);
-                    g.FillEllipse(brushStarDot, artCx + 11f * superScale, artCy - 6f * superScale, 1.8f * superScale, 1.8f * superScale);
+                    float bx = artCx + 1f * superScale;
+                    float by = artCy - 2f * superScale;
+                    PointF[] boltPts = {
+                        new PointF(bx, by),
+                        new PointF(bx - 4.5f * superScale, by + 11f * superScale),
+                        new PointF(bx - 0.5f * superScale, by + 11f * superScale),
+                        new PointF(bx - 6.5f * superScale, by + 23f * superScale),
+                        new PointF(bx + 2f * superScale, by + 12f * superScale),
+                        new PointF(bx - 1.5f * superScale, by + 12f * superScale)
+                    };
+                    g.FillPolygon(brushBolt, boltPts);
+                    g.DrawPolygon(penBolt, boltPts);
                 }
                 break;
             }
 
-            case 6: // Golden Sunset: Sinking Sun with Constructivist Slits, Dusk Ray
+            case 13: // Severe Hailstorm: Violent Purple Horizon, Angular Lightning, Faceted Hail
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 36, 20, 48), 
+                    Color.FromArgb(245, 52, 28, 68), 
+                    Color.FromArgb(255, 74, 40, 96));
+
+                // Angular multi-segment lightning
+                using (var penBolt = new Pen(Color.FromArgb(255, 120, 240, 255), 1.3f * superScale))
+                {
+                    PointF[] boltLine = {
+                        new PointF(artCx + 8f * superScale, artCy - 5f * superScale),
+                        new PointF(artCx + 3f * superScale, artCy + 6f * superScale),
+                        new PointF(artCx + 6f * superScale, artCy + 7f * superScale),
+                        new PointF(artCx - 1f * superScale, artCy + 22f * superScale)
+                    };
+                    g.DrawLines(penBolt, boltLine);
+                }
+
+                // Geometric Hail Hexagons
+                using (var brushHail = new SolidBrush(Color.FromArgb(230, 220, 245, 255)))
+                using (var penHail = new Pen(Color.FromArgb(255, 255, 255, 255), 1.0f * superScale))
+                {
+                    float[] hx = { artCx - 16f * superScale, artCx - 6f * superScale, artCx + 14f * superScale };
+                    float[] hy = { artCy + 8f * superScale, artCy + 18f * superScale, artCy + 12f * superScale };
+                    float[] hr = { 2.6f * superScale, 3.2f * superScale, 2.8f * superScale };
+
+                    for (int k = 0; k < 3; k++)
+                    {
+                        PointF[] hex = new PointF[6];
+                        for (int a = 0; a < 6; a++)
+                        {
+                            double rad = a * Math.PI / 3.0;
+                            hex[a] = new PointF(hx[k] + hr[k] * (float)Math.Cos(rad), hy[k] + hr[k] * (float)Math.Sin(rad));
+                        }
+                        g.FillPolygon(brushHail, hex);
+                        g.DrawPolygon(penHail, hex);
+                    }
+                }
+                break;
+            }
+
+            case 14: // Golden Sunset: Sinking Sun with Constructivist Slits, Dusk Ray
             {
                 DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
                     Color.FromArgb(235, 48, 21, 43), 
                     Color.FromArgb(245, 84, 32, 50), 
                     Color.FromArgb(255, 140, 58, 56));
 
-                float sunR = 13.5f * superScale;
-                float sY = artCy + 3f * superScale;
+                float sunR = 14f * superScale;
+                float sunCx = artCx + 6f * superScale;
+                float sunCy = artCy + 6f * superScale;
+
                 using (var brushSun = new LinearGradientBrush(
-                    new PointF(artCx - sunR, sY - sunR),
-                    new PointF(artCx + sunR, sY + sunR),
+                    new PointF(sunCx - sunR, sunCy - sunR),
+                    new PointF(sunCx + sunR, sunCy + sunR),
                     Color.FromArgb(255, 255, 183, 77),
                     Color.FromArgb(255, 255, 87, 34)))
                 {
-                    g.FillEllipse(brushSun, artCx - sunR, sY - sunR, sunR * 2f, sunR * 2f);
+                    g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
                 }
 
-                using (var penSlit = new Pen(Color.FromArgb(220, 36, 14, 28), 1.2f * superScale))
+                // Constructivist Horizontal Slit Blinds
+                using (var penSlit = new Pen(Color.FromArgb(220, 36, 14, 28), 1.3f * superScale))
                 {
-                    for (float slitY = sY - sunR + 3.5f * superScale; slitY < sY + sunR; slitY += 3.8f * superScale)
+                    for (float slitY = sunCy - sunR + 3.5f * superScale; slitY < sunCy + sunR; slitY += 3.8f * superScale)
                     {
-                        g.DrawLine(penSlit, artCx - sunR - 1f, slitY, artCx + sunR + 1f, slitY);
+                        g.DrawLine(penSlit, sunCx - sunR - 1f, slitY, sunCx + sunR + 1f, slitY);
                     }
                 }
 
-                using var penRay = new Pen(Color.FromArgb(85, 255, 180, 100), 1.0f * superScale);
-                g.DrawLine(penRay, artCx - 36f * superScale, c2Y + c2H, artCx + 22f * superScale, c2Y);
+                using (var penTangent = new Pen(Color.FromArgb(90, 255, 180, 100), 1.0f * superScale))
+                {
+                    g.DrawLine(penTangent, artCx - 22f * superScale, c2Y + c2H + 4f * superScale, artCx + 22f * superScale, c2Y - 4f * superScale);
+                }
+                break;
+            }
+
+            case 15: // Windy / Gale: Sweeping Bauhaus Aerodynamic Streamline Vectors
+            {
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
+                    Color.FromArgb(235, 20, 48, 62), 
+                    Color.FromArgb(245, 30, 70, 88), 
+                    Color.FromArgb(255, 44, 98, 122));
+
+                using (var penWind = new Pen(Color.FromArgb(210, 80, 220, 235), 1.4f * superScale))
+                using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                {
+                    penWind.StartCap = LineCap.Round;
+                    penWind.EndCap = LineCap.Round;
+
+                    // Streamline 1
+                    g.DrawArc(penWind, artCx - 24f * superScale, artCy - 10f * superScale, 36f * superScale, 18f * superScale, 180, 150);
+                    g.FillEllipse(brushNode, artCx + 8f * superScale, artCy - 6f * superScale, 3f * superScale, 3f * superScale);
+
+                    // Streamline 2
+                    g.DrawArc(penWind, artCx - 18f * superScale, artCy + 2f * superScale, 38f * superScale, 16f * superScale, 190, 140);
+                    g.FillEllipse(brushNode, artCx + 16f * superScale, artCy + 6f * superScale, 2.5f * superScale, 2.5f * superScale);
+
+                    // Streamline 3
+                    g.DrawArc(penWind, artCx - 28f * superScale, artCy + 12f * superScale, 32f * superScale, 14f * superScale, 180, 130);
+                }
+
+                // Arrowhead on top streamline
+                using (var brushArrow = new SolidBrush(Color.FromArgb(220, 80, 220, 235)))
+                {
+                    PointF[] arrow = {
+                        new PointF(artCx + 11f * superScale, artCy - 6f * superScale),
+                        new PointF(artCx + 7f * superScale, artCy - 9f * superScale),
+                        new PointF(artCx + 7f * superScale, artCy - 3f * superScale)
+                    };
+                    g.FillPolygon(brushArrow, arrow);
+                }
                 break;
             }
         }
 
-        // 3. Left Swiss Modernist Typography Block
-        float tempX = cardX + 11f * superScale;
-        float textStartX = tempX;
-
-        using (var fontMicro = GetPremiumFont(6.8f * superScale, FontStyle.Bold))
-        using (var brushMicro = new SolidBrush(Color.FromArgb(175, 210, 240, 255)))
+        // 3. Swiss Typographic Block (Left)
+        using (var fontDay = GetPremiumFont(6.8f * superScale, FontStyle.Bold))
+        using (var brushDay = new SolidBrush(Color.FromArgb(175, 210, 235, 255)))
         {
-            g.DrawString(dayCity, fontMicro, brushMicro, tempX, c2Y + 6f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(dayCity, fontDay, brushDay, cardX + 9f * superScale, c2Y + 6.5f * superScale, StringFormat.GenericTypographic);
         }
 
+        float textStartX = cardX + 9f * superScale;
         using (var fontTemp = GetPremiumFont(19.0f * superScale, FontStyle.Bold))
         {
             var tSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericTypographic);
-            float tempY = c2Y + 16f * superScale;
-
-            Color glowColor = condition switch
-            {
-                2 => Color.FromArgb(25, 64, 196, 255),
-                4 => Color.FromArgb(25, 128, 222, 234),
-                5 => Color.FromArgb(25, 178, 140, 255),
-                6 => Color.FromArgb(28, 255, 112, 67),
-                _ => Color.FromArgb(28, 255, 210, 80)
-            };
-            using (var brushGlow = new SolidBrush(glowColor))
-            {
-                g.FillEllipse(brushGlow, tempX - 4f * superScale, tempY - 2f * superScale, tSize.Width + 8f * superScale, tSize.Height + 4f * superScale);
-            }
-
             using var brushT = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
-            g.DrawString(tempStr, fontTemp, brushT, tempX, tempY, StringFormat.GenericTypographic);
-            textStartX = tempX + tSize.Width + 9f * superScale;
+            g.DrawString(tempStr, fontTemp, brushT, cardX + 9f * superScale, c2Y + 16.5f * superScale, StringFormat.GenericTypographic);
+            textStartX += tSize.Width + 8f * superScale;
         }
 
-        using (var fontCond = GetPremiumFont(7.6f * superScale, FontStyle.Bold))
+        using (var fontCond = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
         using (var fontSub = GetPremiumFont(6.8f * superScale, FontStyle.Regular))
         {
             float condY = c2Y + 16.5f * superScale;
@@ -4068,16 +4441,13 @@ internal sealed class OverlayForm : Form
 
     private static void DrawWeatherStyleToast(Graphics g, float superScale, int targetW)
     {
-        string styleName = CurrentWeatherCondition switch
-        {
-            1 => "BAUHAUS · SUNNY [S]",
-            2 => "BAUHAUS · RAIN & STORM [S]",
-            3 => "BAUHAUS · PARTLY CLOUDY [S]",
-            4 => "BAUHAUS · SNOW & FROST [S]",
-            5 => "BAUHAUS · CLEAR NIGHT [S]",
-            6 => "BAUHAUS · GOLDEN SUNSET [S]",
-            _ => $"BAUHAUS · WEATHER {CurrentWeatherCondition} [S]"
-        };
+        WeatherModel wModel = IsLiveWeatherMode 
+            ? LiveWeatherService.Current 
+            : LiveWeatherService.GetMockWeather(CurrentWeatherCondition);
+
+        string styleName = IsLiveWeatherMode
+            ? $"LIVE · {wModel.City} · {wModel.ConditionName} [S]"
+            : $"BAUHAUS · {wModel.ConditionName} [S] ({CurrentWeatherCondition}/{MaxWeatherConditions})";
 
         using var fontToast = GetPremiumFont(7.0f * superScale, FontStyle.Bold);
         var tSize = g.MeasureString(styleName, fontToast, PointF.Empty, StringFormat.GenericTypographic);
@@ -4097,7 +4467,8 @@ internal sealed class OverlayForm : Form
         using var penBorder = new Pen(Color.FromArgb(130, 255, 255, 255), 1.0f * superScale);
         g.DrawPath(penBorder, pathToast);
 
-        using var brushText = new SolidBrush(Color.FromArgb(255, 255, 215, 75)); // amber highlight
+        Color textColor = IsLiveWeatherMode ? Color.FromArgb(255, 100, 255, 180) : Color.FromArgb(255, 255, 215, 75);
+        using var brushText = new SolidBrush(textColor);
         g.DrawString(styleName, fontToast, brushText, pillX + padX, pillY + padY, StringFormat.GenericTypographic);
     }
 
@@ -4889,13 +5260,14 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static void DrawTabBauhausWeather(
+private static void DrawTabBauhausWeather(
         Graphics g,
         float superScale,
         int targetW,
         int condition)
     {
         var now = DateTime.Now;
+        WeatherModel wModel = IsLiveWeatherMode ? LiveWeatherService.Current : LiveWeatherService.GetMockWeather(condition);
 
         // Content Area Bounds
         float wX = 22f * superScale;
@@ -4903,113 +5275,111 @@ internal sealed class OverlayForm : Form
         float totalW = targetW * superScale - 44f * superScale;
         float totalH = 104f * superScale;
 
-        // Data setup for condition
         string dayString = now.ToString("dddd, MMM d").ToUpperInvariant();
-        string cityString;
-        string tempString;
-        string condString;
-        string subString;
-        Color skyTop, skyBottom;
-        Color tempGlowColor;
-        string[,] chipData;
+        string cityString = wModel.City;
+        string tempString = wModel.FormattedTemp;
+        string condString = wModel.ConditionName;
+        string subString = wModel.Subtitle;
+        string[,] chipData = wModel.ChipData;
+
+        Color skyTop, skyBottom, tempGlowColor;
 
         switch (condition)
         {
-            case 2: // Rain & Thunderstorm
-                cityString = "SEATTLE";
-                tempString = "14°";
-                condString = "THUNDERSTORM";
-                subString = "High: 16°  ·  Low: 11°  ·  Feels: 12°";
-                skyTop = Color.FromArgb(240, 14, 20, 32);
-                skyBottom = Color.FromArgb(240, 24, 38, 56);
-                tempGlowColor = Color.FromArgb(32, 64, 196, 255);
-                chipData = new string[,]
-                {
-                    { "PRECIP", "90%" },
-                    { "WIND", "28 km/h" },
-                    { "HUMIDITY", "95%" }
-                };
-                break;
-
-            case 3: // Partly Cloudy / Overcast
-                cityString = "LONDON";
-                tempString = "19°";
-                condString = "PARTLY CLOUDY";
-                subString = "High: 22°  ·  Low: 15°  ·  Feels: 18°";
-                skyTop = Color.FromArgb(240, 16, 26, 38);
-                skyBottom = Color.FromArgb(240, 28, 44, 62);
-                tempGlowColor = Color.FromArgb(28, 255, 210, 80);
-                chipData = new string[,]
-                {
-                    { "WIND", "15 km/h" },
-                    { "HUMIDITY", "64%" },
-                    { "UV INDEX", "3 Mod" }
-                };
-                break;
-
-            case 4: // Snow & Frost
-                cityString = "OSLO";
-                tempString = "-3°";
-                condString = "SNOW SHOWERS";
-                subString = "High: -1°  ·  Low: -8°  ·  Feels: -9°";
-                skyTop = Color.FromArgb(240, 10, 18, 34);
-                skyBottom = Color.FromArgb(240, 20, 44, 72);
-                tempGlowColor = Color.FromArgb(32, 128, 222, 234);
-                chipData = new string[,]
-                {
-                    { "SNOW ACC", "12 cm" },
-                    { "WIND", "18 km/h" },
-                    { "HUMIDITY", "82%" }
-                };
-                break;
-
-            case 5: // Clear Night
-                cityString = "TOKYO";
-                tempString = "13°";
-                condString = "CLEAR NIGHT";
-                subString = "High: 21°  ·  Low: 11°  ·  Feels: 12°";
-                skyTop = Color.FromArgb(240, 8, 10, 22);
-                skyBottom = Color.FromArgb(240, 20, 18, 46);
-                tempGlowColor = Color.FromArgb(32, 178, 140, 255);
-                chipData = new string[,]
-                {
-                    { "MOON", "88% Wax" },
-                    { "WIND", "8 km/h" },
-                    { "HUMIDITY", "55%" }
-                };
-                break;
-
-            case 6: // Golden Sunset
-                cityString = "BARCELONA";
-                tempString = "22°";
-                condString = "GOLDEN HOUR";
-                subString = "High: 26°  ·  Low: 17°  ·  Dusk: 7:42 PM";
-                skyTop = Color.FromArgb(240, 38, 14, 30);
-                skyBottom = Color.FromArgb(240, 66, 26, 44);
-                tempGlowColor = Color.FromArgb(36, 255, 112, 67);
-                chipData = new string[,]
-                {
-                    { "SUNSET", "7:42 PM" },
-                    { "WIND", "10 km/h" },
-                    { "HUMIDITY", "50%" }
-                };
-                break;
-
             case 1: // Sunny / Clear Day
-            default:
-                cityString = "SAN FRANCISCO";
-                tempString = "28°";
-                condString = "SUNNY";
-                subString = "High: 31°  ·  Low: 19°  ·  Feels: 27°";
                 skyTop = Color.FromArgb(240, 11, 23, 40);
                 skyBottom = Color.FromArgb(240, 18, 52, 75);
                 tempGlowColor = Color.FromArgb(32, 255, 210, 80);
-                chipData = new string[,]
-                {
-                    { "WIND", "12 km/h" },
-                    { "HUMIDITY", "42%" },
-                    { "UV INDEX", "8 High" }
-                };
+                break;
+
+            case 2: // Clear Night
+                skyTop = Color.FromArgb(240, 8, 10, 22);
+                skyBottom = Color.FromArgb(240, 20, 18, 46);
+                tempGlowColor = Color.FromArgb(32, 178, 140, 255);
+                break;
+
+            case 3: // Partly Cloudy Day
+                skyTop = Color.FromArgb(240, 16, 26, 38);
+                skyBottom = Color.FromArgb(240, 28, 44, 62);
+                tempGlowColor = Color.FromArgb(28, 255, 210, 80);
+                break;
+
+            case 4: // Partly Cloudy Night
+                skyTop = Color.FromArgb(240, 10, 14, 26);
+                skyBottom = Color.FromArgb(240, 18, 24, 46);
+                tempGlowColor = Color.FromArgb(28, 160, 180, 255);
+                break;
+
+            case 5: // Overcast
+                skyTop = Color.FromArgb(240, 18, 22, 28);
+                skyBottom = Color.FromArgb(240, 30, 36, 46);
+                tempGlowColor = Color.FromArgb(24, 180, 195, 210);
+                break;
+
+            case 6: // Fog & Mist
+                skyTop = Color.FromArgb(240, 16, 28, 28);
+                skyBottom = Color.FromArgb(240, 26, 44, 42);
+                tempGlowColor = Color.FromArgb(26, 120, 210, 195);
+                break;
+
+            case 7: // Drizzle & Light Rain
+                skyTop = Color.FromArgb(240, 16, 24, 34);
+                skyBottom = Color.FromArgb(240, 26, 40, 56);
+                tempGlowColor = Color.FromArgb(28, 100, 190, 235);
+                break;
+
+            case 8: // Rain & Downpour
+                skyTop = Color.FromArgb(240, 14, 20, 32);
+                skyBottom = Color.FromArgb(240, 24, 38, 56);
+                tempGlowColor = Color.FromArgb(32, 64, 196, 255);
+                break;
+
+            case 9: // Freezing Rain & Sleet
+                skyTop = Color.FromArgb(240, 12, 24, 34);
+                skyBottom = Color.FromArgb(240, 20, 42, 60);
+                tempGlowColor = Color.FromArgb(30, 140, 230, 255);
+                break;
+
+            case 10: // Light Snow & Flurries
+                skyTop = Color.FromArgb(240, 14, 26, 42);
+                skyBottom = Color.FromArgb(240, 24, 48, 74);
+                tempGlowColor = Color.FromArgb(30, 160, 220, 255);
+                break;
+
+            case 11: // Heavy Snow & Blizzard
+                skyTop = Color.FromArgb(240, 10, 18, 34);
+                skyBottom = Color.FromArgb(240, 20, 44, 72);
+                tempGlowColor = Color.FromArgb(32, 128, 222, 234);
+                break;
+
+            case 12: // Thunderstorm & Lightning
+                skyTop = Color.FromArgb(240, 14, 18, 28);
+                skyBottom = Color.FromArgb(240, 24, 34, 52);
+                tempGlowColor = Color.FromArgb(36, 255, 215, 20);
+                break;
+
+            case 13: // Severe Hailstorm & Lightning
+                skyTop = Color.FromArgb(240, 24, 14, 34);
+                skyBottom = Color.FromArgb(240, 40, 24, 56);
+                tempGlowColor = Color.FromArgb(36, 220, 120, 255);
+                break;
+
+            case 14: // Golden Sunset / Dusk
+                skyTop = Color.FromArgb(240, 38, 14, 30);
+                skyBottom = Color.FromArgb(240, 66, 26, 44);
+                tempGlowColor = Color.FromArgb(36, 255, 112, 67);
+                break;
+
+            case 15: // Windy / Gale / Squall
+                skyTop = Color.FromArgb(240, 12, 28, 38);
+                skyBottom = Color.FromArgb(240, 22, 48, 64);
+                tempGlowColor = Color.FromArgb(32, 80, 220, 235);
+                break;
+
+            default:
+                skyTop = Color.FromArgb(240, 11, 23, 40);
+                skyBottom = Color.FromArgb(240, 18, 52, 75);
+                tempGlowColor = Color.FromArgb(32, 255, 210, 80);
                 break;
         }
 
@@ -5059,12 +5429,10 @@ internal sealed class OverlayForm : Form
                         g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
                     }
 
-                    using (var penOrbit = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
+                    using (var penOrbit1 = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
                     {
-                        float o1R = sunR + 10f * superScale;
-                        g.DrawArc(penOrbit, sunCx - o1R, sunCy - o1R, o1R * 2f, o1R * 2f, 130, 200);
-                        float o2R = sunR + 22f * superScale;
-                        g.DrawArc(penOrbit, sunCx - o2R, sunCy - o2R, o2R * 2f, o2R * 2f, 145, 170);
+                        float oR = sunR + 10f * superScale;
+                        g.DrawArc(penOrbit1, sunCx - oR, sunCy - oR, oR * 2f, oR * 2f, 190, 160);
                     }
 
                     using (var penTangent = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
@@ -5079,175 +5447,7 @@ internal sealed class OverlayForm : Form
                     break;
                 }
 
-                case 2: // Rain & Thunderstorm: Dark Petrol Horizons, Slate Clouds, Diagonal Rain, Lightning Bolt
-                {
-                    DrawTabHorizons(g, superScale, wX, artW, groundY,
-                        Color.FromArgb(235, 18, 28, 38),
-                        Color.FromArgb(245, 27, 42, 56),
-                        Color.FromArgb(255, 38, 62, 82));
-
-                    // Two Large Overlapping Constructivist Cloud Disks
-                    float c1X = wX + 42f * superScale;
-                    float c1Y = wY + 32f * superScale;
-                    float c1R = 21f * superScale;
-
-                    float c2X = wX + 74f * superScale;
-                    float c2Y = wY + 36f * superScale;
-                    float c2R = 19f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
-                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
-
-                    // 65-deg Diagonal Constructivist Rain Dashes
-                    using (var penRainCyan = new Pen(Color.FromArgb(210, 64, 196, 255), 1.2f * superScale))
-                    using (var penRainWhite = new Pen(Color.FromArgb(160, 255, 255, 255), 1.1f * superScale))
-                    {
-                        float dx = 10f * superScale;
-                        float dy = 22f * superScale;
-                        for (int line = 0; line < 6; line++)
-                        {
-                            float lx = wX + 16f * superScale + line * 16f * superScale;
-                            float ly = wY + 48f * superScale + (line % 2) * 6f * superScale;
-                            var penR = (line % 2 == 0) ? penRainCyan : penRainWhite;
-                            g.DrawLine(penR, lx, ly, lx - dx, ly + dy);
-                        }
-                    }
-
-                    // Powerful Angular Constructivist Lightning Bolt
-                    using (var brushBolt = new SolidBrush(Color.FromArgb(255, 255, 215, 20)))
-                    using (var penBolt = new Pen(Color.FromArgb(255, 255, 255, 220), 1.0f * superScale))
-                    {
-                        float bx = wX + 58f * superScale;
-                        float by = wY + 28f * superScale;
-                        PointF[] boltPts = {
-                            new PointF(bx, by),
-                            new PointF(bx - 6f * superScale, by + 16f * superScale),
-                            new PointF(bx - 1f * superScale, by + 16f * superScale),
-                            new PointF(bx - 9f * superScale, by + 36f * superScale),
-                            new PointF(bx + 3f * superScale, by + 19f * superScale),
-                            new PointF(bx - 2f * superScale, by + 19f * superScale)
-                        };
-                        g.FillPolygon(brushBolt, boltPts);
-                        g.DrawPolygon(penBolt, boltPts);
-                    }
-                    break;
-                }
-
-                case 3: // Partly Cloudy: Peeking Sun, Interlocking Bauhaus Cloud Forms, Drafting Lines
-                {
-                    // Sun Peeking in Upper Right
-                    float sunCx = wX + 74f * superScale;
-                    float sunCy = wY + 28f * superScale;
-                    float sunR = 15f * superScale;
-
-                    using (var brushSun = new LinearGradientBrush(
-                        new PointF(sunCx - sunR, sunCy - sunR),
-                        new PointF(sunCx + sunR, sunCy + sunR),
-                        Color.FromArgb(255, 255, 220, 75),
-                        Color.FromArgb(255, 248, 138, 24)))
-                    {
-                        g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
-                    }
-
-                    using (var penOrbit = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.DrawArc(penOrbit, sunCx - 22f * superScale, sunCy - 22f * superScale, 44f * superScale, 44f * superScale, 160, 160);
-                    }
-
-                    DrawTabHorizons(g, superScale, wX, artW, groundY,
-                        Color.FromArgb(235, 24, 48, 58),
-                        Color.FromArgb(245, 36, 70, 84),
-                        Color.FromArgb(255, 54, 100, 116));
-
-                    // Overlapping Bauhaus Frosted Cloud Disks
-                    float c1X = wX + 44f * superScale;
-                    float c1Y = wY + 40f * superScale;
-                    float c1R = 21f * superScale;
-
-                    float c2X = wX + 68f * superScale;
-                    float c2Y = wY + 46f * superScale;
-                    float c2R = 18f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 64, 84, 110)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 82, 106, 136)))
-                    using (var penCRim = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
-
-                    // 3 Horizontal Stratum Drafting Lines
-                    using (var penStratum = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
-                    using (var brushNode = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
-                    {
-                        float l1Y = wY + 68f * superScale;
-                        g.DrawLine(penStratum, wX + 8f * superScale, l1Y, wX + artW - 12f * superScale, l1Y);
-                        g.FillEllipse(brushNode, wX + 28f * superScale, l1Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
-
-                        float l2Y = wY + 74f * superScale;
-                        g.DrawLine(penStratum, wX + 18f * superScale, l2Y, wX + artW - 24f * superScale, l2Y);
-                        g.FillEllipse(brushNode, wX + artW - 36f * superScale, l2Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
-                    }
-                    break;
-                }
-
-                case 4: // Snow & Frost: Nordic Ice Horizons, Central 6-Arm Snowflake, Falling Snow Particles
-                {
-                    DrawTabHorizons(g, superScale, wX, artW, groundY,
-                        Color.FromArgb(235, 24, 54, 86),
-                        Color.FromArgb(245, 36, 80, 122),
-                        Color.FromArgb(255, 68, 134, 182));
-
-                    float sCx = wX + artW * 0.5f;
-                    float sCy = wY + 36f * superScale;
-                    float spokeLen = 16f * superScale;
-
-                    using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-                    using (var penSpoke = new Pen(Color.FromArgb(245, 255, 255, 255), 1.3f * superScale))
-                    {
-                        g.FillEllipse(brushNode, sCx - 2.8f * superScale, sCy - 2.8f * superScale, 5.6f * superScale, 5.6f * superScale);
-                        for (int a = 0; a < 6; a++)
-                        {
-                            double rad = a * Math.PI / 3.0;
-                            float cos = (float)Math.Cos(rad);
-                            float sin = (float)Math.Sin(rad);
-                            float ex = sCx + spokeLen * cos;
-                            float ey = sCy + spokeLen * sin;
-                            g.DrawLine(penSpoke, sCx, sCy, ex, ey);
-                            g.FillEllipse(brushNode, ex - 1.8f * superScale, ey - 1.8f * superScale, 3.6f * superScale, 3.6f * superScale);
-
-                            float bx = sCx + spokeLen * 0.55f * cos;
-                            float by = sCy + spokeLen * 0.55f * sin;
-                            float bLen = 5.0f * superScale;
-                            g.DrawLine(penSpoke, bx, by, bx + bLen * (float)Math.Cos(rad + Math.PI / 4.0), by + bLen * (float)Math.Sin(rad + Math.PI / 4.0));
-                            g.DrawLine(penSpoke, bx, by, bx + bLen * (float)Math.Cos(rad - Math.PI / 4.0), by + bLen * (float)Math.Sin(rad - Math.PI / 4.0));
-                        }
-                    }
-
-                    // Floating Snow Particles
-                    using (var brushSnow = new SolidBrush(Color.FromArgb(225, 255, 255, 255)))
-                    {
-                        g.FillEllipse(brushSnow, wX + 16f * superScale, wY + 16f * superScale, 3.5f * superScale, 3.5f * superScale);
-                        g.FillEllipse(brushSnow, wX + 94f * superScale, wY + 22f * superScale, 2.5f * superScale, 2.5f * superScale);
-                        g.FillEllipse(brushSnow, wX + 22f * superScale, wY + 54f * superScale, 4.0f * superScale, 4.0f * superScale);
-                        g.FillEllipse(brushSnow, wX + 88f * superScale, wY + 58f * superScale, 3.0f * superScale, 3.0f * superScale);
-                        g.FillEllipse(brushSnow, wX + 38f * superScale, wY + 68f * superScale, 2.2f * superScale, 2.2f * superScale);
-                    }
-                    break;
-                }
-
-                case 5: // Clear Night: Midnight Violet Horizons, Geometric Crescent Moon, Orbit Ring, Starbursts
+                case 2: // Clear Night: Midnight Violet Horizons, Geometric Crescent Moon, Orbit Ring, Starbursts
                 {
                     DrawTabHorizons(g, superScale, wX, artW, groundY,
                         Color.FromArgb(235, 18, 14, 40),
@@ -5293,7 +5493,501 @@ internal sealed class OverlayForm : Form
                     break;
                 }
 
-                case 6: // Golden Sunset: Sinking Sun with Constructivist Slits, Dusk Ray, Dusky Horizons
+                case 3: // Partly Cloudy Day: Peeking Sun, Interlocking Bauhaus Cloud Forms, Drafting Lines
+                {
+                    float sunCx = wX + 74f * superScale;
+                    float sunCy = wY + 28f * superScale;
+                    float sunR = 15f * superScale;
+
+                    using (var brushSun = new LinearGradientBrush(
+                        new PointF(sunCx - sunR, sunCy - sunR),
+                        new PointF(sunCx + sunR, sunCy + sunR),
+                        Color.FromArgb(255, 255, 220, 75),
+                        Color.FromArgb(255, 248, 138, 24)))
+                    {
+                        g.FillEllipse(brushSun, sunCx - sunR, sunCy - sunR, sunR * 2f, sunR * 2f);
+                    }
+
+                    using (var penOrbit = new Pen(Color.FromArgb(75, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.DrawArc(penOrbit, sunCx - 22f * superScale, sunCy - 22f * superScale, 44f * superScale, 44f * superScale, 160, 160);
+                    }
+
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 24, 48, 58),
+                        Color.FromArgb(245, 36, 70, 84),
+                        Color.FromArgb(255, 54, 100, 116));
+
+                    float c1X = wX + 44f * superScale;
+                    float c1Y = wY + 40f * superScale;
+                    float c1R = 21f * superScale;
+
+                    float c2X = wX + 68f * superScale;
+                    float c2Y = wY + 46f * superScale;
+                    float c2R = 18f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 64, 84, 110)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 82, 106, 136)))
+                    using (var penCRim = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                    }
+
+                    using (var penStratum = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
+                    using (var brushNode = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                    {
+                        float l1Y = wY + 68f * superScale;
+                        g.DrawLine(penStratum, wX + 8f * superScale, l1Y, wX + artW - 12f * superScale, l1Y);
+                        g.FillEllipse(brushNode, wX + 28f * superScale, l1Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
+
+                        float l2Y = wY + 74f * superScale;
+                        g.DrawLine(penStratum, wX + 18f * superScale, l2Y, wX + artW - 24f * superScale, l2Y);
+                        g.FillEllipse(brushNode, wX + artW - 36f * superScale, l2Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
+                    }
+                    break;
+                }
+
+                case 4: // Partly Cloudy Night: Peeking Moon, Nocturnal Clouds, Starlight
+                {
+                    float mCx = wX + 74f * superScale;
+                    float mCy = wY + 28f * superScale;
+                    float moonR = 14f * superScale;
+
+                    using (var pathMoon = new GraphicsPath())
+                    {
+                        pathMoon.AddArc(mCx - moonR, mCy - moonR, moonR * 2f, moonR * 2f, -110, 220);
+                        float innerR = moonR * 1.15f;
+                        float innerOffset = 7.5f * superScale;
+                        pathMoon.AddArc(mCx - innerR + innerOffset, mCy - innerR, innerR * 2f, innerR * 2f, 85, -170);
+                        pathMoon.CloseFigure();
+
+                        using var brushMoon = new SolidBrush(Color.FromArgb(255, 255, 240, 180));
+                        g.FillPath(brushMoon, pathMoon);
+                    }
+
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 16, 18, 38),
+                        Color.FromArgb(245, 24, 28, 54),
+                        Color.FromArgb(255, 36, 42, 78));
+
+                    float c1X = wX + 44f * superScale;
+                    float c1Y = wY + 42f * superScale;
+                    float c1R = 21f * superScale;
+                    float c2X = wX + 68f * superScale;
+                    float c2Y = wY + 48f * superScale;
+                    float c2R = 18f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 28, 32, 56)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 38, 42, 72)))
+                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                    }
+
+                    DrawBauhausStar(g, superScale, wX + 22f * superScale, wY + 24f * superScale, 5.0f * superScale);
+                    DrawBauhausStar(g, superScale, wX + 32f * superScale, wY + 64f * superScale, 3.5f * superScale);
+                    break;
+                }
+
+                case 5: // Overcast: Monochromatic Lead Cloud Strata, Dense Slabs
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 32, 38, 48),
+                        Color.FromArgb(245, 44, 52, 64),
+                        Color.FromArgb(255, 58, 68, 82));
+
+                    float c1X = wX + 38f * superScale;
+                    float c1Y = wY + 36f * superScale;
+                    float c1R = 24f * superScale;
+
+                    float c2X = wX + 74f * superScale;
+                    float c2Y = wY + 40f * superScale;
+                    float c2R = 21f * superScale;
+
+                    float c3X = wX + 56f * superScale;
+                    float c3Y = wY + 54f * superScale;
+                    float c3R = 19f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 52, 60, 72)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 68, 78, 92)))
+                    using (var brushC3 = new SolidBrush(Color.FromArgb(250, 84, 96, 110)))
+                    using (var penCRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+
+                        g.FillEllipse(brushC3, c3X - c3R, c3Y - c3R, c3R * 2f, c3R * 2f);
+                        g.DrawEllipse(penCRim, c3X - c3R, c3Y - c3R, c3R * 2f, c3R * 2f);
+                    }
+
+                    using (var penStratum = new Pen(Color.FromArgb(70, 255, 255, 255), 1.2f * superScale))
+                    using (var brushNode = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
+                    {
+                        float l1Y = wY + 70f * superScale;
+                        g.DrawLine(penStratum, wX + 10f * superScale, l1Y, wX + artW - 14f * superScale, l1Y);
+                        g.FillEllipse(brushNode, wX + 32f * superScale, l1Y - 1.5f * superScale, 3f * superScale, 3f * superScale);
+
+                        float l2Y = wY + 78f * superScale;
+                        g.DrawLine(penStratum, wX + 22f * superScale, l2Y, wX + artW - 20f * superScale, l2Y);
+                    }
+                    break;
+                }
+
+                case 6: // Fog & Mist: Slotted Translucent Scanline Bands, Diffuse Phantom Circles
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 26, 46, 44),
+                        Color.FromArgb(245, 36, 62, 58),
+                        Color.FromArgb(255, 50, 84, 78));
+
+                    using (var brushPhantom1 = new SolidBrush(Color.FromArgb(45, 180, 230, 220)))
+                    using (var brushPhantom2 = new SolidBrush(Color.FromArgb(35, 160, 220, 210)))
+                    {
+                        g.FillEllipse(brushPhantom1, wX + 32f * superScale, wY + 24f * superScale, 38f * superScale, 38f * superScale);
+                        g.FillEllipse(brushPhantom2, wX + 62f * superScale, wY + 34f * superScale, 30f * superScale, 30f * superScale);
+                    }
+
+                    using (var penScan = new Pen(Color.FromArgb(90, 210, 255, 245), 1.6f * superScale))
+                    {
+                        for (int b = 0; b < 6; b++)
+                        {
+                            float sy = wY + 22f * superScale + b * 10f * superScale;
+                            float sx1 = wX + 12f * superScale + (b % 2) * 12f * superScale;
+                            float sx2 = wX + artW - 12f * superScale - ((b + 1) % 2) * 10f * superScale;
+                            g.DrawLine(penScan, sx1, sy, sx2, sy);
+                        }
+                    }
+                    break;
+                }
+
+                case 7: // Drizzle & Light Rain: Delicate 45-deg Micro-Dash Grid, Ground Ripple
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 22, 38, 52),
+                        Color.FromArgb(245, 32, 54, 72),
+                        Color.FromArgb(255, 46, 74, 98));
+
+                    float c1X = wX + 42f * superScale;
+                    float c1Y = wY + 32f * superScale;
+                    float c1R = 20f * superScale;
+
+                    float c2X = wX + 72f * superScale;
+                    float c2Y = wY + 36f * superScale;
+                    float c2R = 17f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 42, 64, 86)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 58, 86, 114)))
+                    using (var penCRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                    }
+
+                    using (var penDrizzle = new Pen(Color.FromArgb(200, 80, 210, 255), 1.1f * superScale))
+                    {
+                        float dx = 6f * superScale;
+                        float dy = 10f * superScale;
+                        for (int line = 0; line < 8; line++)
+                        {
+                            float lx = wX + 16f * superScale + line * 12f * superScale;
+                            float ly = wY + 46f * superScale + (line % 2) * 5f * superScale;
+                            g.DrawLine(penDrizzle, lx, ly, lx - dx, ly + dy);
+                        }
+                    }
+
+                    // Concentric ripple ellipse on ground
+                    using (var penRipple = new Pen(Color.FromArgb(100, 100, 220, 255), 1.0f * superScale))
+                    {
+                        g.DrawEllipse(penRipple, wX + 38f * superScale, groundY - 6f * superScale, 36f * superScale, 8f * superScale);
+                    }
+                    break;
+                }
+
+                case 8: // Rain & Downpour: Dark Petrol Horizons, Dense 65-deg Cyan Rain Streaks
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 18, 28, 38),
+                        Color.FromArgb(245, 27, 42, 56),
+                        Color.FromArgb(255, 38, 62, 82));
+
+                    float c1X = wX + 42f * superScale;
+                    float c1Y = wY + 32f * superScale;
+                    float c1R = 21f * superScale;
+
+                    float c2X = wX + 74f * superScale;
+                    float c2Y = wY + 36f * superScale;
+                    float c2R = 19f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
+                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                    }
+
+                    using (var penRainCyan = new Pen(Color.FromArgb(220, 64, 196, 255), 1.3f * superScale))
+                    using (var penRainWhite = new Pen(Color.FromArgb(170, 255, 255, 255), 1.1f * superScale))
+                    {
+                        float dx = 10f * superScale;
+                        float dy = 24f * superScale;
+                        for (int line = 0; line < 7; line++)
+                        {
+                            float lx = wX + 16f * superScale + line * 14f * superScale;
+                            float ly = wY + 48f * superScale + (line % 2) * 6f * superScale;
+                            var penR = (line % 2 == 0) ? penRainCyan : penRainWhite;
+                            g.DrawLine(penR, lx, ly, lx - dx, ly + dy);
+                        }
+                    }
+                    break;
+                }
+
+                case 9: // Freezing Rain & Sleet: Glacier Teal, Diamond Ice Crystals, Shard Lines
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 20, 44, 60),
+                        Color.FromArgb(245, 28, 62, 82),
+                        Color.FromArgb(255, 42, 88, 114));
+
+                    float c1X = wX + 42f * superScale;
+                    float c1Y = wY + 32f * superScale;
+                    float c1R = 21f * superScale;
+                    float c2X = wX + 74f * superScale;
+                    float c2Y = wY + 36f * superScale;
+                    float c2R = 19f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(235, 38, 66, 88)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 52, 92, 122)))
+                    using (var penCRim = new Pen(Color.FromArgb(110, 180, 240, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                    }
+
+                    using (var penSleet = new Pen(Color.FromArgb(220, 140, 230, 255), 1.2f * superScale))
+                    using (var brushDiamond = new SolidBrush(Color.FromArgb(240, 200, 245, 255)))
+                    {
+                        float dx = 8f * superScale;
+                        float dy = 20f * superScale;
+                        for (int s = 0; s < 6; s++)
+                        {
+                            float lx = wX + 18f * superScale + s * 15f * superScale;
+                            float ly = wY + 46f * superScale + (s % 2) * 6f * superScale;
+                            g.DrawLine(penSleet, lx, ly, lx - dx, ly + dy);
+                            float tipX = lx - dx;
+                            float tipY = ly + dy;
+                            PointF[] dPts = {
+                                new PointF(tipX, tipY - 3.2f * superScale),
+                                new PointF(tipX + 2.6f * superScale, tipY),
+                                new PointF(tipX, tipY + 3.2f * superScale),
+                                new PointF(tipX - 2.6f * superScale, tipY)
+                            };
+                            g.FillPolygon(brushDiamond, dPts);
+                        }
+                    }
+                    break;
+                }
+
+                case 10: // Light Snow & Flurries: Pastel Azure, 4-Arm Snowflake, Snow Particles
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 24, 50, 74),
+                        Color.FromArgb(245, 34, 70, 102),
+                        Color.FromArgb(255, 48, 96, 138));
+
+                    float sCx = wX + artW * 0.5f;
+                    float sCy = wY + 36f * superScale;
+                    float sR = 14f * superScale;
+
+                    using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                    using (var penSpoke = new Pen(Color.FromArgb(240, 255, 255, 255), 1.3f * superScale))
+                    {
+                        g.FillEllipse(brushNode, sCx - 2.6f * superScale, sCy - 2.6f * superScale, 5.2f * superScale, 5.2f * superScale);
+                        g.DrawLine(penSpoke, sCx - sR, sCy, sCx + sR, sCy);
+                        g.DrawLine(penSpoke, sCx, sCy - sR, sCx, sCy + sR);
+
+                        float cLen = 4.5f * superScale;
+                        g.DrawLine(penSpoke, sCx - sR, sCy - cLen, sCx - sR, sCy + cLen);
+                        g.DrawLine(penSpoke, sCx + sR, sCy - cLen, sCx + sR, sCy + cLen);
+                        g.DrawLine(penSpoke, sCx - cLen, sCy - sR, sCx + cLen, sCy - sR);
+                        g.DrawLine(penSpoke, sCx - cLen, sCy + sR, sCx + cLen, sCy + sR);
+                    }
+
+                    using (var brushSnow = new SolidBrush(Color.FromArgb(220, 255, 255, 255)))
+                    {
+                        g.FillEllipse(brushSnow, wX + 16f * superScale, wY + 18f * superScale, 3.2f * superScale, 3.2f * superScale);
+                        g.FillEllipse(brushSnow, wX + 92f * superScale, wY + 24f * superScale, 2.6f * superScale, 2.6f * superScale);
+                        g.FillEllipse(brushSnow, wX + 24f * superScale, wY + 54f * superScale, 3.8f * superScale, 3.8f * superScale);
+                        g.FillEllipse(brushSnow, wX + 88f * superScale, wY + 60f * superScale, 2.8f * superScale, 2.8f * superScale);
+                    }
+                    break;
+                }
+
+                case 11: // Heavy Snow & Blizzard: Nordic Ice Horizons, 6-Arm Snowflake, Blizzard Streaks
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 24, 54, 86),
+                        Color.FromArgb(245, 36, 80, 122),
+                        Color.FromArgb(255, 68, 134, 182));
+
+                    float sCx = wX + artW * 0.5f;
+                    float sCy = wY + 36f * superScale;
+                    float spokeLen = 16f * superScale;
+
+                    using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                    using (var penSpoke = new Pen(Color.FromArgb(245, 255, 255, 255), 1.3f * superScale))
+                    {
+                        g.FillEllipse(brushNode, sCx - 2.8f * superScale, sCy - 2.8f * superScale, 5.6f * superScale, 5.6f * superScale);
+                        for (int a = 0; a < 6; a++)
+                        {
+                            double rad = a * Math.PI / 3.0;
+                            float cos = (float)Math.Cos(rad);
+                            float sin = (float)Math.Sin(rad);
+                            float ex = sCx + spokeLen * cos;
+                            float ey = sCy + spokeLen * sin;
+                            g.DrawLine(penSpoke, sCx, sCy, ex, ey);
+                            g.FillEllipse(brushNode, ex - 1.8f * superScale, ey - 1.8f * superScale, 3.6f * superScale, 3.6f * superScale);
+
+                            float bx = sCx + spokeLen * 0.55f * cos;
+                            float by = sCy + spokeLen * 0.55f * sin;
+                            float bLen = 5.0f * superScale;
+                            g.DrawLine(penSpoke, bx, by, bx + bLen * (float)Math.Cos(rad + Math.PI / 4.0), by + bLen * (float)Math.Sin(rad + Math.PI / 4.0));
+                            g.DrawLine(penSpoke, bx, by, bx + bLen * (float)Math.Cos(rad - Math.PI / 4.0), by + bLen * (float)Math.Sin(rad - Math.PI / 4.0));
+                        }
+                    }
+
+                    using (var penFlurry = new Pen(Color.FromArgb(180, 240, 255, 255), 1.2f * superScale))
+                    {
+                        g.DrawLine(penFlurry, wX + 12f * superScale, wY + 20f * superScale, wX + 38f * superScale, wY + 28f * superScale);
+                        g.DrawLine(penFlurry, wX + 74f * superScale, wY + 62f * superScale, wX + 104f * superScale, wY + 70f * superScale);
+                    }
+
+                    using (var brushSnow = new SolidBrush(Color.FromArgb(225, 255, 255, 255)))
+                    {
+                        g.FillEllipse(brushSnow, wX + 16f * superScale, wY + 16f * superScale, 3.5f * superScale, 3.5f * superScale);
+                        g.FillEllipse(brushSnow, wX + 94f * superScale, wY + 22f * superScale, 2.5f * superScale, 2.5f * superScale);
+                        g.FillEllipse(brushSnow, wX + 22f * superScale, wY + 54f * superScale, 4.0f * superScale, 4.0f * superScale);
+                        g.FillEllipse(brushSnow, wX + 88f * superScale, wY + 58f * superScale, 3.0f * superScale, 3.0f * superScale);
+                    }
+                    break;
+                }
+
+                case 12: // Thunderstorm: Storm Clouds, Rain Dashes, Electric Gold Lightning Bolt
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 18, 28, 38),
+                        Color.FromArgb(245, 27, 42, 56),
+                        Color.FromArgb(255, 38, 62, 82));
+
+                    float c1X = wX + 42f * superScale;
+                    float c1Y = wY + 32f * superScale;
+                    float c1R = 21f * superScale;
+
+                    float c2X = wX + 74f * superScale;
+                    float c2Y = wY + 36f * superScale;
+                    float c2R = 19f * superScale;
+
+                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
+                    using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
+                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
+                    {
+                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
+
+                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
+                    }
+
+                    using (var penRainCyan = new Pen(Color.FromArgb(210, 64, 196, 255), 1.2f * superScale))
+                    {
+                        float dx = 10f * superScale;
+                        float dy = 22f * superScale;
+                        for (int line = 0; line < 6; line++)
+                        {
+                            float lx = wX + 16f * superScale + line * 16f * superScale;
+                            float ly = wY + 48f * superScale + (line % 2) * 6f * superScale;
+                            g.DrawLine(penRainCyan, lx, ly, lx - dx, ly + dy);
+                        }
+                    }
+
+                    using (var brushBolt = new SolidBrush(Color.FromArgb(255, 255, 215, 20)))
+                    using (var penBolt = new Pen(Color.FromArgb(255, 255, 255, 220), 1.0f * superScale))
+                    {
+                        float bx = wX + 58f * superScale;
+                        float by = wY + 28f * superScale;
+                        PointF[] boltPts = {
+                            new PointF(bx, by),
+                            new PointF(bx - 6f * superScale, by + 16f * superScale),
+                            new PointF(bx - 1f * superScale, by + 16f * superScale),
+                            new PointF(bx - 9f * superScale, by + 36f * superScale),
+                            new PointF(bx + 3f * superScale, by + 19f * superScale),
+                            new PointF(bx - 2f * superScale, by + 19f * superScale)
+                        };
+                        g.FillPolygon(brushBolt, boltPts);
+                        g.DrawPolygon(penBolt, boltPts);
+                    }
+                    break;
+                }
+
+                case 13: // Severe Hailstorm: Violent Purple Horizon, Angular Lightning, Faceted Hail Hexagons
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 36, 20, 48),
+                        Color.FromArgb(245, 52, 28, 68),
+                        Color.FromArgb(255, 74, 40, 96));
+
+                    using (var penBolt = new Pen(Color.FromArgb(255, 120, 240, 255), 1.5f * superScale))
+                    {
+                        PointF[] boltLine1 = {
+                            new PointF(wX + 46f * superScale, wY + 22f * superScale),
+                            new PointF(wX + 38f * superScale, wY + 38f * superScale),
+                            new PointF(wX + 44f * superScale, wY + 40f * superScale),
+                            new PointF(wX + 32f * superScale, wY + 64f * superScale)
+                        };
+                        g.DrawLines(penBolt, boltLine1);
+                    }
+
+                    using (var brushHail = new SolidBrush(Color.FromArgb(240, 225, 248, 255)))
+                    using (var penHail = new Pen(Color.FromArgb(255, 255, 255, 255), 1.0f * superScale))
+                    {
+                        float[] hx = { wX + 22f * superScale, wX + 64f * superScale, wX + 88f * superScale, wX + 52f * superScale };
+                        float[] hy = { wY + 36f * superScale, wY + 26f * superScale, wY + 48f * superScale, wY + 66f * superScale };
+                        float[] hr = { 4.0f * superScale, 4.8f * superScale, 4.2f * superScale, 3.6f * superScale };
+
+                        for (int k = 0; k < 4; k++)
+                        {
+                            PointF[] hex = new PointF[6];
+                            for (int a = 0; a < 6; a++)
+                            {
+                                double rad = a * Math.PI / 3.0;
+                                hex[a] = new PointF(hx[k] + hr[k] * (float)Math.Cos(rad), hy[k] + hr[k] * (float)Math.Sin(rad));
+                            }
+                            g.FillPolygon(brushHail, hex);
+                            g.DrawPolygon(penHail, hex);
+                        }
+                    }
+                    break;
+                }
+
+                case 14: // Golden Sunset: Sinking Sun with Constructivist Slits, Dusk Ray, Dusky Horizons
                 {
                     DrawTabHorizons(g, superScale, wX, artW, groundY,
                         Color.FromArgb(235, 48, 20, 42),
@@ -5324,6 +6018,44 @@ internal sealed class OverlayForm : Form
                     using (var penTangent = new Pen(Color.FromArgb(85, 255, 180, 100), 1.1f * superScale))
                     {
                         g.DrawLine(penTangent, wX - 8f * superScale, wY + artH + 8f * superScale, wX + artW + 8f * superScale, wY - 8f * superScale);
+                    }
+                    break;
+                }
+
+                case 15: // Windy / Gale / Squall: Sweeping Aerodynamic Streamline Vector Bands
+                {
+                    DrawTabHorizons(g, superScale, wX, artW, groundY,
+                        Color.FromArgb(235, 20, 48, 62),
+                        Color.FromArgb(245, 30, 70, 88),
+                        Color.FromArgb(255, 44, 98, 122));
+
+                    using (var penWind = new Pen(Color.FromArgb(220, 80, 220, 235), 1.6f * superScale))
+                    using (var brushNode = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
+                    {
+                        penWind.StartCap = LineCap.Round;
+                        penWind.EndCap = LineCap.Round;
+
+                        // Streamline 1
+                        g.DrawArc(penWind, wX + 10f * superScale, wY + 18f * superScale, 60f * superScale, 28f * superScale, 180, 150);
+                        g.FillEllipse(brushNode, wX + 68f * superScale, wY + 24f * superScale, 4f * superScale, 4f * superScale);
+
+                        // Streamline 2
+                        g.DrawArc(penWind, wX + 24f * superScale, wY + 38f * superScale, 66f * superScale, 26f * superScale, 190, 140);
+                        g.FillEllipse(brushNode, wX + 88f * superScale, wY + 44f * superScale, 3.5f * superScale, 3.5f * superScale);
+
+                        // Streamline 3
+                        g.DrawArc(penWind, wX + 14f * superScale, wY + 56f * superScale, 54f * superScale, 22f * superScale, 180, 130);
+                    }
+
+                    // Top arrowhead
+                    using (var brushArrow = new SolidBrush(Color.FromArgb(230, 80, 220, 235)))
+                    {
+                        PointF[] arrow = {
+                            new PointF(wX + 72f * superScale, wY + 24f * superScale),
+                            new PointF(wX + 66f * superScale, wY + 20f * superScale),
+                            new PointF(wX + 66f * superScale, wY + 28f * superScale)
+                        };
+                        g.FillPolygon(brushArrow, arrow);
                     }
                     break;
                 }
@@ -5414,21 +6146,21 @@ internal sealed class OverlayForm : Form
             if (i == 0)
             {
                 // Chip 1 Icon
-                if (condition == 2) // Precip Rain Drops
+                if (condition is 7 or 8) // Precip Rain Drops
                 {
                     using var penDrop = new Pen(Color.FromArgb(220, 64, 196, 255), 1.3f * superScale);
                     g.DrawLine(penDrop, glyphX + 2f * superScale, glyphY - 4f * superScale, glyphX, glyphY + 2f * superScale);
                     g.DrawLine(penDrop, glyphX + 7f * superScale, glyphY - 6f * superScale, glyphX + 5f * superScale, glyphY);
                     g.DrawLine(penDrop, glyphX + 11f * superScale, glyphY - 3f * superScale, glyphX + 9f * superScale, glyphY + 3f * superScale);
                 }
-                else if (condition == 4) // Snowflake
+                else if (condition is 10 or 11) // Snowflake
                 {
                     using var penSnow = new Pen(Color.FromArgb(240, 128, 222, 234), 1.2f * superScale);
                     g.DrawLine(penSnow, glyphX + 2f * superScale, glyphY, glyphX + 10f * superScale, glyphY);
                     g.DrawLine(penSnow, glyphX + 6f * superScale, glyphY - 4f * superScale, glyphX + 6f * superScale, glyphY + 4f * superScale);
                     g.DrawLine(penSnow, glyphX + 3f * superScale, glyphY - 3f * superScale, glyphX + 9f * superScale, glyphY + 3f * superScale);
                 }
-                else if (condition == 5) // Crescent Moon
+                else if (condition is 2 or 4) // Crescent Moon
                 {
                     using var pathM = new GraphicsPath();
                     pathM.AddArc(glyphX + 2f * superScale, glyphY - 5f * superScale, 9f * superScale, 9f * superScale, -110, 220);
@@ -5437,7 +6169,38 @@ internal sealed class OverlayForm : Form
                     using var brushM = new SolidBrush(Color.FromArgb(255, 255, 235, 160));
                     g.FillPath(brushM, pathM);
                 }
-                else if (condition == 6) // Sunset Horizon
+                else if (condition == 12) // Lightning
+                {
+                    using var brushBolt = new SolidBrush(Color.FromArgb(255, 255, 215, 20));
+                    PointF[] bPts = {
+                        new PointF(glyphX + 7f * superScale, glyphY - 6f * superScale),
+                        new PointF(glyphX + 2f * superScale, glyphY),
+                        new PointF(glyphX + 6f * superScale, glyphY),
+                        new PointF(glyphX + 1f * superScale, glyphY + 6f * superScale),
+                        new PointF(glyphX + 10f * superScale, glyphY - 1f * superScale),
+                        new PointF(glyphX + 6f * superScale, glyphY - 1f * superScale)
+                    };
+                    g.FillPolygon(brushBolt, bPts);
+                }
+                else if (condition == 13) // Hail Hexagon
+                {
+                    using var brushHail = new SolidBrush(Color.FromArgb(240, 220, 245, 255));
+                    PointF[] hex = new PointF[6];
+                    for (int a = 0; a < 6; a++)
+                    {
+                        double rad = a * Math.PI / 3.0;
+                        hex[a] = new PointF(glyphX + 6f * superScale + 4.5f * superScale * (float)Math.Cos(rad), glyphY + 4.5f * superScale * (float)Math.Sin(rad));
+                    }
+                    g.FillPolygon(brushHail, hex);
+                }
+                else if (condition == 6) // Fog Scanlines
+                {
+                    using var penFog = new Pen(Color.FromArgb(200, 180, 240, 230), 1.2f * superScale);
+                    g.DrawLine(penFog, glyphX + 1f * superScale, glyphY - 4f * superScale, glyphX + 11f * superScale, glyphY - 4f * superScale);
+                    g.DrawLine(penFog, glyphX + 3f * superScale, glyphY, glyphX + 13f * superScale, glyphY);
+                    g.DrawLine(penFog, glyphX + 1f * superScale, glyphY + 4f * superScale, glyphX + 11f * superScale, glyphY + 4f * superScale);
+                }
+                else if (condition == 14) // Sunset Horizon
                 {
                     using var penS = new Pen(Color.FromArgb(255, 255, 183, 77), 1.2f * superScale);
                     g.DrawLine(penS, glyphX + 1f * superScale, glyphY + 2f * superScale, glyphX + 11f * superScale, glyphY + 2f * superScale);
@@ -5455,7 +6218,7 @@ internal sealed class OverlayForm : Form
             else if (i == 1)
             {
                 // Chip 2 Icon: Level Bars or Wind
-                if (condition == 2) // Wind Streamlines in Chip 2 for Storm
+                if (condition is 8 or 12 or 13 or 15) // Wind Streamlines
                 {
                     using var penWind = new Pen(Color.FromArgb(220, 64, 196, 255), 1.2f * superScale);
                     penWind.StartCap = LineCap.Round;
@@ -5473,8 +6236,8 @@ internal sealed class OverlayForm : Form
             }
             else
             {
-                // Chip 3 Icon: Radiant Sun or Level Bars
-                if (condition == 2) // Humidity bars for Storm
+                // Chip 3 Icon: Radiant Sun, Level Bars, or Custom
+                if (condition is 8 or 12 or 13 or 14 or 15) // Humidity or Storm bars
                 {
                     using var brushBar = new SolidBrush(Color.FromArgb(220, 64, 196, 255));
                     g.FillRectangle(brushBar, glyphX + 1f * superScale, glyphY - 2f * superScale, 2.5f * superScale, 8f * superScale);
@@ -6100,13 +6863,24 @@ internal sealed class OverlayForm : Form
 
     public void CycleWeatherCardStyle()
     {
-        WeatherCardStyle++;
-        if (WeatherCardStyle > MaxWeatherCardStyles)
+        if (IsLiveWeatherMode)
         {
-            WeatherCardStyle = 1;
+            // First press of S enters debug preview mode starting at condition 1
+            IsLiveWeatherMode = false;
+            CurrentWeatherCondition = 1;
+        }
+        else
+        {
+            CurrentWeatherCondition++;
+            if (CurrentWeatherCondition > MaxWeatherConditions)
+            {
+                // After condition 15, return to live weather mode
+                IsLiveWeatherMode = true;
+                CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
+            }
         }
 
-        _debugStyleToastUntil = DateTime.UtcNow.AddSeconds(2.0);
+        _debugStyleToastUntil = DateTime.UtcNow.AddSeconds(2.5);
         _tabBufferCache[TabHome] = null;
         _tabBufferCache[TabWeather] = null;
         _needExpandedUpdate = true;
@@ -6643,16 +7417,17 @@ internal sealed class OverlayForm : Form
                     _currentTrack.Artist = "M83";
                 }
 
-                // 1. Capture 6 Bauhaus conditions on Home Tab
-                string[] homeNames = {
-                    "screenshot_bauhaus_sunny.png",
-                    "screenshot_bauhaus_rain.png",
-                    "screenshot_bauhaus_cloudy.png",
-                    "screenshot_bauhaus_snow.png",
-                    "screenshot_bauhaus_night.png",
-                    "screenshot_bauhaus_sunset.png"
+                // 1. Capture 15 Bauhaus conditions on Home Tab
+                string[] conditionKeys = {
+                    "sunny", "clearnight", "partlycloudyday", "partlycloudynight",
+                    "overcast", "fogmist", "drizzle", "rain", "freezingrain",
+                    "lightsnow", "heavysnow", "thunderstorm", "severehail",
+                    "sunset", "gale"
                 };
-                for (int s = 1; s <= 6; s++)
+
+                IsLiveWeatherMode = false;
+
+                for (int s = 1; s <= 15; s++)
                 {
                     try
                     {
@@ -6662,8 +7437,8 @@ internal sealed class OverlayForm : Form
                         UpdateExpandedMask();
                         var geom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
                         ProcessAndPresent(new Point(Location.X, Location.Y), geom);
-                        SaveDesktopScreenshotWithPill(homeNames[s - 1]);
-                        System.Threading.Thread.Sleep(50);
+                        SaveDesktopScreenshotWithPill($"screenshot_bauhaus_{s:D2}_{conditionKeys[s - 1]}.png");
+                        System.Threading.Thread.Sleep(40);
                     }
                     catch (Exception ex)
                     {
@@ -6671,16 +7446,8 @@ internal sealed class OverlayForm : Form
                     }
                 }
 
-                // 2. Capture 6 Bauhaus conditions on Weather Tab
-                string[] weatherNames = {
-                    "screenshot_weather_tab_sunny.png",
-                    "screenshot_weather_tab_rain.png",
-                    "screenshot_weather_tab_cloudy.png",
-                    "screenshot_weather_tab_snow.png",
-                    "screenshot_weather_tab_night.png",
-                    "screenshot_weather_tab_sunset.png"
-                };
-                for (int s = 1; s <= 6; s++)
+                // 2. Capture 15 Bauhaus conditions on Weather Tab
+                for (int s = 1; s <= 15; s++)
                 {
                     try
                     {
@@ -6690,8 +7457,8 @@ internal sealed class OverlayForm : Form
                         UpdateExpandedMask();
                         var geom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
                         ProcessAndPresent(new Point(Location.X, Location.Y), geom);
-                        SaveDesktopScreenshotWithPill(weatherNames[s - 1]);
-                        System.Threading.Thread.Sleep(50);
+                        SaveDesktopScreenshotWithPill($"screenshot_weather_tab_{s:D2}_{conditionKeys[s - 1]}.png");
+                        System.Threading.Thread.Sleep(40);
                     }
                     catch (Exception ex)
                     {
@@ -6699,8 +7466,36 @@ internal sealed class OverlayForm : Form
                     }
                 }
 
-                // Restore to Sunny
-                CurrentWeatherCondition = 1;
+                // 3. Capture Live Weather Mode (from real API!)
+                try
+                {
+                    IsLiveWeatherMode = true;
+                    CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
+
+                    // Home tab in live weather mode
+                    SwitchTab(TabHome, immediate: true);
+                    _tabBufferCache[TabHome] = null;
+                    UpdateExpandedMask();
+                    var geomHomeLive = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                    ProcessAndPresent(new Point(Location.X, Location.Y), geomHomeLive);
+                    SaveDesktopScreenshotWithPill("screenshot_live_weather_home.png");
+                    System.Threading.Thread.Sleep(40);
+
+                    // Weather tab in live weather mode
+                    SwitchTab(TabWeather, immediate: true);
+                    _tabBufferCache[TabWeather] = null;
+                    UpdateExpandedMask();
+                    var geomTabLive = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
+                    ProcessAndPresent(new Point(Location.X, Location.Y), geomTabLive);
+                    SaveDesktopScreenshotWithPill("screenshot_live_weather_tab.png");
+                    System.Threading.Thread.Sleep(40);
+                }
+                catch (Exception ex)
+                {
+                    File.WriteAllText(Path.Combine(rootDir, "live_weather_err.txt"), ex.ToString());
+                }
+
+                // Restore default live state on Home tab
                 SwitchTab(TabHome, immediate: true);
                 _tabBufferCache[TabHome] = null;
                 UpdateExpandedMask();
