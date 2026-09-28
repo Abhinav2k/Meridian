@@ -498,7 +498,7 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private sealed class TrackInfo
+    internal sealed class TrackInfo
     {
         public string Title { get; set; } = "No Media Playing";
         public string Artist { get; set; } = "Play music on Windows to control";
@@ -512,10 +512,13 @@ internal sealed class OverlayForm : Form
     {
         private GlobalSystemMediaTransportControlsSessionManager? _manager;
         private GlobalSystemMediaTransportControlsSession? _currentSession;
+        private readonly List<GlobalSystemMediaTransportControlsSession> _sessions = new();
+        private int _selectedSessionIndex = -1;
 
         public event Action? MediaUpdated;
 
         public bool HasActiveSession => _currentSession != null;
+        public int SessionCount => _sessions.Count;
         public string Title { get; private set; } = "No Media Playing";
         public string Artist { get; private set; } = "Play music on Windows to control";
         public string Album { get; private set; } = "";
@@ -582,7 +585,18 @@ internal sealed class OverlayForm : Form
         {
             try
             {
-                var session = _manager?.GetCurrentSession();
+                var sessions = _manager?.GetSessions()?.ToList() ?? new List<GlobalSystemMediaTransportControlsSession>();
+                _sessions.Clear();
+                _sessions.AddRange(sessions);
+
+                var systemSession = _manager?.GetCurrentSession();
+                GlobalSystemMediaTransportControlsSession? session = null;
+                if (_currentSession != null)
+                {
+                    session = _sessions.FirstOrDefault(candidate => candidate == _currentSession);
+                }
+                session ??= systemSession;
+                _selectedSessionIndex = session == null ? -1 : _sessions.FindIndex(candidate => candidate == session);
                 _currentSession = session;
                 if (session != null)
                 {
@@ -616,6 +630,99 @@ internal sealed class OverlayForm : Form
                 }
             }
             catch { }
+        }
+
+        public async Task<bool> SelectNextSessionAsync()
+        {
+            try
+            {
+                var sessions = _manager?.GetSessions()?.ToList() ?? new List<GlobalSystemMediaTransportControlsSession>();
+                if (sessions.Count < 2) return false;
+
+                _sessions.Clear();
+                _sessions.AddRange(sessions);
+                int currentIndex = _sessions.FindIndex(candidate => candidate == _currentSession);
+                if (currentIndex < 0) currentIndex = _selectedSessionIndex;
+                _selectedSessionIndex = (currentIndex + 1 + _sessions.Count) % _sessions.Count;
+                _currentSession = _sessions[_selectedSessionIndex];
+                RefreshPlaybackInfo();
+                await RefreshMediaPropertiesAsync();
+                RefreshTimeline();
+                MediaUpdated?.Invoke();
+                return true;
+            }
+            catch { return false; }
+        }
+
+        public async Task<bool> ResumeSpotifyAsync(TimeSpan waitTimeout)
+        {
+            try
+            {
+                if (_manager == null)
+                {
+                    await InitializeAsync();
+                }
+
+                DateTime deadline = DateTime.UtcNow + waitTimeout;
+                do
+                {
+                    var sessions = _manager?.GetSessions()?.ToList() ?? new List<GlobalSystemMediaTransportControlsSession>();
+                    var spotifySession = sessions.FirstOrDefault(IsSpotifySession);
+                    if (spotifySession != null)
+                    {
+                        SelectSession(spotifySession, sessions);
+                        var playback = spotifySession.GetPlaybackInfo();
+                        if (playback?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing)
+                        {
+                            return true;
+                        }
+
+                        if (await spotifySession.TryPlayAsync())
+                        {
+                            RefreshPlaybackInfo();
+                            return true;
+                        }
+                    }
+
+                    if (DateTime.UtcNow >= deadline) break;
+                    await Task.Delay(200);
+                }
+                while (true);
+            }
+            catch { }
+
+            return false;
+        }
+
+        private static bool IsSpotifySession(GlobalSystemMediaTransportControlsSession session) =>
+            session.SourceAppUserModelId?.Contains("spotify", StringComparison.OrdinalIgnoreCase) == true;
+
+        private void SelectSession(
+            GlobalSystemMediaTransportControlsSession session,
+            List<GlobalSystemMediaTransportControlsSession> sessions)
+        {
+            bool sessionChanged = _currentSession != session;
+            _sessions.Clear();
+            _sessions.AddRange(sessions);
+            _selectedSessionIndex = _sessions.FindIndex(candidate => candidate == session);
+            _currentSession = session;
+
+            if (sessionChanged)
+            {
+                session.MediaPropertiesChanged += (s, e) => RefreshMediaProperties();
+                session.PlaybackInfoChanged += (s, e) => RefreshPlaybackInfo();
+                session.TimelinePropertiesChanged += (s, e) => RefreshTimeline();
+            }
+
+            RefreshPlaybackInfo();
+            RefreshMediaProperties();
+            RefreshTimeline();
+        }
+
+        private async Task RefreshMediaPropertiesAsync()
+        {
+            RefreshMediaProperties();
+            await Task.CompletedTask;
         }
 
         public async void RefreshMediaProperties()
@@ -841,6 +948,7 @@ internal sealed class OverlayForm : Form
     private const int BtnPlayPause = 3;
     private const int BtnNext = 4;
     private const int BtnSleepTimer = 5;
+    private const int BtnMediaSessionNext = 6;
 
     // Expanded Audio Picker IDs
     private const int AudioBtnChip0 = 10;
@@ -872,6 +980,7 @@ internal sealed class OverlayForm : Form
     private static bool _expandedFlip = false;
     private static Bitmap? _reusableSuperBmp = null;
     private static Bitmap? _reusableFastBmp = null;
+    private static Bitmap? _tabPrecomputeBmp = null;
     private static Bitmap? _topBarBmp = null;
     private static readonly object _expandedRenderLock = new();
 
@@ -901,12 +1010,9 @@ internal sealed class OverlayForm : Form
     private const int HomeSleepBtnCancel = 4;
     private const int HomeSleepBtnMoon = 5;
 
-    // DEBUG VARIABLE:
-    // When true: Sleep timer templates (15, 30, 45) act as seconds (15s, 30s, 45s) for rapid testing,
-    // and hovering over the active moon button displays remaining seconds (e.g. "28s").
-    // When false: Standard production mode (15m, 30m, 45m) and hover displays remaining minutes (e.g. "14m").
-    public static bool DebugSleepTimerInSeconds = true;
-    public static bool DebugChronoTimerInSeconds = true;
+    // Production Timer Configuration:
+    public static bool DebugSleepTimerInSeconds = false;
+    public static bool DebugChronoTimerInSeconds = false;
 
     private static bool _sleepTimerActive = false;
     private static DateTime _sleepTimerTargetUtc = DateTime.MinValue;
@@ -914,15 +1020,15 @@ internal sealed class OverlayForm : Form
     private static bool _homeSleepPickerOpen = false;
     private static double _homeSleepExpandP = 0.0;
     private static int _hoveredHomeSleepBtn = HomeSleepBtnNone;
+    private static bool _hoveredHomeTimer = false;
     private static int _lastHoverCountdownSec = -1;
     private static bool _hoveredHomeWeather = false;
+    private static int _hoveredHomePlayerIndex = -1;
     public static int CurrentWeatherCondition = 1;
     public const int MaxWeatherConditions = 15;
     public static int WeatherCardStyle { get => CurrentWeatherCondition; set => CurrentWeatherCondition = value; }
     public const int MaxWeatherCardStyles = MaxWeatherConditions;
     public static bool IsLiveWeatherMode = true;
-    private static bool _prevSKeyDown = false;
-    private static DateTime _debugStyleToastUntil = DateTime.MinValue;
 
     // Music Tab Audio Picker & Sleep Timer States
     private static bool _audioPickerOpen = false;
@@ -940,12 +1046,13 @@ internal sealed class OverlayForm : Form
     private const int ChronoBtn5m = 2;
     private const int ChronoBtn10m = 3;
     private const int ChronoBtn15m = 4;
-    private const int ChronoBtnPlus = 5;
-    private const int ChronoBtnCancel = 6;
-    private const int ChronoBtnRunning = 7;
+    private const int ChronoBtn30m = 5;
+    private const int ChronoBtnPlus = 6;
+    private const int ChronoBtnCancel = 7;
+    private const int ChronoBtnRunning = 8;
 
     private const double ChronoActiveWidth = 76.0;
-    private const float ChronoActiveHeight = 34.0f;
+    private const float ChronoActiveHeight = 44.0f;
 
     private static bool _chronoTimerRunning = false;
     private static DateTime _chronoTimerTargetUtc = DateTime.MinValue;
@@ -959,6 +1066,61 @@ internal sealed class OverlayForm : Form
     private static float _chronoMorphFromW = 44.0f;
     private static int _hoveredChronoBtn = ChronoBtnNone;
     private static int _lastChronoRemainingSec = -1;
+
+    // ========================================================
+    // MANUAL TIMER STATE (TabChrono)
+    // ========================================================
+    private const int ManualBtnNone = 0;
+    private const int ManualBtnUpH = 1;
+    private const int ManualBtnDownH = 2;
+    private const int ManualBtnUpM = 3;
+    private const int ManualBtnDownM = 4;
+    private const int ManualBtnUpS = 5;
+    private const int ManualBtnDownS = 6;
+    private const int ManualBtnStart = 7;
+    private const int ManualBtnCancel = 8;
+    private const int ManualBtnIcon = 9;
+
+    private static int _hoveredManualBtn = ManualBtnNone;
+    private static bool _manualRunningHovered = false;
+    private static double _manualRunningHoverP = 0.0;
+    private static bool _manualTimerRunning = false;
+    private static DateTime _manualTimerTargetUtc = DateTime.MinValue;
+    private static int _manualTimerTotalSeconds = 0;
+    private static int _lastManualRemainingSec = -1;
+    private static double _manualMorphTimer = 0.0;
+
+    // Time setting components (00:00:00)
+    private static int _manualHours = 0;
+    private static int _manualMinutes = 0;
+    private static int _manualSeconds = 0;
+
+    // Roll animation timers and directions
+    private static double _animHourTimer = 0.0;
+    private static double _animHourDelta = 0.0;
+    private static double _animMinuteTimer = 0.0;
+    private static double _animMinuteDelta = 0.0;
+    private static double _animSecondTimer = 0.0;
+    private static double _animSecondDelta = 0.0;
+
+    // Press-and-hold continuous adjustment state
+    private static int _heldManualBtn = ManualBtnNone;
+    private static DateTime _manualHoldStartTime = DateTime.MinValue;
+    private static DateTime _manualNextRepeatTime = DateTime.MinValue;
+    private static bool _manualHoldDidAction = false;
+
+    // ========================================================
+    // TIMER ALARM STATE (Ring, Bell Vector, Circle Shaking, Chime)
+    // ========================================================
+    private static bool _timerAlarmActive = false;
+    private static bool _timerAlarmPendingCollapse = false;
+    private static DateTime _timerAlarmStartTime = DateTime.MinValue;
+    private static double _timerAlarmDuration = 8.0;
+    private static bool _timerAlarmDismissed = false;
+    private static DateTime _lastChimePlayTime = DateTime.MinValue;
+    private static byte[]? _bellChimeWavBytes = null;
+    private static int _lastRenderedTimerMinutes = -1;
+    private static int _lastHomeTimerRemainingSec = -1;
 
     private void SwitchTab(int newTab, bool immediate = false)
     {
@@ -982,6 +1144,7 @@ internal sealed class OverlayForm : Form
         }
         if (newTab != TabHome)
         {
+            _hoveredHomeTimer = false;
             _hoveredHomeWeather = false;
         }
         if (newTab != TabChrono)
@@ -1024,7 +1187,7 @@ internal sealed class OverlayForm : Form
             }
             var track = _currentTrack;
             var cover = GetCurrentCoverArt(track);
-            RenderFullTabBuffer(_tabBufferCache[newTab]!, newTab, track, cover, _trackProgressSeconds, _isPlaying, _isShuffle, _vinylRotationAngle, _eqBarHeights, _hoveredButton, _clickedButton, _clickAnimTimer);
+            RenderFullTabBuffer(_tabBufferCache[newTab]!, newTab, track, cover, _trackProgressSeconds, _isPlaying, _isShuffle, _vinylRotationAngle, _eqBarHeights, _hoveredButton, _clickedButton, _clickAnimTimer, _sysMedia.SessionCount);
         }
         Array.Copy(_tabBufferCache[newTab]!, _currContentSnapshot, 460 * 150);
 
@@ -1192,7 +1355,7 @@ internal sealed class OverlayForm : Form
             // 2. Idle hover expansion / collapse spring
             if (!_chronoTimerRunning)
             {
-                double targetW = _chronoTimerHovered ? 200.0 : 44.0;
+                double targetW = _chronoTimerHovered ? 372.0 : 44.0;
                 double diff = targetW - _chronoTimerAnimWidth;
                 if (Math.Abs(diff) > 0.1)
                 {
@@ -1247,7 +1410,10 @@ internal sealed class OverlayForm : Form
                 _chronoMorphTimer = 0.25;
                 _chronoMorphFromW = (float)_chronoTimerAnimWidth;
                 _lastChronoRemainingSec = -1;
+                _tabBufferCache[TabHome] = null;
+                _lastHomeTimerRemainingSec = -1;
                 chronoChanged = true;
+                TriggerTimerAlarm();
             }
             else
             {
@@ -1264,11 +1430,236 @@ internal sealed class OverlayForm : Form
             _lastChronoRemainingSec = -1;
         }
 
+        // 5. Manual Timer height morph
+        if (_manualMorphTimer > 0.0)
+        {
+            _manualMorphTimer -= dt;
+            if (_manualMorphTimer <= 0.0)
+            {
+                _manualMorphTimer = 0.0;
+            }
+            chronoChanged = true;
+        }
+
+        // 6. Manual Timer number roll animations
+        if (_animHourTimer > 0.0)
+        {
+            _animHourTimer -= dt;
+            if (_animHourTimer <= 0.0) _animHourTimer = 0.0;
+            chronoChanged = true;
+        }
+        if (_animMinuteTimer > 0.0)
+        {
+            _animMinuteTimer -= dt;
+            if (_animMinuteTimer <= 0.0) _animMinuteTimer = 0.0;
+            chronoChanged = true;
+        }
+        if (_animSecondTimer > 0.0)
+        {
+            _animSecondTimer -= dt;
+            if (_animSecondTimer <= 0.0) _animSecondTimer = 0.0;
+            chronoChanged = true;
+        }
+
+        // 7. Manual Timer running hover cross-fade
+        if (_manualTimerRunning)
+        {
+            double targetHover = _manualRunningHovered ? 1.0 : 0.0;
+            double hDiff = targetHover - _manualRunningHoverP;
+            if (Math.Abs(hDiff) > 0.005)
+            {
+                _manualRunningHoverP += hDiff * Math.Min(1.0, 18.0 * dt);
+                if (Math.Abs(targetHover - _manualRunningHoverP) < 0.005)
+                {
+                    _manualRunningHoverP = targetHover;
+                }
+                chronoChanged = true;
+            }
+        }
+        else if (_manualRunningHoverP > 0.0)
+        {
+            _manualRunningHoverP = 0.0;
+            chronoChanged = true;
+        }
+
+        // 8. Manual Timer live countdown ticker & expiration check
+        if (_manualTimerRunning && _manualTimerTargetUtc != DateTime.MinValue)
+        {
+            if (utcNow >= _manualTimerTargetUtc)
+            {
+                _manualTimerRunning = false;
+                _manualTimerTargetUtc = DateTime.MinValue;
+                _manualMorphTimer = 0.25;
+                _lastManualRemainingSec = -1;
+                _tabBufferCache[TabHome] = null;
+                _lastHomeTimerRemainingSec = -1;
+                chronoChanged = true;
+                TriggerTimerAlarm();
+            }
+            else
+            {
+                int remainingSec = (int)Math.Ceiling((_manualTimerTargetUtc - utcNow).TotalSeconds);
+                if (remainingSec != _lastManualRemainingSec)
+                {
+                    _lastManualRemainingSec = remainingSec;
+                    chronoChanged = true;
+                }
+            }
+        }
+        else if (_lastManualRemainingSec != -1)
+        {
+            _lastManualRemainingSec = -1;
+            chronoChanged = true;
+        }
+
+        // 9. Timer Alarm pending collapse or active ringing
+        if (_timerAlarmPendingCollapse)
+        {
+            if (_hoverPos <= 0.03)
+            {
+                _timerAlarmPendingCollapse = false;
+                _userDismissed = false;
+                _timerAlarmActive = true;
+                _timerAlarmStartTime = utcNow;
+                _lastChimePlayTime = utcNow;
+                PlayDefaultChime();
+                UpdateTimeMaskIfNeeded(force: true);
+                _renderSignal.Set();
+            }
+        }
+        else if (_timerAlarmActive && !_timerAlarmDismissed)
+        {
+            double alarmElapsed = (utcNow - _timerAlarmStartTime).TotalSeconds;
+            if (alarmElapsed >= _timerAlarmDuration)
+            {
+                _timerAlarmActive = false;
+                _timerAlarmDismissed = true;
+                _userDismissed = false;
+                _unhoverShowTimeUntil = utcNow.AddMinutes(1);
+                _tabBufferCache[TabChrono] = null;
+                UpdateTimeMaskIfNeeded(force: true);
+                _renderSignal.Set();
+            }
+            else if ((utcNow - _lastChimePlayTime).TotalSeconds >= 1.8 && alarmElapsed <= _timerAlarmDuration - 1.5)
+            {
+                _lastChimePlayTime = utcNow;
+                PlayDefaultChime();
+            }
+        }
+
         if (chronoChanged)
         {
             _tabBufferCache[TabChrono] = null;
             _needExpandedUpdate = true;
         }
+    }
+
+    private void TriggerTimerAlarm()
+    {
+        _timerAlarmDismissed = false;
+        _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+
+        if (_hoverPos > 0.05)
+        {
+            // Island is open: smoothly animate collapse down first before ringing
+            _timerAlarmPendingCollapse = true;
+            _timerAlarmActive = false;
+            _hoverVel = Math.Min(_hoverVel, -14.0);
+            _userDismissed = false;
+            _cursorWasInsideNotch = true;
+        }
+        else
+        {
+            // Already in collapsed state: directly activate ringing bell and bubble shake
+            _timerAlarmPendingCollapse = false;
+            _timerAlarmActive = true;
+            _timerAlarmStartTime = DateTime.UtcNow;
+            _lastChimePlayTime = DateTime.UtcNow;
+            _userDismissed = false;
+            PlayDefaultChime();
+            UpdateTimeMaskIfNeeded(force: true);
+        }
+
+        _renderSignal.Set();
+    }
+
+    private static void PlayDefaultChime()
+    {
+        Task.Run(() =>
+        {
+            try
+            {
+                _bellChimeWavBytes ??= GenerateBellChimeWav();
+                using var ms = new MemoryStream(_bellChimeWavBytes);
+                using var player = new System.Media.SoundPlayer(ms);
+                player.Play();
+            }
+            catch
+            {
+                try { System.Media.SystemSounds.Asterisk.Play(); } catch { }
+            }
+        });
+    }
+
+    private static byte[] GenerateBellChimeWav()
+    {
+        const int sampleRate = 44100;
+        const double durationSec = 1.8;
+        int numSamples = (int)(sampleRate * durationSec);
+
+        using var ms = new MemoryStream();
+        using var bw = new BinaryWriter(ms);
+
+        // RIFF header
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+        bw.Write(36 + numSamples * 2);
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVE"));
+
+        // "fmt " chunk
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("fmt "));
+        bw.Write(16); // subchunk1 size
+        bw.Write((short)1); // PCM
+        bw.Write((short)1); // mono
+        bw.Write(sampleRate);
+        bw.Write(sampleRate * 2); // byte rate
+        bw.Write((short)2); // block align
+        bw.Write((short)16); // bits per sample
+
+        // "data" chunk
+        bw.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+        bw.Write(numSamples * 2);
+
+        // Bell chime harmonics:
+        // Fundamental A5 (880 Hz) with natural overtones E6 (1320 Hz) and A6 (1760 Hz)
+        const double f0 = 880.0;
+        const double f1 = 1320.0;
+        const double f2 = 1760.0;
+        const double fStrike = 2640.0;
+
+        for (int i = 0; i < numSamples; i++)
+        {
+            double t = (double)i / sampleRate;
+
+            // Envelopes: fast attack, exponential natural acoustic ring decay
+            double env0 = Math.Exp(-t * 2.8);
+            double env1 = Math.Exp(-t * 4.2);
+            double env2 = Math.Exp(-t * 6.5);
+            double strikeEnv = Math.Exp(-t * 35.0); // sharp mallet strike
+
+            double s0 = Math.Sin(2.0 * Math.PI * f0 * t) * env0 * 0.55;
+            double s1 = Math.Sin(2.0 * Math.PI * f1 * t) * env1 * 0.28;
+            double s2 = Math.Sin(2.0 * Math.PI * f2 * t) * env2 * 0.12;
+            double sStrike = Math.Sin(2.0 * Math.PI * fStrike * t) * strikeEnv * 0.20;
+
+            double sampleVal = s0 + s1 + s2 + sStrike;
+            sampleVal = Math.Clamp(sampleVal, -1.0, 1.0);
+
+            short pcmSample = (short)(sampleVal * 28000.0);
+            bw.Write(pcmSample);
+        }
+
+        bw.Flush();
+        return ms.ToArray();
     }
 
     // Compact pill dynamic expansion when music plays (0.0 = paused/compact, 1.0 = playing/expanded)
@@ -1299,6 +1690,11 @@ internal sealed class OverlayForm : Form
     private double _hoverPos = 0.0; // Spring position (0.0 to 1.0+)
     private double _hoverVel = 0.0; // Spring velocity
     private volatile bool _userDismissed = false;
+    private bool _spawnedFromBodyTrigger = false;
+    private DateTime _bodyTriggerSpawnedAtUtc = DateTime.MinValue;
+    private DateTime _bodyTriggerSuppressedUntilUtc = DateTime.MinValue;
+    private DateTime _suppressedTopTriggerDwellStartedAtUtc = DateTime.MinValue;
+    private Point _suppressedTopTriggerDwellPoint = Point.Empty;
     private volatile bool _cursorWasInsideNotch = false;
     private long _lastLeftClickTime = 0;
     private Point _lastLeftClickPos = Point.Empty;
@@ -1324,6 +1720,12 @@ internal sealed class OverlayForm : Form
         Task.Run(AudioDeviceManager.RefreshDevicesAsync);
         LiveWeatherService.WeatherUpdated += OnLiveWeatherUpdated;
         LiveWeatherService.Initialize();
+        PlayerService.PlayersChanged += () =>
+        {
+            _tabBufferCache[TabHome] = null;
+            _needExpandedUpdate = true;
+            _renderSignal.Set();
+        };
 
         Shown += async (_, _) =>
         {
@@ -1388,10 +1790,6 @@ internal sealed class OverlayForm : Form
                     await _sysMedia.SkipPreviousAsync();
                 }
             }
-            else if (e.KeyCode == Keys.S)
-            {
-                CycleWeatherCardStyle();
-            }
             else if (e.KeyCode is Keys.Z or Keys.U)
             {
                 if (_sysMedia.HasActiveSession)
@@ -1440,7 +1838,37 @@ internal sealed class OverlayForm : Form
         {
             if (e.Button == MouseButtons.Left)
             {
+                if (IsPointInManualTimerArrows(e.Location))
+                {
+                    return;
+                }
                 CollapseAndDespawnIsland();
+            }
+        };
+
+        MouseDown += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                if (_hoverPos > 0.3 && _activeTab == TabChrono && !_manualTimerRunning)
+                {
+                    if (_hoveredManualBtn is >= ManualBtnUpH and <= ManualBtnDownS)
+                    {
+                        _heldManualBtn = _hoveredManualBtn;
+                        _manualHoldStartTime = DateTime.UtcNow;
+                        _manualNextRepeatTime = DateTime.UtcNow.AddMilliseconds(320);
+                        ExecuteManualArrowAction(_heldManualBtn);
+                        _manualHoldDidAction = true;
+                    }
+                }
+            }
+        };
+
+        MouseUp += (_, e) =>
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                _heldManualBtn = ManualBtnNone;
             }
         };
 
@@ -1466,7 +1894,30 @@ internal sealed class OverlayForm : Form
 
                 if (isDblClick)
                 {
-                    CollapseAndDespawnIsland();
+                    if (!IsPointInManualTimerArrows(e.Location))
+                    {
+                        CollapseAndDespawnIsland();
+                        return;
+                    }
+                }
+
+                if (_manualHoldDidAction)
+                {
+                    _manualHoldDidAction = false;
+                    return;
+                }
+
+                if (_timerAlarmActive && !_timerAlarmDismissed)
+                {
+                    _timerAlarmActive = false;
+                    _timerAlarmDismissed = true;
+                    _timerAlarmPendingCollapse = false;
+                    _userDismissed = false;
+                    _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                    _needExpandedUpdate = true;
+                    _tabBufferCache[TabChrono] = null;
+                    UpdateTimeMaskIfNeeded(force: true);
+                    _renderSignal.Set();
                     return;
                 }
 
@@ -1478,11 +1929,59 @@ internal sealed class OverlayForm : Form
         };
     }
 
+    private bool IsPointInManualTimerArrows(Point pt)
+    {
+        if (_hoverPos <= 0.3 || _activeTab != TabChrono || _manualTimerRunning)
+            return false;
+
+        float mx = pt.X - 70f;
+        float my = pt.Y - 26f;
+
+        float curQuickW = (float)_chronoTimerAnimWidth;
+        float curManX = 16f + curQuickW + 12f;
+        float curManW = 444f - curManX;
+        if (curManW <= 150f) return false;
+
+        float colCenter = curManX + curManW * 0.46f;
+        float colSpacing = 38f;
+        float colLeft = colCenter - colSpacing - 18f;
+        float colRight = colCenter + colSpacing + 18f;
+
+        return (mx >= colLeft && mx <= colRight && my >= 44f && my <= 88f);
+    }
+
+    private void ExecuteManualArrowAction(int btn)
+    {
+        switch (btn)
+        {
+            case ManualBtnUpH:   AdjustManualTime(1, 0, 0); break;
+            case ManualBtnDownH: AdjustManualTime(-1, 0, 0); break;
+            case ManualBtnUpM:   AdjustManualTime(0, 1, 0); break;
+            case ManualBtnDownM: AdjustManualTime(0, -1, 0); break;
+            case ManualBtnUpS:   AdjustManualTime(0, 0, 1); break;
+            case ManualBtnDownS: AdjustManualTime(0, 0, -1); break;
+        }
+    }
+
     private void CollapseAndDespawnIsland()
     {
+        DateTime utcNow = DateTime.UtcNow;
+        bool quickBodyTriggerDismissal = _spawnedFromBodyTrigger &&
+            _bodyTriggerSpawnedAtUtc != DateTime.MinValue &&
+            (utcNow - _bodyTriggerSpawnedAtUtc).TotalSeconds <= 4.0;
+
         // Double clicking collapses the island and despawns it completely off-screen
         _userDismissed = true;
         _cursorWasInsideNotch = true;
+        if (quickBodyTriggerDismissal)
+        {
+            // Keep the notch available, but temporarily remove the larger body trigger
+            // so an accidental activation does not immediately steal the next click.
+            _bodyTriggerSuppressedUntilUtc = utcNow.AddSeconds(4.0);
+            _suppressedTopTriggerDwellStartedAtUtc = DateTime.MinValue;
+            _suppressedTopTriggerDwellPoint = Point.Empty;
+        }
+        _spawnedFromBodyTrigger = false;
         _unhoverShowTimeUntil = DateTime.MinValue;
         _musicTimeDisplayUntil = DateTime.MinValue;
         _hoverVel = Math.Min(_hoverVel, -8.0);
@@ -1544,7 +2043,7 @@ internal sealed class OverlayForm : Form
         }
     }
 
-    private static int HitTestMediaButton(float mx, float my)
+    private int HitTestMediaButton(float mx, float my)
     {
         // 1. Audio output device picker expanded state
         if (_audioPickerOpen || _audioPickerExpandP > 0.05)
@@ -1624,6 +2123,7 @@ internal sealed class OverlayForm : Form
 
         // 3. Resting / collapsed buttons
         float cy = 120f;
+        if (_sysMedia.SessionCount > 1 && mx >= 418f && mx <= 446f && my >= 40f && my <= 68f) return BtnMediaSessionNext;
         if (my >= 100f && my <= 140f)
         {
             if (Math.Abs(mx - 98f) <= 15f && Math.Abs(my - cy) <= 15f) return BtnAudioDevice;
@@ -1673,6 +2173,12 @@ internal sealed class OverlayForm : Form
         {
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
+
+            if (IsAnyTimerLive() && IsPointInHomeTimer(mx, my))
+            {
+                CancelAllActiveTimers();
+                return true;
+            }
 
             bool isSplit = _isPlaying || _hasActiveMedia || _sleepTimerActive || _homeSleepPickerOpen || (_homeSleepExpandP > 0.001);
 
@@ -1742,6 +2248,37 @@ internal sealed class OverlayForm : Form
                 }
                 else
                 {
+                    var players = PlayerService.GetPlayers();
+                    int count = Math.Min(3, players.Count);
+                    if (count > 0)
+                    {
+                        float btnSize = 28f;
+                        float btnY = 36f + (44f - btnSize) * 0.5f;
+                        float gap = 6f;
+                        float rightMargin = 10f;
+                        float cardX = 216f;
+                        float cardW = 228f;
+                        float startX = cardX + cardW - rightMargin - (count * btnSize + (count - 1) * gap);
+                        if (my >= btnY && my <= btnY + btnSize)
+                        {
+                            for (int i = 0; i < count; i++)
+                            {
+                                float bx = startX + i * (btnSize + gap);
+                                if (mx >= bx && mx <= bx + btnSize)
+                                {
+                                    await StartOrResumeHomePlayerAsync(players[i]);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
+                    if (_hoveredHomePlayerIndex >= 0 && _hoveredHomePlayerIndex < players.Count)
+                    {
+                        await StartOrResumeHomePlayerAsync(players[_hoveredHomePlayerIndex]);
+                        return true;
+                    }
+
                     SwitchTab(TabMusic);
                     return true;
                 }
@@ -1960,6 +2497,15 @@ internal sealed class OverlayForm : Form
                             await _sysMedia.SkipPreviousAsync();
                         }
                         return true;
+
+                    case BtnMediaSessionNext:
+                        if (_sysMedia.SessionCount > 1)
+                        {
+                            await _sysMedia.SelectNextSessionAsync();
+                            _tabBufferCache[TabMusic] = null;
+                            _needExpandedUpdate = true;
+                        }
+                        return true;
                 }
             }
 
@@ -1989,7 +2535,7 @@ internal sealed class OverlayForm : Form
             float mx = pt.X - 70f;
             float my = pt.Y - 26f;
 
-            float slot1X = 24f;
+            float slot1X = 16f;
             float slot1Y = 44f;
             float slot1H = 44f;
             float curW = (float)_chronoTimerAnimWidth;
@@ -2008,24 +2554,131 @@ internal sealed class OverlayForm : Form
                 // While expanded, clicking any duration option starts the timer
                 if (my >= slot1Y && my <= slot1Y + slot1H && curW > 120f)
                 {
-                    if (mx >= 24 && mx < 78.5f)
+                    float b1X = slot1X + 86f;
+                    float btnW = 44f;
+                    float plusW = 30f;
+                    float gap = 6f;
+
+                    float b2X = b1X + btnW + gap;
+                    float b3X = b2X + btnW + gap;
+                    float b4X = b3X + btnW + gap;
+                    float b5X = b4X + btnW + gap;
+
+                    if (mx >= b1X && mx < b1X + btnW)
                     {
                         StartChronoTimer(5);
                         return true;
                     }
-                    else if (mx >= 78.5f && mx < 125.5f)
+                    else if (mx >= b2X && mx < b2X + btnW)
                     {
                         StartChronoTimer(10);
                         return true;
                     }
-                    else if (mx >= 125.5f && mx < 172.5f)
+                    else if (mx >= b3X && mx < b3X + btnW)
                     {
                         StartChronoTimer(15);
                         return true;
                     }
-                    else if (mx >= 172.5f && mx <= 224f)
+                    else if (mx >= b4X && mx < b4X + btnW)
                     {
-                        // Plus icon clicked (reserved for custom timer creation)
+                        StartChronoTimer(30);
+                        return true;
+                    }
+                    else if (mx >= b5X && mx <= b5X + plusW)
+                    {
+                        StartChronoTimer(45);
+                        return true;
+                    }
+                }
+            }
+
+            // ----------------------------------------------------
+            // Manual Timer Clicks
+            // ----------------------------------------------------
+            float curManX = slot1X + curW + 12f;
+            float curManW = 444f - curManX;
+            float curManY = 44f;
+            float curManH = 44f;
+
+            if (_manualTimerRunning)
+            {
+                // Clicking running manual capsule cancels it
+                if (my >= curManY && my <= curManY + curManH && mx >= curManX && mx <= curManX + curManW)
+                {
+                    CancelManualTimer();
+                    return true;
+                }
+            }
+            else
+            {
+                if (curManW <= 60f)
+                {
+                    if (my >= curManY && my <= curManY + curManH && mx >= curManX && mx <= curManX + curManW)
+                    {
+                        // Clicked the shrunk manual timer icon: restore manual timer setting
+                        _chronoTimerHovered = false;
+                        _tabBufferCache[TabChrono] = null;
+                        _needExpandedUpdate = true;
+                        _renderSignal.Set();
+                        return true;
+                    }
+                }
+                else if (curManW > 150f && my >= curManY && my <= curManY + curManH && mx >= curManX && mx <= curManX + curManW)
+                {
+                    float colCenter = curManX + curManW * 0.46f;
+                    float colSpacing = 38f;
+                    float colHX = colCenter - colSpacing;
+                    float colMX = colCenter;
+                    float colSX = colCenter + colSpacing;
+
+                    float btnW = 72f;
+                    float btnH = 26f;
+                    float btnX = curManX + curManW - btnW - 12f;
+                    float btnY = curManY + (curManH - btnH) * 0.5f;
+
+                    if (my >= curManY && my <= curManY + 18f)
+                    {
+                        // Up arrows (▲)
+                        if (mx >= colHX - 16f && mx <= colHX + 16f)
+                        {
+                            AdjustManualTime(1, 0, 0);
+                            return true;
+                        }
+                        else if (mx >= colMX - 16f && mx <= colMX + 16f)
+                        {
+                            AdjustManualTime(0, 1, 0);
+                            return true;
+                        }
+                        else if (mx >= colSX - 16f && mx <= colSX + 16f)
+                        {
+                            AdjustManualTime(0, 0, 1);
+                            return true;
+                        }
+                    }
+                    else if (my >= curManY + 26f && my <= curManY + curManH)
+                    {
+                        // Down arrows (▼)
+                        if (mx >= colHX - 16f && mx <= colHX + 16f)
+                        {
+                            AdjustManualTime(-1, 0, 0);
+                            return true;
+                        }
+                        else if (mx >= colMX - 16f && mx <= colMX + 16f)
+                        {
+                            AdjustManualTime(0, -1, 0);
+                            return true;
+                        }
+                        else if (mx >= colSX - 16f && mx <= colSX + 16f)
+                        {
+                            AdjustManualTime(0, 0, -1);
+                            return true;
+                        }
+                    }
+
+                    if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH)
+                    {
+                        // ▶ START button clicked
+                        StartManualTimerFromInput();
                         return true;
                     }
                 }
@@ -2033,6 +2686,97 @@ internal sealed class OverlayForm : Form
         }
 
         return false;
+    }
+
+    private async Task StartOrResumeHomePlayerAsync(PlayerItem player)
+    {
+        if (!PlayerService.IsSpotify(player))
+        {
+            PlayerService.LaunchPlayer(player);
+            return;
+        }
+
+        // A live Spotify session can be resumed directly without waking its UI.
+        if (await _sysMedia.ResumeSpotifyAsync(TimeSpan.Zero)) return;
+
+        bool spotifyWasRunning = PlayerService.IsSpotifyRunning();
+        if (!spotifyWasRunning && !PlayerService.LaunchSpotifyInBackground(player)) return;
+
+        // A fresh Spotify process needs a moment to register its Windows media
+        // session. Existing background instances get a shorter grace period.
+        TimeSpan sessionWait = spotifyWasRunning ? TimeSpan.FromSeconds(3) : TimeSpan.FromSeconds(12);
+        await _sysMedia.ResumeSpotifyAsync(sessionWait);
+    }
+
+    private void AdjustManualTime(int dH, int dM, int dS)
+    {
+        if (dH != 0)
+        {
+            _manualHours = (_manualHours + dH + 100) % 100;
+            _animHourDelta = dH;
+            _animHourTimer = 0.22;
+        }
+        if (dM != 0)
+        {
+            _manualMinutes = (_manualMinutes + dM + 60) % 60;
+            _animMinuteDelta = dM;
+            _animMinuteTimer = 0.22;
+        }
+        if (dS != 0)
+        {
+            _manualSeconds = (_manualSeconds + dS + 60) % 60;
+            _animSecondDelta = dS;
+            _animSecondTimer = 0.22;
+        }
+        _tabBufferCache[TabChrono] = null;
+        _tabBufferCache[TabHome] = null;
+        _lastHomeTimerRemainingSec = -1;
+        _needExpandedUpdate = true;
+        _renderSignal.Set();
+    }
+
+    private void StartManualTimerFromInput()
+    {
+        int totalSec = _manualHours * 3600 + _manualMinutes * 60 + _manualSeconds;
+        if (totalSec <= 0)
+        {
+            totalSec = DebugChronoTimerInSeconds ? 10 : 60;
+            _manualMinutes = 1;
+        }
+        StartManualTimer(totalSec);
+    }
+
+    private void StartManualTimer(int totalSeconds)
+    {
+        _manualTimerTotalSeconds = totalSeconds;
+        _manualTimerTargetUtc = DateTime.UtcNow.AddSeconds(totalSeconds);
+        _manualTimerRunning = true;
+        _manualRunningHovered = false;
+        _manualRunningHoverP = 0.0;
+        _manualMorphTimer = 0.36; // 360ms fluid spring morph
+        _lastManualRemainingSec = -1;
+
+        _tabBufferCache[TabChrono] = null;
+        _tabBufferCache[TabHome] = null;
+        _lastHomeTimerRemainingSec = -1;
+        _needExpandedUpdate = true;
+        _renderSignal.Set();
+    }
+
+    private void CancelManualTimer()
+    {
+        _manualTimerRunning = false;
+        _manualTimerTargetUtc = DateTime.MinValue;
+        _manualRunningHovered = false;
+        _manualRunningHoverP = 0.0;
+        _manualMorphTimer = 0.25;
+        _lastManualRemainingSec = -1;
+
+        _tabBufferCache[TabChrono] = null;
+        _tabBufferCache[TabHome] = null;
+        _lastHomeTimerRemainingSec = -1;
+        _needExpandedUpdate = true;
+        _renderSignal.Set();
     }
 
     private void StartChronoTimer(int minutes)
@@ -2051,7 +2795,10 @@ internal sealed class OverlayForm : Form
         _chronoMorphFromW = (float)_chronoTimerAnimWidth;
 
         _tabBufferCache[TabChrono] = null;
+        _tabBufferCache[TabHome] = null;
+        _lastHomeTimerRemainingSec = -1;
         _needExpandedUpdate = true;
+        _renderSignal.Set();
     }
 
     private void CancelChronoTimer()
@@ -2070,7 +2817,10 @@ internal sealed class OverlayForm : Form
         _chronoMorphFromW = (float)_chronoTimerAnimWidth;
 
         _tabBufferCache[TabChrono] = null;
+        _tabBufferCache[TabHome] = null;
+        _lastHomeTimerRemainingSec = -1;
         _needExpandedUpdate = true;
+        _renderSignal.Set();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -2163,7 +2913,8 @@ internal sealed class OverlayForm : Form
                 _eqBarHeights,
                 _hoveredButton,
                 _clickedButton,
-                _clickAnimTimer);
+                _clickAnimTimer,
+                _sysMedia.SessionCount);
 
             lock (_expandedLock)
             {
@@ -2242,67 +2993,73 @@ internal sealed class OverlayForm : Form
     {
         EnsureCustomFontsLoaded();
 
-        if (_sfProFamily != null)
+        lock (_fontLock)
         {
-            try
+            if (_sfProFamily != null)
             {
-                if (_sfProFamily.IsStyleAvailable(style))
+                try
                 {
-                    return new Font(_sfProFamily, sizeInPoints, style);
+                    if (_sfProFamily.IsStyleAvailable(style))
+                    {
+                        return new Font(_sfProFamily, sizeInPoints, style);
+                    }
+                    return new Font(_sfProFamily, sizeInPoints, FontStyle.Regular);
                 }
-                return new Font(_sfProFamily, sizeInPoints, FontStyle.Regular);
+                catch { }
             }
-            catch { }
-        }
 
-        string[] fontCandidates = new[]
-        {
-            "SF Pro Display",
-            "SF Pro Text",
-            "SF Pro",
-            "Segoe UI Variable Display",
-            "Segoe UI Variable Text",
-            "Aptos Display",
-            "Segoe UI",
-            "Bahnschrift"
-        };
-
-        foreach (var name in fontCandidates)
-        {
-            try
+            string[] fontCandidates = new[]
             {
-                var font = new Font(name, sizeInPoints, style);
-                if (font.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
-                    font.FontFamily.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-                {
-                    return font;
-                }
-                font.Dispose();
-            }
-            catch { }
-        }
+                "SF Pro Display",
+                "SF Pro Text",
+                "SF Pro",
+                "Segoe UI Variable Display",
+                "Segoe UI Variable Text",
+                "Aptos Display",
+                "Segoe UI",
+                "Bahnschrift"
+            };
 
-        return new Font("Segoe UI", sizeInPoints, style);
+            foreach (var name in fontCandidates)
+            {
+                try
+                {
+                    var font = new Font(name, sizeInPoints, style);
+                    if (font.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                        font.FontFamily.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return font;
+                    }
+                    font.Dispose();
+                }
+                catch { }
+            }
+
+            return new Font("Segoe UI", sizeInPoints, style);
+        }
     }
 
     private static Font GetEternaloFont(float sizeInPoints, FontStyle style = FontStyle.Regular)
     {
         EnsureCustomFontsLoaded();
 
-        if (_eternaloFamily != null)
+        lock (_fontLock)
         {
-            try
+            if (_eternaloFamily != null)
             {
-                if (_eternaloFamily.IsStyleAvailable(style))
+                try
                 {
-                    return new Font(_eternaloFamily, sizeInPoints, style);
+                    if (_eternaloFamily.IsStyleAvailable(style))
+                    {
+                        return new Font(_eternaloFamily, sizeInPoints, style);
+                    }
+                    return new Font(_eternaloFamily, sizeInPoints, FontStyle.Regular);
                 }
-                return new Font(_eternaloFamily, sizeInPoints, FontStyle.Regular);
+                catch { }
             }
-            catch { }
-        }
 
-        return GetPremiumFont(sizeInPoints, style);
+            return GetPremiumFont(sizeInPoints, style);
+        }
     }
 
     private static void DrawRoundedSquareCover(
@@ -2920,7 +3677,7 @@ internal sealed class OverlayForm : Form
         superBmp.UnlockBits(data);
     }
 
-    private static void RenderFullTabBuffer(
+    internal static void RenderFullTabBuffer(
         uint[] destBuffer,
         int tabIndex,
         TrackInfo track,
@@ -2932,31 +3689,35 @@ internal sealed class OverlayForm : Form
         float[]? eqBarHeights,
         int hoveredButton,
         int clickedButton,
-        double clickAnimProgress)
+        double clickAnimProgress,
+        int mediaSessionCount)
     {
-        const float superScale = 4.0f;
-        int targetW = 460;
-        int targetH = 150;
-        int superW = (int)(targetW * superScale);
-        int superH = (int)(targetH * superScale);
-
-        if (_reusableSuperBmp == null || _reusableSuperBmp.Width != superW || _reusableSuperBmp.Height != superH)
+        lock (_expandedRenderLock)
         {
-            _reusableSuperBmp?.Dispose();
-            _reusableSuperBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+            const float superScale = 4.0f;
+            int targetW = 460;
+            int targetH = 150;
+            int superW = (int)(targetW * superScale);
+            int superH = (int)(targetH * superScale);
+
+            if (_tabPrecomputeBmp == null || _tabPrecomputeBmp.Width != superW || _tabPrecomputeBmp.Height != superH)
+            {
+                _tabPrecomputeBmp?.Dispose();
+                _tabPrecomputeBmp = new Bitmap(superW, superH, PixelFormat.Format32bppArgb);
+            }
+
+            using (var g = Graphics.FromImage(_tabPrecomputeBmp))
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+
+                DrawTopTabBar(g, superScale, targetW, tabIndex, 0.0);
+                DrawSingleTabContent(g, tabIndex, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress, mediaSessionCount);
+            }
+
+            DownsampleToBuffer(_tabPrecomputeBmp, destBuffer, 0, targetH, targetW);
         }
-
-        using (var g = Graphics.FromImage(_reusableSuperBmp))
-        {
-            g.Clear(Color.Transparent);
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-
-            DrawTopTabBar(g, superScale, targetW, tabIndex, 0.0);
-            DrawSingleTabContent(g, tabIndex, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
-        }
-
-        DownsampleToBuffer(_reusableSuperBmp, destBuffer, 0, targetH, targetW);
     }
 
     private static unsafe void CompositeSubpixelSlideTransition(
@@ -3107,7 +3868,8 @@ internal sealed class OverlayForm : Form
         float[]? eqBarHeights,
         int hoveredButton,
         int clickedButton,
-        double clickAnimProgress)
+        double clickAnimProgress,
+        int mediaSessionCount)
     {
         bool isMoving = (activeTab == TabMusic) && (
             (Math.Abs(_audioPickerExpandP - (_audioPickerOpen ? 1.0 : 0.0)) > 0.001) ||
@@ -3158,7 +3920,7 @@ internal sealed class OverlayForm : Form
                 g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
                 DrawTopTabBar(g, superScale, targetW, tabIndicatorPos, tabIndicatorVel);
-                DrawSingleTabContent(g, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
+                DrawSingleTabContent(g, activeTab, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress, mediaSessionCount);
             }
 
             DownsampleToBuffer(bmp, targetBuffer, 0, targetH, targetW, scaleInt);
@@ -3216,7 +3978,8 @@ internal sealed class OverlayForm : Form
         float[]? eqBarHeights,
         int hoveredButton,
         int clickedButton,
-        double clickAnimProgress)
+        double clickAnimProgress,
+        int mediaSessionCount)
     {
         switch (tabIndex)
         {
@@ -3224,7 +3987,7 @@ internal sealed class OverlayForm : Form
                 DrawTabHomeContent(g, superScale, targetW, track, coverBmp, isPlaying, eqBarHeights);
                 break;
             case TabMusic:
-                DrawTabMusicContent(g, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress);
+                DrawTabMusicContent(g, superScale, targetW, track, coverBmp, progressSeconds, isPlaying, isShuffle, rotationAngle, eqBarHeights, hoveredButton, clickedButton, clickAnimProgress, mediaSessionCount);
                 break;
             case TabWeather:
                 DrawTabWeatherContent(g, superScale, targetW);
@@ -3234,6 +3997,65 @@ internal sealed class OverlayForm : Form
                 DrawTabChronoContent(g, superScale, targetW);
                 break;
         }
+    }
+
+    private static bool IsPointInHomeTimer(float mx, float my)
+    {
+        const float cx = 36f;
+        const float cy = 111f;
+        const float radius = 20f;
+        float dx = mx - cx;
+        float dy = my - cy;
+        return dx * dx + dy * dy <= radius * radius;
+    }
+
+    private static void DrawHomeActiveTimer(Graphics g, float superScale)
+    {
+        if (!GetHomeTimerProgress(out int remainingSeconds, out int totalSeconds)) return;
+
+        const float cx = 36f;
+        const float cy = 111f;
+        const float radius = 18f;
+        bool isHovered = _hoveredHomeTimer;
+        float progress = Math.Clamp((float)remainingSeconds / Math.Max(1, totalSeconds), 0f, 1f);
+
+        using (var fill = new SolidBrush(isHovered
+            ? Color.FromArgb(72, 220, 70, 70)
+            : Color.FromArgb(42, 255, 255, 255)))
+        {
+            g.FillEllipse(fill, (cx - radius) * superScale, (cy - radius) * superScale,
+                radius * 2f * superScale, radius * 2f * superScale);
+        }
+        using (var border = new Pen(isHovered
+            ? Color.FromArgb(220, 255, 105, 105)
+            : Color.FromArgb(95, 255, 255, 255), 1.0f * superScale))
+        {
+            g.DrawEllipse(border, (cx - radius) * superScale, (cy - radius) * superScale,
+                radius * 2f * superScale, radius * 2f * superScale);
+        }
+        using (var ringTrack = new Pen(isHovered
+            ? Color.FromArgb(110, 255, 130, 130)
+            : Color.FromArgb(72, 255, 255, 255), 2.0f * superScale))
+        using (var ringProgress = new Pen(isHovered
+            ? Color.FromArgb(245, 255, 145, 145)
+            : Color.FromArgb(235, 235, 240, 246), 2.0f * superScale))
+        {
+            float ringRadius = 15.2f * superScale;
+            g.DrawEllipse(ringTrack, cx * superScale - ringRadius, cy * superScale - ringRadius,
+                ringRadius * 2f, ringRadius * 2f);
+            if (progress > 0.001f)
+            {
+                g.DrawArc(ringProgress, cx * superScale - ringRadius, cy * superScale - ringRadius,
+                    ringRadius * 2f, ringRadius * 2f, -90f, 360f * progress);
+            }
+        }
+
+        float bellScale = superScale * 0.58f;
+        var state = g.Save();
+        g.TranslateTransform(cx * superScale - 19f * bellScale, cy * superScale - 19f * bellScale);
+        DrawRingingBellVector(g, (int)(38f * bellScale), (int)(38f * bellScale), bellScale);
+        g.Restore(state);
+
     }
 
     private static void DrawTabHomeContent(
@@ -3277,6 +4099,8 @@ internal sealed class OverlayForm : Form
         {
             g.DrawString(dateStr, fontHomeSub, brushDate, welcomeX, welcomeY + 37f * superScale, StringFormat.GenericDefault);
         }
+
+        DrawHomeActiveTimer(g, superScale);
 
         // 2. Right Column Cards: Now Playing & Weather Quick-Glances
         float cardX = 216f * superScale;
@@ -3360,9 +4184,10 @@ internal sealed class OverlayForm : Form
                     }
                     else
                     {
-                        using (var brushDisc = new SolidBrush(Color.FromArgb((int)(45 * mediaAlpha), 255, 255, 255)))
+                        using var pathThumbBg = CreateRoundedRectanglePath(thumbX, thumbY, thumbSize, thumbSize, thumbR);
+                        using (var brushThumbBg = new SolidBrush(Color.FromArgb((int)(45 * mediaAlpha), 255, 255, 255)))
                         {
-                            g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
+                            g.FillPath(brushThumbBg, pathThumbBg);
                         }
                         using (var brushNote = new SolidBrush(Color.FromArgb((int)(200 * mediaAlpha), 255, 255, 255)))
                         {
@@ -3543,67 +4368,46 @@ internal sealed class OverlayForm : Form
         }
         else
         {
-            // Default full unified card when audio is completely idle and no timer
+            // Open Player Card when audio is idle
             using var pathC1 = CreateRoundedRectPath(cardX, c1Y, cardW, c1H, cardR, cardR, cardR, cardR);
             using var brushC1 = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
             g.FillPath(brushC1, pathC1);
             using var penC1 = new Pen(Color.FromArgb(70, 255, 255, 255), 1.0f * superScale);
             g.DrawPath(penC1, pathC1);
 
-            float thumbX = cardX + 8f * superScale;
-            float thumbY = c1Y + 7f * superScale;
-            float thumbSize = 29f * superScale;
-            float thumbR = 7f * superScale;
+            // Left Section: "Open Player" header & subtitle
+            float textStartX = cardX + 13f * superScale;
+            using var fontOpenTitle = GetPremiumFont(9.5f * superScale, FontStyle.Bold);
+            using var fontOpenSub = GetPremiumFont(7.2f * superScale, FontStyle.Regular);
 
-            if (coverBmp != null)
+            using (var brushMTitle = new SolidBrush(Color.FromArgb(240, 255, 255, 255)))
             {
-                using var pathThumb = new GraphicsPath();
-                pathThumb.AddArc(thumbX, thumbY, thumbR * 2, thumbR * 2, 180, 90);
-                pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY, thumbR * 2, thumbR * 2, 270, 90);
-                pathThumb.AddArc(thumbX + thumbSize - thumbR * 2, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 0, 90);
-                pathThumb.AddArc(thumbX, thumbY + thumbSize - thumbR * 2, thumbR * 2, thumbR * 2, 90, 90);
-                pathThumb.CloseFigure();
-
-                var state = g.Save();
-                g.SetClip(pathThumb);
-                g.DrawImage(coverBmp, thumbX, thumbY, thumbSize, thumbSize);
-                g.Restore(state);
+                g.DrawString("Open Player", fontOpenTitle, brushMTitle, textStartX, c1Y + 8f * superScale, StringFormat.GenericDefault);
             }
-            else
+            using (var brushMSub = new SolidBrush(Color.FromArgb(145, 255, 255, 255)))
             {
-                using (var brushDisc = new SolidBrush(Color.FromArgb(45, 255, 255, 255)))
+                g.DrawString("Quick launch", fontOpenSub, brushMSub, textStartX, c1Y + 23.5f * superScale, StringFormat.GenericDefault);
+            }
+
+            // Right Section: Player Quick-Launcher Icon Buttons (sized and spaced for 3 players)
+            var players = PlayerService.GetPlayers();
+            int count = Math.Min(3, players.Count);
+            if (count > 0)
+            {
+                float btnSize = 28f * superScale;
+                float btnR = 7f * superScale;
+                float btnY = c1Y + (c1H - btnSize) * 0.5f;
+                float gap = 6f * superScale;
+                float rightMargin = 10f * superScale;
+                float startX = cardX + cardW - rightMargin - (count * btnSize + (count - 1) * gap);
+
+                for (int i = 0; i < count; i++)
                 {
-                    g.FillEllipse(brushDisc, thumbX, thumbY, thumbSize, thumbSize);
-                }
-                using (var brushNote = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
-                {
-                    var noteSize = g.MeasureString("♫", fontCardTitle, PointF.Empty, StringFormat.GenericTypographic);
-                    g.DrawString("♫", fontCardTitle, brushNote, thumbX + (thumbSize - noteSize.Width) * 0.5f, thumbY + (thumbSize - noteSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                    float bx = startX + i * (btnSize + gap);
+                    bool isHov = (_hoveredHomePlayerIndex == i);
+                    DrawPlayerIconButton(g, superScale, bx, btnY, btnSize, btnR, players[i], isHov);
                 }
             }
-
-            float text1X = thumbX + thumbSize + 9f * superScale;
-            string musicTitle = string.IsNullOrEmpty(track.Title) || track.Title == "No Media Playing"
-                ? "Audio Idle"
-                : (track.Title.Length > 20 ? track.Title.Substring(0, 18) + "…" : track.Title);
-
-            string musicSub = isPlaying
-                ? (string.IsNullOrEmpty(track.Artist) ? "Now Playing" : track.Artist)
-                : "Tap to open player";
-
-            if (musicSub.Length > 24) musicSub = musicSub.Substring(0, 22) + "…";
-
-            using (var brushMTitle = new SolidBrush(Color.FromArgb(255, 255, 255, 255)))
-            {
-                g.DrawString(musicTitle, fontCardTitle, brushMTitle, text1X, c1Y + 7f * superScale, StringFormat.GenericDefault);
-            }
-            using (var brushMSub = new SolidBrush(Color.FromArgb(160, 255, 255, 255)))
-            {
-                g.DrawString(musicSub, fontCardSub, brushMSub, text1X, c1Y + 23f * superScale, StringFormat.GenericDefault);
-            }
-
-            using var brushArrow = new SolidBrush(Color.FromArgb(120, 255, 255, 255));
-            g.DrawString("›", fontCardTitle, brushArrow, cardX + cardW - 16f * superScale, c1Y + c1H * 0.5f - 8f * superScale, StringFormat.GenericDefault);
         }
 
         // ----------------------------------------------------
@@ -3631,11 +4435,6 @@ internal sealed class OverlayForm : Form
             DrawHomeBauhausWeather(g, superScale, cardX, c2Y, cardW, c2H, cardR, pathC2, CurrentWeatherCondition);
 
             g.Restore(stateC2);
-        }
-
-        if (DateTime.UtcNow < _debugStyleToastUntil)
-        {
-            DrawWeatherStyleToast(g, superScale, targetW);
         }
     }
 
@@ -3675,6 +4474,113 @@ internal sealed class OverlayForm : Form
         using (var penH3 = new Pen(Color.FromArgb(150, 255, 255, 255), 1.2f * superScale))
         {
             g.DrawArc(penH3, h3Cx - h3R, groundY - h3R, h3R * 2f, h3R * 2f, 180, 180);
+        }
+    }
+
+    private static void DrawBauhausCloud(
+        Graphics g,
+        float superScale,
+        float cx,
+        float cy,
+        float width,
+        float height,
+        Color colorTop,
+        Color colorBottom,
+        Color rimColor,
+        float rimWidth = 1.0f,
+        bool showInnerVolume = true)
+    {
+        // 1. Flat aerodynamic base pill
+        float baseH = height * 0.46f;
+        float baseY = cy + height * 0.5f - baseH;
+        float baseW = width * 0.88f;
+        float baseX = cx - baseW * 0.5f;
+        float baseR = baseH * 0.5f;
+
+        // 2. Billowing puffy lobes
+        // Main central dome (highest crest)
+        float mainR = height * 0.44f;
+        float mainX = cx + width * 0.04f;
+        float mainY = cy - height * 0.06f;
+
+        // Left billowing lobe
+        float leftR = height * 0.36f;
+        float leftX = cx - width * 0.22f;
+        float leftY = cy + height * 0.04f;
+
+        // Right billowing lobe
+        float rightR = height * 0.32f;
+        float rightX = cx + width * 0.26f;
+        float rightY = cy + height * 0.08f;
+
+        // Far left shoulder puff
+        float farLeftR = height * 0.25f;
+        float farLeftX = cx - width * 0.34f;
+        float farLeftY = cy + height * 0.15f;
+
+        // 3. Unified Compound Silhouette Path (Single Solid Gradient Fill, No Internal Borders)
+        using (var pathCloud = new GraphicsPath())
+        {
+            using (var pathBase = CreateRoundedRectPath(baseX, baseY, baseW, baseH, baseR, baseR, baseR, baseR))
+            {
+                pathCloud.AddPath(pathBase, false);
+            }
+            pathCloud.AddEllipse(farLeftX - farLeftR, farLeftY - farLeftR, farLeftR * 2f, farLeftR * 2f);
+            pathCloud.AddEllipse(leftX - leftR, leftY - leftR, leftR * 2f, leftR * 2f);
+            pathCloud.AddEllipse(mainX - mainR, mainY - mainR, mainR * 2f, mainR * 2f);
+            pathCloud.AddEllipse(rightX - rightR, rightY - rightR, rightR * 2f, rightR * 2f);
+
+            using (var brushGrad = new LinearGradientBrush(
+                new PointF(cx, cy - height * 0.55f),
+                new PointF(cx, cy + height * 0.5f),
+                colorTop,
+                colorBottom))
+            {
+                g.FillPath(brushGrad, pathCloud);
+            }
+        }
+
+        // 4. Volumetric Inner Highlights (Organic 3D billow depth)
+        if (showInnerVolume)
+        {
+            int alphaMain = Math.Clamp((int)(colorTop.A * 0.38f), 15, 255);
+            Color innerMain = Color.FromArgb(alphaMain, Math.Min(255, colorTop.R + 32), Math.Min(255, colorTop.G + 32), Math.Min(255, colorTop.B + 32));
+            using (var brushInner = new SolidBrush(innerMain))
+            {
+                g.FillEllipse(brushInner, mainX - mainR * 0.65f, mainY - mainR * 0.65f, mainR * 1.3f, mainR * 1.15f);
+            }
+
+            int alphaLeft = Math.Clamp((int)(colorTop.A * 0.22f), 10, 255);
+            Color innerLeft = Color.FromArgb(alphaLeft, Math.Min(255, colorTop.R + 20), Math.Min(255, colorTop.G + 20), Math.Min(255, colorTop.B + 20));
+            using (var brushInnerLeft = new SolidBrush(innerLeft))
+            {
+                g.FillEllipse(brushInnerLeft, leftX - leftR * 0.60f, leftY - leftR * 0.55f, leftR * 1.2f, leftR * 1.05f);
+            }
+        }
+
+        // 5. Specular Upper Crest Rims (Sunlit/Skylit edges, no internal lines)
+        using (var penRim = new Pen(rimColor, rimWidth * superScale))
+        {
+            penRim.StartCap = LineCap.Round;
+            penRim.EndCap = LineCap.Round;
+
+            // Main central dome crest
+            g.DrawArc(penRim, mainX - mainR, mainY - mainR, mainR * 2f, mainR * 2f, 195, 145);
+
+            // Left lobe crest
+            g.DrawArc(penRim, leftX - leftR, leftY - leftR, leftR * 2f, leftR * 2f, 180, 115);
+
+            // Right lobe crest
+            g.DrawArc(penRim, rightX - rightR, rightY - rightR, rightR * 2f, rightR * 2f, 230, 100);
+
+            // Far left shoulder arc
+            g.DrawArc(penRim, farLeftX - farLeftR, farLeftY - farLeftR, farLeftR * 2f, farLeftR * 2f, 165, 85);
+        }
+
+        // Delicate base underside line (ground boundary)
+        using (var penBase = new Pen(Color.FromArgb((int)(rimColor.A * 0.40f), rimColor), 0.8f * superScale))
+        {
+            g.DrawLine(penBase, baseX + baseR, baseY + baseH, baseX + baseW - baseR, baseY + baseH);
         }
     }
 
@@ -3887,29 +4793,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
                     g.DrawArc(penOrbit, sunCx - 12f * superScale, sunCy - 12f * superScale, 24f * superScale, 24f * superScale, 160, 160);
                 }
 
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 24, 48, 58), 
-                    Color.FromArgb(245, 36, 70, 84), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 24, 48, 58),
+                    Color.FromArgb(245, 36, 70, 84),
                     Color.FromArgb(255, 54, 100, 116));
 
-                float c1X = artCx - 4f * superScale;
-                float c1Y = artCy + 4f * superScale;
-                float c1R = 12f * superScale;
-
-                float c2X = artCx + 11f * superScale;
-                float c2YCloud = artCy + 7f * superScale;
-                float c2R = 10f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(230, 64, 84, 110)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 82, 106, 136)))
-                using (var penCRim = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx - 2f * superScale,
+                    cy: artCy + 5f * superScale,
+                    width: 44f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(245, 96, 122, 154),
+                    colorBottom: Color.FromArgb(255, 62, 80, 105),
+                    rimColor: Color.FromArgb(170, 255, 235, 180),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 using (var penStratum = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
                 using (var brushNode = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
@@ -3939,27 +4837,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
                     g.FillPath(brushMoon, pathMoon);
                 }
 
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 16, 18, 38), 
-                    Color.FromArgb(245, 24, 28, 54), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 16, 18, 38),
+                    Color.FromArgb(245, 24, 28, 54),
                     Color.FromArgb(255, 36, 42, 78));
 
-                float c1X = artCx - 4f * superScale;
-                float c1Y = artCy + 4f * superScale;
-                float c1R = 12f * superScale;
-                float c2X = artCx + 10f * superScale;
-                float c2YCloud = artCy + 7f * superScale;
-                float c2R = 10f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(230, 28, 32, 56)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 38, 42, 72)))
-                using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx - 2f * superScale,
+                    cy: artCy + 5f * superScale,
+                    width: 44f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(240, 42, 48, 80),
+                    colorBottom: Color.FromArgb(255, 24, 28, 52),
+                    rimColor: Color.FromArgb(130, 210, 230, 255),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 DrawBauhausStar(g, superScale, artCx - 14f * superScale, artCy - 4f * superScale, 3.8f * superScale);
                 break;
@@ -3967,28 +4859,34 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 5: // Overcast: Layered Architectural Lead Strata & Overcast Disks
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 32, 38, 48), 
-                    Color.FromArgb(245, 44, 52, 64), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 32, 38, 48),
+                    Color.FromArgb(245, 44, 52, 64),
                     Color.FromArgb(255, 58, 68, 82));
 
-                float c1X = artCx - 8f * superScale;
-                float c1Y = artCy + 2f * superScale;
-                float c1R = 14f * superScale;
+                // Background cloud bank
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx + 6f * superScale,
+                    cy: artCy - 1f * superScale,
+                    width: 46f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(235, 52, 60, 72),
+                    colorBottom: Color.FromArgb(245, 36, 42, 52),
+                    rimColor: Color.FromArgb(70, 255, 255, 255),
+                    rimWidth: 0.9f,
+                    showInnerVolume: false);
 
-                float c2X = artCx + 10f * superScale;
-                float c2YCloud = artCy + 5f * superScale;
-                float c2R = 12f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(240, 52, 60, 72)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 68, 78, 92)))
-                using (var penCRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                // Foreground dense overcast cloud
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx - 4f * superScale,
+                    cy: artCy + 6f * superScale,
+                    width: 44f * superScale,
+                    height: 20f * superScale,
+                    colorTop: Color.FromArgb(250, 78, 90, 106),
+                    colorBottom: Color.FromArgb(255, 48, 56, 68),
+                    rimColor: Color.FromArgb(130, 255, 255, 255),
+                    rimWidth: 1.1f,
+                    showInnerVolume: true);
 
                 using (var penStratum = new Pen(Color.FromArgb(70, 255, 255, 255), 1.2f * superScale))
                 using (var brushNode = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
@@ -4005,9 +4903,9 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 6: // Fog & Mist: Slotted Translucent Scanline Bands, Phantom Faded Circles
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 26, 46, 44), 
-                    Color.FromArgb(245, 36, 62, 58), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 26, 46, 44),
+                    Color.FromArgb(245, 36, 62, 58),
                     Color.FromArgb(255, 50, 84, 78));
 
                 using (var brushPhantom = new SolidBrush(Color.FromArgb(40, 200, 240, 235)))
@@ -4030,28 +4928,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 7: // Drizzle: Fine Delicate 45-deg Micro-Dash Grid, Soft Clouds
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 22, 38, 52), 
-                    Color.FromArgb(245, 32, 54, 72), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 22, 38, 52),
+                    Color.FromArgb(245, 32, 54, 72),
                     Color.FromArgb(255, 46, 74, 98));
 
-                float c1X = artCx - 5f * superScale;
-                float c1Y = artCy + 2f * superScale;
-                float c1R = 12f * superScale;
-
-                float c2X = artCx + 11f * superScale;
-                float c2YCloud = artCy + 5f * superScale;
-                float c2R = 10f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(230, 42, 64, 86)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 58, 86, 114)))
-                using (var penCRim = new Pen(Color.FromArgb(80, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx,
+                    cy: artCy,
+                    width: 44f * superScale,
+                    height: 20f * superScale,
+                    colorTop: Color.FromArgb(245, 64, 94, 122),
+                    colorBottom: Color.FromArgb(255, 40, 62, 84),
+                    rimColor: Color.FromArgb(120, 180, 230, 255),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 using (var penDrizzle = new Pen(Color.FromArgb(190, 80, 210, 255), 1.0f * superScale))
                 {
@@ -4069,28 +4960,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 8: // Rain & Downpour: Petrol Clouds, Steep Diagonal Rain Streaks, Ripple Arc
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 18, 28, 38), 
-                    Color.FromArgb(245, 27, 42, 56), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 18, 28, 38),
+                    Color.FromArgb(245, 27, 42, 56),
                     Color.FromArgb(255, 38, 62, 82));
 
-                float c1X = artCx - 6f * superScale;
-                float c1Y = artCy + 1f * superScale;
-                float c1R = 13f * superScale;
-
-                float c2X = artCx + 10f * superScale;
-                float c2YCloud = artCy + 4f * superScale;
-                float c2R = 11f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
-                using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx,
+                    cy: artCy - 1f * superScale,
+                    width: 46f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(245, 52, 74, 102),
+                    colorBottom: Color.FromArgb(255, 32, 46, 68),
+                    rimColor: Color.FromArgb(110, 160, 225, 255),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 using (var penRainCyan = new Pen(Color.FromArgb(220, 64, 196, 255), 1.3f * superScale))
                 using (var penRainWhite = new Pen(Color.FromArgb(170, 255, 255, 255), 1.1f * superScale))
@@ -4110,27 +4994,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 9: // Freezing Rain & Sleet: Glacier Teal, Diamond Ice Crystals, Shard Lines
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 20, 44, 60), 
-                    Color.FromArgb(245, 28, 62, 82), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 20, 44, 60),
+                    Color.FromArgb(245, 28, 62, 82),
                     Color.FromArgb(255, 42, 88, 114));
 
-                float c1X = artCx - 4f * superScale;
-                float c1Y = artCy + 2f * superScale;
-                float c1R = 12f * superScale;
-                float c2X = artCx + 11f * superScale;
-                float c2YCloud = artCy + 5f * superScale;
-                float c2R = 10f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(235, 38, 66, 88)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(245, 52, 92, 122)))
-                using (var penCRim = new Pen(Color.FromArgb(110, 180, 240, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx,
+                    cy: artCy - 1f * superScale,
+                    width: 46f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(245, 48, 88, 118),
+                    colorBottom: Color.FromArgb(255, 28, 56, 80),
+                    rimColor: Color.FromArgb(150, 180, 240, 255),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 using (var penSleet = new Pen(Color.FromArgb(220, 140, 230, 255), 1.2f * superScale))
                 using (var brushDiamond = new SolidBrush(Color.FromArgb(240, 200, 245, 255)))
@@ -4237,28 +5115,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 12: // Thunderstorm: Storm Clouds, Diagonal Rain, Electric Gold Lightning Bolt
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 18, 28, 38), 
-                    Color.FromArgb(245, 27, 42, 56), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 18, 28, 38),
+                    Color.FromArgb(245, 27, 42, 56),
                     Color.FromArgb(255, 38, 62, 82));
 
-                float c1X = artCx - 6f * superScale;
-                float c1Y = artCy + 1f * superScale;
-                float c1R = 13f * superScale;
-
-                float c2X = artCx + 10f * superScale;
-                float c2YCloud = artCy + 4f * superScale;
-                float c2R = 11f * superScale;
-
-                using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
-                using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
-                using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                {
-                    g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                    g.FillEllipse(brushC2, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                    g.DrawEllipse(penCRim, c2X - c2R, c2YCloud - c2R, c2R * 2f, c2R * 2f);
-                }
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx,
+                    cy: artCy - 2f * superScale,
+                    width: 46f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(250, 48, 62, 84),
+                    colorBottom: Color.FromArgb(255, 26, 34, 50),
+                    rimColor: Color.FromArgb(130, 255, 230, 140),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 using (var penRain = new Pen(Color.FromArgb(180, 64, 196, 255), 1.1f * superScale))
                 {
@@ -4288,10 +5159,21 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
 
             case 13: // Severe Hailstorm: Violent Purple Horizon, Angular Lightning, Faceted Hail
             {
-                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY, 
-                    Color.FromArgb(235, 36, 20, 48), 
-                    Color.FromArgb(245, 52, 28, 68), 
+                DrawBauhausHorizons(g, superScale, cardX + cardW, groundY,
+                    Color.FromArgb(235, 36, 20, 48),
+                    Color.FromArgb(245, 52, 28, 68),
                     Color.FromArgb(255, 74, 40, 96));
+
+                DrawBauhausCloud(g, superScale,
+                    cx: artCx,
+                    cy: artCy - 2f * superScale,
+                    width: 46f * superScale,
+                    height: 21f * superScale,
+                    colorTop: Color.FromArgb(250, 68, 42, 88),
+                    colorBottom: Color.FromArgb(255, 38, 22, 54),
+                    rimColor: Color.FromArgb(130, 220, 180, 255),
+                    rimWidth: 1.0f,
+                    showInnerVolume: true);
 
                 // Angular multi-segment lightning
                 using (var penBolt = new Pen(Color.FromArgb(255, 120, 240, 255), 1.3f * superScale))
@@ -4404,29 +5286,30 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         }
 
         // 3. Swiss Typographic Block (Left)
-        using (var fontDay = GetPremiumFont(6.8f * superScale, FontStyle.Bold))
+        float textLeft = cardX + 11f * superScale;
+        using (var fontDay = GetPremiumFont(6.4f * superScale, FontStyle.Bold))
         using (var brushDay = new SolidBrush(Color.FromArgb(175, 210, 235, 255)))
         {
-            g.DrawString(dayCity, fontDay, brushDay, cardX + 9f * superScale, c2Y + 6.5f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(dayCity, fontDay, brushDay, textLeft, c2Y + 5.5f * superScale, StringFormat.GenericTypographic);
         }
 
-        float textStartX = cardX + 9f * superScale;
-        using (var fontTemp = GetPremiumFont(19.0f * superScale, FontStyle.Bold))
+        float textStartX = textLeft;
+        using (var fontTemp = GetPremiumFont(16.5f * superScale, FontStyle.Bold))
         {
             var tSize = g.MeasureString(tempStr, fontTemp, PointF.Empty, StringFormat.GenericTypographic);
             using var brushT = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
-            g.DrawString(tempStr, fontTemp, brushT, cardX + 9f * superScale, c2Y + 16.5f * superScale, StringFormat.GenericTypographic);
-            textStartX += tSize.Width + 8f * superScale;
+            g.DrawString(tempStr, fontTemp, brushT, textLeft, c2Y + 14.0f * superScale, StringFormat.GenericTypographic);
+            textStartX += tSize.Width + 7.5f * superScale;
         }
 
-        using (var fontCond = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
-        using (var fontSub = GetPremiumFont(6.8f * superScale, FontStyle.Regular))
+        using (var fontCond = GetPremiumFont(7.8f * superScale, FontStyle.Bold))
+        using (var fontSub = GetPremiumFont(6.4f * superScale, FontStyle.Regular))
         {
-            float condY = c2Y + 16.5f * superScale;
+            float condY = c2Y + 14.5f * superScale;
             using var brushCond = new SolidBrush(Color.FromArgb(250, 255, 255, 255));
             g.DrawString(condStr, fontCond, brushCond, textStartX, condY, StringFormat.GenericTypographic);
 
-            float subY = c2Y + 28f * superScale;
+            float subY = c2Y + 25.5f * superScale;
             using var brushSub = new SolidBrush(Color.FromArgb(170, 210, 235, 255));
             g.DrawString(subStr, fontSub, brushSub, textStartX, subY, StringFormat.GenericTypographic);
         }
@@ -4437,39 +5320,6 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
             using var fontArrow = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
             g.DrawString("›", fontArrow, brushArrow, cardX + cardW - 11f * superScale, c2Y + c2H * 0.5f - 7f * superScale, StringFormat.GenericDefault);
         }
-    }
-
-    private static void DrawWeatherStyleToast(Graphics g, float superScale, int targetW)
-    {
-        WeatherModel wModel = IsLiveWeatherMode 
-            ? LiveWeatherService.Current 
-            : LiveWeatherService.GetMockWeather(CurrentWeatherCondition);
-
-        string styleName = IsLiveWeatherMode
-            ? $"LIVE · {wModel.City} · {wModel.ConditionName} [S]"
-            : $"BAUHAUS · {wModel.ConditionName} [S] ({CurrentWeatherCondition}/{MaxWeatherConditions})";
-
-        using var fontToast = GetPremiumFont(7.0f * superScale, FontStyle.Bold);
-        var tSize = g.MeasureString(styleName, fontToast, PointF.Empty, StringFormat.GenericTypographic);
-
-        float padX = 8f * superScale;
-        float padY = 3.5f * superScale;
-        float pillW = tSize.Width + padX * 2f;
-        float pillH = tSize.Height + padY * 2f;
-        float pillX = targetW * superScale - pillW - 14f * superScale;
-        float pillY = 8f * superScale;
-        float pillR = pillH * 0.5f;
-
-        using var pathToast = CreateRoundedRectPath(pillX, pillY, pillW, pillH, pillR, pillR, pillR, pillR);
-        using var brushBg = new SolidBrush(Color.FromArgb(220, 10, 16, 26));
-        g.FillPath(brushBg, pathToast);
-
-        using var penBorder = new Pen(Color.FromArgb(130, 255, 255, 255), 1.0f * superScale);
-        g.DrawPath(penBorder, pathToast);
-
-        Color textColor = IsLiveWeatherMode ? Color.FromArgb(255, 100, 255, 180) : Color.FromArgb(255, 255, 215, 75);
-        using var brushText = new SolidBrush(textColor);
-        g.DrawString(styleName, fontToast, brushText, pillX + padX, pillY + padY, StringFormat.GenericTypographic);
     }
 
     private static GraphicsPath CreateRoundedRectPath(float x, float y, float w, float h, float rtl, float rtr, float rbr, float rbl)
@@ -4603,6 +5453,168 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         g.FillPolygon(brush, pts);
     }
 
+    private static void DrawPlayerIconButton(
+        Graphics g,
+        float superScale,
+        float btnX,
+        float btnY,
+        float btnSize,
+        float btnR,
+        PlayerItem player,
+        bool isHovered)
+    {
+        using var pathBtn = CreateRoundedRectanglePath(btnX, btnY, btnSize, btnSize, btnR);
+
+        // Frosted glass button tile
+        int bgAlpha = isHovered ? 68 : 36;
+        using (var brushBg = new SolidBrush(Color.FromArgb(bgAlpha, 255, 255, 255)))
+        {
+            g.FillPath(brushBg, pathBtn);
+        }
+
+        int rimAlpha = isHovered ? 160 : 70;
+        float rimThick = isHovered ? 1.2f * superScale : 1.0f * superScale;
+        using (var penRim = new Pen(Color.FromArgb(rimAlpha, 255, 255, 255), rimThick))
+        {
+            g.DrawPath(penRim, pathBtn);
+        }
+
+        float cx = btnX + btnSize * 0.5f;
+        float cy = btnY + btnSize * 0.5f;
+        string iconType = (player.Icon ?? "").Trim().ToLowerInvariant();
+        Bitmap? nativeIcon = PlayerService.GetPlayerIconBitmap(player, 128);
+
+        if (nativeIcon != null)
+        {
+            const float nativeIconSize = 20f;
+            float iconSize = nativeIconSize * superScale;
+            float iconX = cx - iconSize * 0.5f;
+            float iconY = cy - iconSize * 0.5f;
+            var stateIcon = g.Save();
+            g.SetClip(pathBtn);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.DrawImage(nativeIcon, new Rectangle((int)iconX, (int)iconY, (int)iconSize, (int)iconSize),
+                0, 0, nativeIcon.Width, nativeIcon.Height, GraphicsUnit.Pixel);
+            g.Restore(stateIcon);
+        }
+        else if (iconType == "spotify")
+        {
+            DrawSpotifyIcon(g, superScale, cx, cy, isHovered);
+        }
+        else if (iconType == "ytmusic" || iconType == "youtube" || iconType == "youtubemusic")
+        {
+            DrawYouTubeMusicIcon(g, superScale, cx, cy, isHovered);
+        }
+        else if (iconType == "applemusic" || iconType == "apple")
+        {
+            DrawAppleMusicIcon(g, superScale, cx, cy, isHovered);
+        }
+        else
+        {
+            DrawGenericMusicIcon(g, superScale, cx, cy, isHovered);
+        }
+    }
+
+    private static void DrawSpotifyIcon(Graphics g, float superScale, float cx, float cy, bool isHovered)
+    {
+        float r = 9.0f * superScale;
+        Color greenCol = isHovered ? Color.FromArgb(34, 215, 98) : Color.FromArgb(29, 185, 84);
+        using (var brushGreen = new SolidBrush(greenCol))
+        {
+            g.FillEllipse(brushGreen, cx - r, cy - r, r * 2f, r * 2f);
+        }
+
+        var state = g.Save();
+        g.TranslateTransform(cx, cy);
+        g.RotateTransform(-16f); // Authentic Spotify branding rotation
+
+        Color waveCol = Color.FromArgb(20, 24, 28);
+        float arcCenterY = 2.4f * superScale;
+
+        // Top arc (longest)
+        float r1 = 6.2f * superScale;
+        using (var pen1 = new Pen(waveCol, 1.55f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawArc(pen1, -r1, arcCenterY - r1, r1 * 2f, r1 * 2f, 216f, 108f);
+        }
+
+        // Middle arc
+        float r2 = 4.6f * superScale;
+        using (var pen2 = new Pen(waveCol, 1.35f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawArc(pen2, -r2, arcCenterY - r2, r2 * 2f, r2 * 2f, 220f, 100f);
+        }
+
+        // Bottom arc (shortest)
+        float r3 = 3.1f * superScale;
+        using (var pen3 = new Pen(waveCol, 1.15f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawArc(pen3, -r3, arcCenterY - r3, r3 * 2f, r3 * 2f, 224f, 92f);
+        }
+
+        g.Restore(state);
+    }
+
+    private static void DrawYouTubeMusicIcon(Graphics g, float superScale, float cx, float cy, bool isHovered)
+    {
+        float r = 9.0f * superScale;
+        Color redCol = isHovered ? Color.FromArgb(255, 45, 75) : Color.FromArgb(255, 0, 0);
+        using (var brushRed = new SolidBrush(redCol))
+        {
+            g.FillEllipse(brushRed, cx - r, cy - r, r * 2f, r * 2f);
+        }
+
+        // Concentric white ring
+        float ringR = 5.2f * superScale;
+        using var penRing = new Pen(Color.White, 1.25f * superScale);
+        g.DrawEllipse(penRing, cx - ringR, cy - ringR, ringR * 2f, ringR * 2f);
+
+        // Right-pointing play triangle in center
+        PointF[] tri = new PointF[]
+        {
+            new PointF(cx - 1.8f * superScale, cy - 2.8f * superScale),
+            new PointF(cx + 2.8f * superScale, cy),
+            new PointF(cx - 1.8f * superScale, cy + 2.8f * superScale)
+        };
+        using var brushWhite = new SolidBrush(Color.White);
+        g.FillPolygon(brushWhite, tri);
+    }
+
+    private static void DrawAppleMusicIcon(Graphics g, float superScale, float cx, float cy, bool isHovered)
+    {
+        float r = 9.0f * superScale;
+        Color pinkCol = isHovered ? Color.FromArgb(255, 75, 95) : Color.FromArgb(252, 60, 68);
+        using (var brushPink = new SolidBrush(pinkCol))
+        {
+            g.FillEllipse(brushPink, cx - r, cy - r, r * 2f, r * 2f);
+        }
+
+        using var fontNote = GetPremiumFont(9.0f * superScale, FontStyle.Bold);
+        var noteSize = g.MeasureString("♫", fontNote, PointF.Empty, StringFormat.GenericTypographic);
+        using var brushWhite = new SolidBrush(Color.White);
+        g.DrawString("♫", fontNote, brushWhite, cx - noteSize.Width * 0.5f, cy - noteSize.Height * 0.5f, StringFormat.GenericTypographic);
+    }
+
+    private static void DrawGenericMusicIcon(Graphics g, float superScale, float cx, float cy, bool isHovered)
+    {
+        float r = 9.0f * superScale;
+        int fillA = isHovered ? 110 : 80;
+        using (var brushBg = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255)))
+        {
+            g.FillEllipse(brushBg, cx - r, cy - r, r * 2f, r * 2f);
+        }
+        using (var penRim = new Pen(Color.FromArgb(180, 255, 255, 255), 1.0f * superScale))
+        {
+            g.DrawEllipse(penRim, cx - r, cy - r, r * 2f, r * 2f);
+        }
+
+        using var fontNote = GetPremiumFont(8.5f * superScale, FontStyle.Bold);
+        var noteSize = g.MeasureString("♫", fontNote, PointF.Empty, StringFormat.GenericTypographic);
+        using var brushWhite = new SolidBrush(Color.White);
+        g.DrawString("♫", fontNote, brushWhite, cx - noteSize.Width * 0.5f, cy - noteSize.Height * 0.5f, StringFormat.GenericTypographic);
+    }
+
     private static void DrawTabMusicContent(
         Graphics g,
         float superScale,
@@ -4616,7 +5628,8 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         float[]? eqBarHeights,
         int hoveredButton,
         int clickedButton,
-        double clickAnimProgress)
+        double clickAnimProgress,
+        int mediaSessionCount)
     {
         using var fontTitle = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
         using var fontArtist = GetPremiumFont(9.5f * superScale, FontStyle.Regular);
@@ -4631,6 +5644,7 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         float textStartX = artX + artSize + 16f * superScale;
         float rightEdge = (targetW - 16f) * superScale;
         float barW = rightEdge - textStartX;
+        float textRightEdge = (mediaSessionCount > 1 ? 414f : 444f) * superScale;
 
         float ctrlY = 120f * superScale;
 
@@ -4651,12 +5665,24 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         {
             using (var brushTitle = new SolidBrush(Color.FromArgb((int)(255 * restingAlpha), 255, 255, 255)))
             {
-                g.DrawString(track.Title, fontTitle, brushTitle, textStartX, 44f * superScale, StringFormat.GenericDefault);
+                using var titleFormat = new StringFormat(StringFormat.GenericDefault)
+                {
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
+                g.DrawString(track.Title, fontTitle, brushTitle,
+                    new RectangleF(textStartX, 44f * superScale, textRightEdge - textStartX, 18f * superScale), titleFormat);
             }
 
             using (var brushArtist = new SolidBrush(Color.FromArgb((int)(195 * restingAlpha), 255, 255, 255)))
             {
-                g.DrawString(track.Artist, fontArtist, brushArtist, textStartX, 63f * superScale, StringFormat.GenericDefault);
+                using var artistFormat = new StringFormat(StringFormat.GenericDefault)
+                {
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
+                g.DrawString(track.Artist, fontArtist, brushArtist,
+                    new RectangleF(textStartX, 63f * superScale, textRightEdge - textStartX, 14f * superScale), artistFormat);
             }
 
             float barY = 86f * superScale;
@@ -4710,23 +5736,70 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
                 g.DrawString(remStr, fontTime, brushTime, rightEdge - remSize.Width, timeLabelY, StringFormat.GenericDefault);
             }
 
+            // Session selector sits above the progress rail. It only
+            // appears when Windows exposes more than one controllable media session.
+            if (mediaSessionCount > 1)
+            {
+                bool isSessionHovered = hoveredButton == BtnMediaSessionNext;
+                DrawProjectedButtonContainer(g, 432f * superScale, 54f * superScale, 11f * superScale, 5.5f * superScale,
+                    isSessionHovered, clickedButton == BtnMediaSessionNext, clickAnimProgress, superScale,
+                    () =>
+                    {
+                        using var penArrow = new Pen(Color.FromArgb((int)(220 * restingAlpha), 255, 255, 255), 1.3f * superScale)
+                        {
+                            StartCap = LineCap.Round,
+                            EndCap = LineCap.Round,
+                            LineJoin = LineJoin.Round
+                        };
+                        float ax = 432f * superScale;
+                        float ay = 54f * superScale;
+                        g.DrawLine(penArrow, ax - 3.5f * superScale, ay - 3.0f * superScale, ax + 2.5f * superScale, ay);
+                        g.DrawLine(penArrow, ax + 2.5f * superScale, ay, ax - 3.5f * superScale, ay + 3.0f * superScale);
+                    }, restingAlpha);
+            }
+
             // Left resting Audio Device button
             DrawProjectedButtonContainer(g, 98f * superScale, ctrlY, 15f * superScale, 7f * superScale,
                 hoveredButton == BtnAudioDevice, clickedButton == BtnAudioDevice, clickAnimProgress, superScale,
                 () => DrawAudioOutputGlyph(g, 98f * superScale, ctrlY, 13f * superScale, restingAlpha), restingAlpha);
 
-            // Center Transport Controls
-            DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
-                hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
-                () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false, restingAlpha), restingAlpha);
+            // Center transport controls stay minimal at rest. Their glass body
+            // appears only on hover or during the click bounce.
+            bool prevElevated = hoveredButton == BtnPrev || clickedButton == BtnPrev;
+            if (prevElevated)
+            {
+                DrawProjectedButtonContainer(g, 217f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
+                    hoveredButton == BtnPrev, clickedButton == BtnPrev, clickAnimProgress, superScale,
+                    () => DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false, restingAlpha), restingAlpha);
+            }
+            else
+            {
+                DrawTrackSkipGlyph(g, 217f * superScale, ctrlY, 13f * superScale, isNext: false, restingAlpha);
+            }
 
-            DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
-                hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
-                () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying, restingAlpha), restingAlpha);
+            bool playElevated = hoveredButton == BtnPlayPause || clickedButton == BtnPlayPause;
+            if (playElevated)
+            {
+                DrawProjectedButtonContainer(g, 265f * superScale, ctrlY, 21f * superScale, 11f * superScale,
+                    hoveredButton == BtnPlayPause, clickedButton == BtnPlayPause, clickAnimProgress, superScale,
+                    () => DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying, restingAlpha), restingAlpha);
+            }
+            else
+            {
+                DrawPlayPauseGlyph(g, 265f * superScale, ctrlY, 18f * superScale, isPlaying, restingAlpha);
+            }
 
-            DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
-                hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
-                () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true, restingAlpha), restingAlpha);
+            bool nextElevated = hoveredButton == BtnNext || clickedButton == BtnNext;
+            if (nextElevated)
+            {
+                DrawProjectedButtonContainer(g, 313f * superScale, ctrlY, 17f * superScale, 8.5f * superScale,
+                    hoveredButton == BtnNext, clickedButton == BtnNext, clickAnimProgress, superScale,
+                    () => DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true, restingAlpha), restingAlpha);
+            }
+            else
+            {
+                DrawTrackSkipGlyph(g, 313f * superScale, ctrlY, 13f * superScale, isNext: true, restingAlpha);
+            }
 
             // Right resting Sleep Timer button
             bool isHoveredSleep = hoveredButton == BtnSleepTimer;
@@ -4995,28 +6068,7 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
                     using var brushLightMoon = new SolidBrush(Color.FromArgb((int)(240 * contentAlpha), 255, 255, 255));
                     DrawMoonWithStars(g, brushLightMoon, 102f * superScale, 52f * superScale, 7.5f * superScale);
 
-                    var szSleepHdr = g.MeasureString("Sleep Timer", fontHeader, PointF.Empty, StringFormat.GenericTypographic);
                     g.DrawString("Sleep Timer", fontHeader, brushTitle, 116f * superScale, 45f * superScale, StringFormat.GenericTypographic);
-                    string sleepSub = _sleepTimerActive ? "Media will pause when time runs out" : "Pause audio playback automatically";
-                    g.DrawString(sleepSub, fontSub, brushSub, (116f + szSleepHdr.Width / superScale + 10f) * superScale, 47.5f * superScale, StringFormat.GenericTypographic);
-
-                    // Header Stop button if active
-                    if (_sleepTimerActive)
-                    {
-                        float stX = 338f, stY = 43f, stW = 68f, stH = 22f, stR = 6f;
-                        bool isStopHov = _hoveredMusicSleepBtn == MusicSleepBtnCancel;
-                        using (var pathStop = CreateRoundedRectanglePath(stX * superScale, stY * superScale, stW * superScale, stH * superScale, stR * superScale))
-                        {
-                            using var brushStop = new SolidBrush(Color.FromArgb((int)((isStopHov ? 70 : 35) * contentAlpha), 255, 75, 75));
-                            g.FillPath(brushStop, pathStop);
-                            using var penStop = new Pen(Color.FromArgb((int)(100 * contentAlpha), 255, 100, 100), 1.0f * superScale);
-                            g.DrawPath(penStop, pathStop);
-                        }
-                        using var brushStopText = new SolidBrush(Color.FromArgb((int)(250 * contentAlpha), 255, 200, 200));
-                        using var fontStop = GetPremiumFont(7.2f * superScale, FontStyle.Bold);
-                        var szSt = g.MeasureString("✕ Stop", fontStop, PointF.Empty, StringFormat.GenericTypographic);
-                        g.DrawString("✕ Stop", fontStop, brushStopText, (stX + (stW - szSt.Width / superScale) * 0.5f) * superScale, (stY + (stH - szSt.Height / superScale) * 0.5f) * superScale, StringFormat.GenericTypographic);
-                    }
 
                     // Close Button [✕]
                     float cX = 416f, cY = 43f, cW = 22f, cH = 22f, cR = 11f;
@@ -5253,11 +6305,6 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         int targetW)
     {
         DrawTabBauhausWeather(g, superScale, targetW, CurrentWeatherCondition);
-
-        if (DateTime.UtcNow < _debugStyleToastUntil)
-        {
-            DrawWeatherStyleToast(g, superScale, targetW);
-        }
     }
 
 private static void DrawTabBauhausWeather(
@@ -5518,24 +6565,16 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 36, 70, 84),
                         Color.FromArgb(255, 54, 100, 116));
 
-                    float c1X = wX + 44f * superScale;
-                    float c1Y = wY + 40f * superScale;
-                    float c1R = 21f * superScale;
-
-                    float c2X = wX + 68f * superScale;
-                    float c2Y = wY + 46f * superScale;
-                    float c2R = 18f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 64, 84, 110)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 82, 106, 136)))
-                    using (var penCRim = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 50f * superScale,
+                        cy: wY + 48f * superScale,
+                        width: 74f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(245, 96, 122, 154),
+                        colorBottom: Color.FromArgb(255, 62, 80, 105),
+                        rimColor: Color.FromArgb(170, 255, 235, 180),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     using (var penStratum = new Pen(Color.FromArgb(65, 255, 255, 255), 1.0f * superScale))
                     using (var brushNode = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
@@ -5574,22 +6613,16 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 24, 28, 54),
                         Color.FromArgb(255, 36, 42, 78));
 
-                    float c1X = wX + 44f * superScale;
-                    float c1Y = wY + 42f * superScale;
-                    float c1R = 21f * superScale;
-                    float c2X = wX + 68f * superScale;
-                    float c2Y = wY + 48f * superScale;
-                    float c2R = 18f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 28, 32, 56)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 38, 42, 72)))
-                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 50f * superScale,
+                        cy: wY + 48f * superScale,
+                        width: 74f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(240, 42, 48, 80),
+                        colorBottom: Color.FromArgb(255, 24, 28, 52),
+                        rimColor: Color.FromArgb(130, 210, 230, 255),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     DrawBauhausStar(g, superScale, wX + 22f * superScale, wY + 24f * superScale, 5.0f * superScale);
                     DrawBauhausStar(g, superScale, wX + 32f * superScale, wY + 64f * superScale, 3.5f * superScale);
@@ -5603,32 +6636,29 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 44, 52, 64),
                         Color.FromArgb(255, 58, 68, 82));
 
-                    float c1X = wX + 38f * superScale;
-                    float c1Y = wY + 36f * superScale;
-                    float c1R = 24f * superScale;
+                    // Background cloud bank
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 68f * superScale,
+                        cy: wY + 36f * superScale,
+                        width: 78f * superScale,
+                        height: 36f * superScale,
+                        colorTop: Color.FromArgb(235, 52, 60, 72),
+                        colorBottom: Color.FromArgb(245, 36, 42, 52),
+                        rimColor: Color.FromArgb(70, 255, 255, 255),
+                        rimWidth: 1.0f,
+                        showInnerVolume: false);
 
-                    float c2X = wX + 74f * superScale;
-                    float c2Y = wY + 40f * superScale;
-                    float c2R = 21f * superScale;
-
-                    float c3X = wX + 56f * superScale;
-                    float c3Y = wY + 54f * superScale;
-                    float c3R = 19f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 52, 60, 72)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 68, 78, 92)))
-                    using (var brushC3 = new SolidBrush(Color.FromArgb(250, 84, 96, 110)))
-                    using (var penCRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-
-                        g.FillEllipse(brushC3, c3X - c3R, c3Y - c3R, c3R * 2f, c3R * 2f);
-                        g.DrawEllipse(penCRim, c3X - c3R, c3Y - c3R, c3R * 2f, c3R * 2f);
-                    }
+                    // Foreground dense overcast cloud
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 48f * superScale,
+                        cy: wY + 50f * superScale,
+                        width: 72f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(250, 78, 90, 106),
+                        colorBottom: Color.FromArgb(255, 48, 56, 68),
+                        rimColor: Color.FromArgb(130, 255, 255, 255),
+                        rimWidth: 1.2f,
+                        showInnerVolume: true);
 
                     using (var penStratum = new Pen(Color.FromArgb(70, 255, 255, 255), 1.2f * superScale))
                     using (var brushNode = new SolidBrush(Color.FromArgb(190, 255, 255, 255)))
@@ -5677,24 +6707,16 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 32, 54, 72),
                         Color.FromArgb(255, 46, 74, 98));
 
-                    float c1X = wX + 42f * superScale;
-                    float c1Y = wY + 32f * superScale;
-                    float c1R = 20f * superScale;
-
-                    float c2X = wX + 72f * superScale;
-                    float c2Y = wY + 36f * superScale;
-                    float c2R = 17f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(230, 42, 64, 86)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 58, 86, 114)))
-                    using (var penCRim = new Pen(Color.FromArgb(85, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 56f * superScale,
+                        cy: wY + 34f * superScale,
+                        width: 74f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(245, 64, 94, 122),
+                        colorBottom: Color.FromArgb(255, 40, 62, 84),
+                        rimColor: Color.FromArgb(120, 180, 230, 255),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     using (var penDrizzle = new Pen(Color.FromArgb(200, 80, 210, 255), 1.1f * superScale))
                     {
@@ -5723,24 +6745,16 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 27, 42, 56),
                         Color.FromArgb(255, 38, 62, 82));
 
-                    float c1X = wX + 42f * superScale;
-                    float c1Y = wY + 32f * superScale;
-                    float c1R = 21f * superScale;
-
-                    float c2X = wX + 74f * superScale;
-                    float c2Y = wY + 36f * superScale;
-                    float c2R = 19f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
-                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 58f * superScale,
+                        cy: wY + 32f * superScale,
+                        width: 76f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(245, 52, 74, 102),
+                        colorBottom: Color.FromArgb(255, 32, 46, 68),
+                        rimColor: Color.FromArgb(110, 160, 225, 255),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     using (var penRainCyan = new Pen(Color.FromArgb(220, 64, 196, 255), 1.3f * superScale))
                     using (var penRainWhite = new Pen(Color.FromArgb(170, 255, 255, 255), 1.1f * superScale))
@@ -5765,22 +6779,16 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 28, 62, 82),
                         Color.FromArgb(255, 42, 88, 114));
 
-                    float c1X = wX + 42f * superScale;
-                    float c1Y = wY + 32f * superScale;
-                    float c1R = 21f * superScale;
-                    float c2X = wX + 74f * superScale;
-                    float c2Y = wY + 36f * superScale;
-                    float c2R = 19f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(235, 38, 66, 88)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(245, 52, 92, 122)))
-                    using (var penCRim = new Pen(Color.FromArgb(110, 180, 240, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 58f * superScale,
+                        cy: wY + 32f * superScale,
+                        width: 76f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(245, 48, 88, 118),
+                        colorBottom: Color.FromArgb(255, 28, 56, 80),
+                        rimColor: Color.FromArgb(150, 180, 240, 255),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     using (var penSleet = new Pen(Color.FromArgb(220, 140, 230, 255), 1.2f * superScale))
                     using (var brushDiamond = new SolidBrush(Color.FromArgb(240, 200, 245, 255)))
@@ -5897,24 +6905,16 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(245, 27, 42, 56),
                         Color.FromArgb(255, 38, 62, 82));
 
-                    float c1X = wX + 42f * superScale;
-                    float c1Y = wY + 32f * superScale;
-                    float c1R = 21f * superScale;
-
-                    float c2X = wX + 74f * superScale;
-                    float c2Y = wY + 36f * superScale;
-                    float c2R = 19f * superScale;
-
-                    using (var brushC1 = new SolidBrush(Color.FromArgb(240, 36, 52, 72)))
-                    using (var brushC2 = new SolidBrush(Color.FromArgb(250, 48, 68, 94)))
-                    using (var penCRim = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
-                    {
-                        g.FillEllipse(brushC1, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-                        g.DrawEllipse(penCRim, c1X - c1R, c1Y - c1R, c1R * 2f, c1R * 2f);
-
-                        g.FillEllipse(brushC2, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                        g.DrawEllipse(penCRim, c2X - c2R, c2Y - c2R, c2R * 2f, c2R * 2f);
-                    }
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 58f * superScale,
+                        cy: wY + 32f * superScale,
+                        width: 76f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(250, 48, 62, 84),
+                        colorBottom: Color.FromArgb(255, 26, 34, 50),
+                        rimColor: Color.FromArgb(130, 255, 230, 140),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     using (var penRainCyan = new Pen(Color.FromArgb(210, 64, 196, 255), 1.2f * superScale))
                     {
@@ -5953,6 +6953,17 @@ private static void DrawTabBauhausWeather(
                         Color.FromArgb(235, 36, 20, 48),
                         Color.FromArgb(245, 52, 28, 68),
                         Color.FromArgb(255, 74, 40, 96));
+
+                    DrawBauhausCloud(g, superScale,
+                        cx: wX + 58f * superScale,
+                        cy: wY + 32f * superScale,
+                        width: 76f * superScale,
+                        height: 34f * superScale,
+                        colorTop: Color.FromArgb(250, 68, 42, 88),
+                        colorBottom: Color.FromArgb(255, 38, 22, 54),
+                        rimColor: Color.FromArgb(130, 220, 180, 255),
+                        rimWidth: 1.1f,
+                        showInnerVolume: true);
 
                     using (var penBolt = new Pen(Color.FromArgb(255, 120, 240, 255), 1.5f * superScale))
                     {
@@ -6075,18 +7086,20 @@ private static void DrawTabBauhausWeather(
         float infoX = wX + artW + 16f * superScale;
         float infoW = totalW - artW - 16f * superScale;
 
+        using var sfTypo = new StringFormat(StringFormat.GenericTypographic);
+
         // Top Row: Day/Date & City
         using (var fontDay = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
         using (var brushDay = new SolidBrush(Color.FromArgb(180, 215, 245, 255)))
         {
-            g.DrawString(dayString, fontDay, brushDay, infoX, wY + 2f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(dayString, fontDay, brushDay, infoX, wY + 2f * superScale, sfTypo);
         }
 
         using (var fontCity = GetPremiumFont(8.0f * superScale, FontStyle.Bold))
         using (var brushCity = new SolidBrush(Color.FromArgb(220, 240, 255, 255)))
         {
-            var cSize = g.MeasureString(cityString, fontCity, PointF.Empty, StringFormat.GenericTypographic);
-            g.DrawString(cityString, fontCity, brushCity, infoX + infoW - cSize.Width, wY + 2f * superScale, StringFormat.GenericTypographic);
+            var cSize = g.MeasureString(cityString, fontCity, PointF.Empty, sfTypo);
+            g.DrawString(cityString, fontCity, brushCity, Math.Max(infoX + 100f * superScale, infoX + infoW - cSize.Width), wY + 2f * superScale, sfTypo);
         }
 
         // Middle Row: Hero Temperature Numerals & Condition Name
@@ -6102,7 +7115,7 @@ private static void DrawTabBauhausWeather(
             }
 
             using var brushT = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
-            g.DrawString(tempString, fontTemp, brushT, infoX, tempBlockY, StringFormat.GenericTypographic);
+            g.DrawString(tempString, fontTemp, brushT, infoX, tempBlockY, sfTypo);
             textStartX = infoX + tSize.Width + 12f * superScale;
         }
 
@@ -6110,10 +7123,10 @@ private static void DrawTabBauhausWeather(
         using (var fontSub = GetPremiumFont(8.0f * superScale, FontStyle.Regular))
         {
             using var brushCond = new SolidBrush(Color.FromArgb(255, 255, 255, 255));
-            g.DrawString(condString, fontCond, brushCond, textStartX, tempBlockY + 2f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(condString, fontCond, brushCond, textStartX, tempBlockY + 2f * superScale, sfTypo);
 
             using var brushSub = new SolidBrush(Color.FromArgb(180, 215, 240, 255));
-            g.DrawString(subString, fontSub, brushSub, textStartX, tempBlockY + 18f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(subString, fontSub, brushSub, textStartX, tempBlockY + 18f * superScale, sfTypo);
         }
 
         // ----------------------------------------------------
@@ -6262,8 +7275,8 @@ private static void DrawTabBauhausWeather(
             string lbl = chipData[i, 0];
             string val = chipData[i, 1];
 
-            g.DrawString(lbl, fontChipLbl, brushChipLbl, textX, chipY + 4f * superScale, StringFormat.GenericTypographic);
-            g.DrawString(val, fontChipVal, brushChipVal, textX, chipY + 16f * superScale, StringFormat.GenericTypographic);
+            g.DrawString(lbl, fontChipLbl, brushChipLbl, textX, chipY + 4f * superScale, sfTypo);
+            g.DrawString(val, fontChipVal, brushChipVal, textX, chipY + 16f * superScale, sfTypo);
         }
     }
 
@@ -6316,7 +7329,7 @@ private static void DrawTabBauhausWeather(
         // CHRONO TAB: MODULAR FLUID TIMERS
         // Modular layout reserving space for additional timers
         // ----------------------------------------------------
-        float slot1X = 24f * superScale;
+        float slot1X = 16f * superScale;
         float slot1Y = 44f * superScale;
         float slot1H = 44f * superScale;
         float slot1R = 12f * superScale;
@@ -6358,13 +7371,11 @@ private static void DrawTabBauhausWeather(
             }
         }
 
-        float curY = slot1Y + (slot1H - curH) * 0.5f;
-        float curW = (float)_chronoTimerAnimWidth * superScale;
-        float curR = Math.Min(slot1R, curH * 0.5f);
-        float wP = (float)Math.Clamp((_chronoTimerAnimWidth - 44.0) / (200.0 - 44.0), 0.0, 1.0);
+        float curQuickW = (float)_chronoTimerAnimWidth * superScale;
+        float quickWProgress = (float)Math.Clamp((_chronoTimerAnimWidth - 44.0) / (396.0 - 44.0), 0.0, 1.0);
 
         // Container capsule path
-        using var pathContainer = CreateRoundedRectPath(slot1X, curY, curW, curH, curR, curR, curR, curR);
+        using var pathContainer = CreateRoundedRectPath(slot1X, slot1Y, curQuickW, slot1H, slot1R, slot1R, slot1R, slot1R);
 
         // Liquid glass capsule background
         if (_chronoTimerRunning)
@@ -6380,11 +7391,11 @@ private static void DrawTabBauhausWeather(
         else
         {
             // Idle or picker state
-            int fillA = (_chronoTimerHovered && curW < 50f * superScale) ? 50 : 34;
+            int fillA = (_chronoTimerHovered && curQuickW < 50f * superScale) ? 50 : 34;
             using var brushIdle = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
             g.FillPath(brushIdle, pathContainer);
 
-            int borderA = (_chronoTimerHovered && curW < 50f * superScale) ? 110 : 75;
+            int borderA = (_chronoTimerHovered && curQuickW < 50f * superScale) ? 110 : 75;
             using var penIdle = new Pen(Color.FromArgb(borderA, 255, 255, 255), 1.0f * superScale);
             g.DrawPath(penIdle, pathContainer);
         }
@@ -6413,17 +7424,21 @@ private static void DrawTabBauhausWeather(
                 float dotSize = 5f * superScale;
                 float dotGap = 4.5f * superScale;
                 float totalContentW = dotSize + dotGap + strSize.Width;
-                float startX = slot1X + (curW - totalContentW) * 0.5f;
-                float iconCy = curY + curH * 0.5f;
+                float startX = slot1X + (curQuickW - totalContentW) * 0.5f;
+                float iconCy = slot1Y + slot1H * 0.5f;
 
-                // Pulsing amber active dot
-                using (var brushDot = new SolidBrush(Color.FromArgb((int)(220 * timeAlpha), 255, 175, 60)))
+                // Pulsing ash-white active dot
+                using (var brushDotHalo = new SolidBrush(Color.FromArgb((int)(60 * timeAlpha), 255, 255, 255)))
+                {
+                    g.FillEllipse(brushDotHalo, startX - 1.5f * superScale, iconCy - dotSize * 0.5f - 1.5f * superScale, dotSize + 3f * superScale, dotSize + 3f * superScale);
+                }
+                using (var brushDot = new SolidBrush(Color.FromArgb((int)(245 * timeAlpha), 255, 255, 255)))
                 {
                     g.FillEllipse(brushDot, startX, iconCy - dotSize * 0.5f, dotSize, dotSize);
                 }
 
                 float textX = startX + dotSize + dotGap;
-                float textY = curY + (curH - strSize.Height) * 0.5f;
+                float textY = slot1Y + (slot1H - strSize.Height) * 0.5f;
 
                 using var brushTime = new SolidBrush(Color.FromArgb((int)(250 * timeAlpha), 255, 255, 255));
                 g.DrawString(timeStr, fontTime, brushTime, textX, textY, StringFormat.GenericTypographic);
@@ -6434,19 +7449,19 @@ private static void DrawTabBauhausWeather(
             {
                 float btnPad = 4f * superScale;
                 float cancelX = slot1X + btnPad;
-                float cancelY = curY + btnPad;
-                float cancelW = curW - btnPad * 2f;
-                float cancelH = curH - btnPad * 2f;
+                float cancelY = slot1Y + btnPad;
+                float cancelW = curQuickW - btnPad * 2f;
+                float cancelH = slot1H - btnPad * 2f;
                 float cancelR = 7f * superScale;
 
                 using var pathCancel = CreateRoundedRectPath(cancelX, cancelY, cancelW, cancelH, cancelR, cancelR, cancelR, cancelR);
 
-                int fillA = (int)(55 * cancelAlpha);
-                using var brushCancel = new SolidBrush(Color.FromArgb(fillA, 255, 80, 80));
+                int fillA = (int)(75 * cancelAlpha);
+                using var brushCancel = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
                 g.FillPath(brushCancel, pathCancel);
 
-                int borderA = (int)(130 * cancelAlpha);
-                using var penCancel = new Pen(Color.FromArgb(borderA, 255, 110, 110), 1.0f * superScale);
+                int borderA = (int)(160 * cancelAlpha);
+                using var penCancel = new Pen(Color.FromArgb(borderA, 255, 255, 255), 1.0f * superScale);
                 g.DrawPath(penCancel, pathCancel);
 
                 using var fontCancel = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
@@ -6455,7 +7470,7 @@ private static void DrawTabBauhausWeather(
                 float cx = cancelX + (cancelW - cSize.Width) * 0.5f;
                 float cy = cancelY + (cancelH - cSize.Height) * 0.5f;
 
-                using var brushCText = new SolidBrush(Color.FromArgb((int)(245 * cancelAlpha), 255, 215, 215));
+                using var brushCText = new SolidBrush(Color.FromArgb((int)(250 * cancelAlpha), 255, 255, 255));
                 g.DrawString(cancelText, fontCancel, brushCText, cx, cy, StringFormat.GenericTypographic);
             }
 
@@ -6467,7 +7482,7 @@ private static void DrawTabBauhausWeather(
             // STATE 1 & 2: IDLE ICON OR HOVER EXPANDED PICKER
             // ================================================
             // Icon alpha fades off as capsule expands
-            float iconAlpha = Math.Clamp(1.0f - wP * 2.5f, 0.0f, 1.0f);
+            float iconAlpha = Math.Clamp(1.0f - quickWProgress * 2.5f, 0.0f, 1.0f);
             if (iconAlpha > 0.01f)
             {
                 var stateIcon = g.Save();
@@ -6484,20 +7499,28 @@ private static void DrawTabBauhausWeather(
             }
 
             // Picker buttons fade in as capsule expands
-            float pickerAlpha = Math.Clamp((wP - 0.20f) / 0.80f, 0.0f, 1.0f);
+            float pickerAlpha = Math.Clamp((quickWProgress - 0.20f) / 0.80f, 0.0f, 1.0f);
             if (pickerAlpha > 0.01f)
             {
                 var statePicker = g.Save();
                 g.SetClip(pathContainer);
 
-                float btnH = 30f * superScale;
+                // "QUICK" label on left
+                using (var fontQuickLbl = GetPremiumFont(7.0f * superScale, FontStyle.Bold))
+                using (var brushQuickLbl = new SolidBrush(Color.FromArgb((int)(160 * pickerAlpha), 255, 255, 255)))
+                {
+                    string qLbl = "QUICK";
+                    var qSize = g.MeasureString(qLbl, fontQuickLbl, PointF.Empty, StringFormat.GenericTypographic);
+                    g.DrawString(qLbl, fontQuickLbl, brushQuickLbl, slot1X + 16f * superScale, slot1Y + (slot1H - qSize.Height) * 0.5f, StringFormat.GenericTypographic);
+                }
+
+                float btnH = 26f * superScale;
                 float btnY = slot1Y + (slot1H - btnH) * 0.5f;
                 float btnR = 8f * superScale;
-                float gap = 5f * superScale;
-                float padX = 10f * superScale;
+                float gap = 6f * superScale;
 
-                float bW = 42f * superScale;
-                float plusW = 39f * superScale;
+                float btnW = 44f * superScale;
+                float plusW = 30f * superScale;
 
                 using var fontBtn = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
                 using var fontPlus = GetPremiumFont(11.0f * superScale, FontStyle.Regular);
@@ -6505,33 +7528,319 @@ private static void DrawTabBauhausWeather(
                 string lbl5 = DebugChronoTimerInSeconds ? "5s" : "5m";
                 string lbl10 = DebugChronoTimerInSeconds ? "10s" : "10m";
                 string lbl15 = DebugChronoTimerInSeconds ? "15s" : "15m";
+                string lbl30 = DebugChronoTimerInSeconds ? "30s" : "30m";
 
-                // Button 1: 5m / 5s
-                float b1X = slot1X + padX;
-                DrawChronoPill(g, superScale, b1X, btnY, bW, btnH, btnR, lbl5, fontBtn,
+                // Button 1: 5m
+                float b1X = slot1X + 86f * superScale;
+                DrawChronoPill(g, superScale, b1X, btnY, btnW, btnH, btnR, lbl5, fontBtn,
                     isHovered: _hoveredChronoBtn == ChronoBtn5m,
                     alphaMul: pickerAlpha);
 
-                // Button 2: 10m / 10s
-                float b2X = b1X + bW + gap;
-                DrawChronoPill(g, superScale, b2X, btnY, bW, btnH, btnR, lbl10, fontBtn,
+                // Button 2: 10m
+                float b2X = b1X + btnW + gap;
+                DrawChronoPill(g, superScale, b2X, btnY, btnW, btnH, btnR, lbl10, fontBtn,
                     isHovered: _hoveredChronoBtn == ChronoBtn10m,
                     alphaMul: pickerAlpha);
 
-                // Button 3: 15m / 15s
-                float b3X = b2X + bW + gap;
-                DrawChronoPill(g, superScale, b3X, btnY, bW, btnH, btnR, lbl15, fontBtn,
+                // Button 3: 15m
+                float b3X = b2X + btnW + gap;
+                DrawChronoPill(g, superScale, b3X, btnY, btnW, btnH, btnR, lbl15, fontBtn,
                     isHovered: _hoveredChronoBtn == ChronoBtn15m,
                     alphaMul: pickerAlpha);
 
-                // Button 4: +
-                float b4X = b3X + bW + gap;
-                DrawChronoPill(g, superScale, b4X, btnY, plusW, btnH, btnR, "+", fontPlus,
+                // Button 4: 30m
+                float b4X = b3X + btnW + gap;
+                DrawChronoPill(g, superScale, b4X, btnY, btnW, btnH, btnR, lbl30, fontBtn,
+                    isHovered: _hoveredChronoBtn == ChronoBtn30m,
+                    alphaMul: pickerAlpha);
+
+                // Button 5: +
+                float b5X = b4X + btnW + gap;
+                DrawChronoPill(g, superScale, b5X, btnY, plusW, btnH, btnR, "+", fontPlus,
                     isHovered: _hoveredChronoBtn == ChronoBtnPlus,
                     alphaMul: pickerAlpha);
 
                 g.Restore(statePicker);
             }
+        }
+
+        // ----------------------------------------------------
+        // MANUAL TIMER DYNAMIC PISTON CAPSULE (To the right of Quick Timer)
+        // Exactly matches the 44px height and alignment of Quick Timer.
+        // Piston mechanics: curQuickW + 12px + curManW = 428px total span (16px to 444px).
+        // When Quick Timer expands to 372px, Manual Timer smoothly shrinks
+        // to a 44x44px constructivist Hourglass icon.
+        // When Quick Timer is idle (44px), Manual Timer expands to 372px setting bar.
+        // ----------------------------------------------------
+        float curManX = slot1X + curQuickW + 12f * superScale;
+        float curManW = 444f * superScale - curManX;
+        float curManY = slot1Y;
+        float curManH = slot1H;
+        float curManR = slot1R;
+
+        float manProgress = (float)Math.Clamp((curManW - 44f * superScale) / (328f * superScale), 0.0, 1.0);
+        float settingAlpha = (float)Math.Clamp((manProgress - 0.20) / 0.80, 0.0, 1.0);
+        float manIconAlpha = (float)Math.Clamp(1.0 - manProgress * 2.5, 0.0, 1.0);
+
+        // Contact drop shadow beneath the capsule
+        using (var pathManShadow = CreateRoundedRectPath(curManX, curManY + 2.5f * superScale, curManW, curManH, curManR, curManR, curManR, curManR))
+        using (var brushShadow = new SolidBrush(Color.FromArgb(65, 0, 0, 0)))
+        {
+            g.FillPath(brushShadow, pathManShadow);
+        }
+
+        using var pathManCard = CreateRoundedRectPath(curManX, curManY, curManW, curManH, curManR, curManR, curManR, curManR);
+
+        // Glass background fill
+        if (_manualTimerRunning)
+        {
+            using var brushManBg = new SolidBrush(Color.FromArgb(36, 255, 255, 255));
+            g.FillPath(brushManBg, pathManCard);
+
+            using var penManRim = new Pen(Color.FromArgb(95, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penManRim, pathManCard);
+        }
+        else
+        {
+            using var brushManBg = new SolidBrush(Color.FromArgb(32, 255, 255, 255));
+            g.FillPath(brushManBg, pathManCard);
+
+            using var brushRimGrad = new LinearGradientBrush(
+                new PointF(curManX, curManY),
+                new PointF(curManX, curManY + curManH),
+                Color.FromArgb(130, 255, 255, 255),
+                Color.FromArgb(35, 255, 255, 255));
+            using var penManRim = new Pen(brushRimGrad, 1.0f * superScale);
+            g.DrawPath(penManRim, pathManCard);
+        }
+
+        // Top meniscus tension optical line
+        using (var penMeniscus = new Pen(Color.FromArgb(90, 255, 255, 255), 1.0f * superScale))
+        {
+            g.DrawLine(penMeniscus, curManX + curManR, curManY + 1.0f * superScale, curManX + curManW - curManR, curManY + 1.0f * superScale);
+        }
+
+        // ----------------------------------------------------
+        // ICON STATE: Shrunken 44x44px constructivist Hourglass
+        // ----------------------------------------------------
+        if (manIconAlpha > 0.01f)
+        {
+            var stateIcon = g.Save();
+            g.SetClip(pathManCard);
+
+            float cx = curManX + curManW * 0.5f;
+            float cy = curManY + curManH * 0.5f;
+            float r = 9.5f * superScale;
+
+            bool isIconHovered = (_hoveredManualBtn == ManualBtnIcon);
+            int iconA = (int)((isIconHovered ? 255 : 190) * manIconAlpha);
+
+            using var brushHourglass = new SolidBrush(Color.FromArgb(iconA, 255, 255, 255));
+            DrawHourglassVector(g, brushHourglass, cx, cy, r, superScale);
+
+            g.Restore(stateIcon);
+        }
+
+        if (_manualTimerRunning && settingAlpha > 0.01f)
+        {
+            // ================================================
+            // MANUAL RUNNING STATE: Remaining countdown display (HH:MM:SS) or ✕ Cancel on hover
+            // ================================================
+            var stateRunning = g.Save();
+            g.SetClip(pathManCard);
+
+            float cancelAlpha = (float)Math.Clamp(_manualRunningHoverP, 0.0, 1.0) * settingAlpha;
+            float timeAlpha = (1.0f - (float)Math.Clamp(_manualRunningHoverP, 0.0, 1.0)) * settingAlpha;
+
+            int remainingSec = Math.Max(0, (int)Math.Ceiling((_manualTimerTargetUtc - DateTime.UtcNow).TotalSeconds));
+            int remH = remainingSec / 3600;
+            int remM = (remainingSec % 3600) / 60;
+            int remS = remainingSec % 60;
+            string timeStr = $"{remH:D2}:{remM:D2}:{remS:D2}";
+
+            if (timeAlpha > 0.01f)
+            {
+                using var fontTime = GetPremiumFont(10.0f * superScale, FontStyle.Bold);
+                using var fontSub = GetPremiumFont(6.5f * superScale, FontStyle.Bold);
+
+                // Left: Pulsing ash-white active indicator dot
+                float dotSize = 6.0f * superScale;
+                float dotX = curManX + 16f * superScale;
+                float dotCy = curManY + curManH * 0.5f;
+
+                using (var brushHalo = new SolidBrush(Color.FromArgb((int)(65 * timeAlpha), 255, 255, 255)))
+                {
+                    g.FillEllipse(brushHalo, dotX - 2.5f * superScale, dotCy - dotSize * 0.5f - 2.5f * superScale, dotSize + 5f * superScale, dotSize + 5f * superScale);
+                }
+                using (var brushDot = new SolidBrush(Color.FromArgb((int)(250 * timeAlpha), 255, 255, 255)))
+                {
+                    g.FillEllipse(brushDot, dotX, dotCy - dotSize * 0.5f, dotSize, dotSize);
+                }
+
+                // Subtitle label: "MANUAL TIMER"
+                float labelX = dotX + dotSize + 10f * superScale;
+                string labelStr = "MANUAL TIMER";
+                var labelSize = g.MeasureString(labelStr, fontSub, PointF.Empty, StringFormat.GenericTypographic);
+                float labelY = curManY + (curManH - labelSize.Height) * 0.5f;
+                using (var brushLabel = new SolidBrush(Color.FromArgb((int)(165 * timeAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(labelStr, fontSub, brushLabel, labelX, labelY, StringFormat.GenericTypographic);
+                }
+
+                // Time String (prominent countdown display)
+                var strSize = g.MeasureString(timeStr, fontTime, PointF.Empty, StringFormat.GenericTypographic);
+                float timeX = curManX + curManW - strSize.Width - 18f * superScale;
+                float timeY = curManY + (curManH - strSize.Height) * 0.5f;
+
+                using (var brushTimeShadow = new SolidBrush(Color.FromArgb((int)(70 * timeAlpha), 0, 0, 0)))
+                {
+                    g.DrawString(timeStr, fontTime, brushTimeShadow, timeX + 1.0f * superScale, timeY + 1.0f * superScale, StringFormat.GenericTypographic);
+                }
+                using (var brushTime = new SolidBrush(Color.FromArgb((int)(255 * timeAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(timeStr, fontTime, brushTime, timeX, timeY, StringFormat.GenericTypographic);
+                }
+            }
+
+            // Cancel Button on Hover
+            if (cancelAlpha > 0.01f)
+            {
+                float btnPad = 4f * superScale;
+                float cancelX = curManX + btnPad;
+                float cancelY = curManY + btnPad;
+                float cancelW = curManW - btnPad * 2f;
+                float cancelH = curManH - btnPad * 2f;
+                float cancelR = 7f * superScale;
+
+                using var pathCancel = CreateRoundedRectPath(cancelX, cancelY, cancelW, cancelH, cancelR, cancelR, cancelR, cancelR);
+
+                int fillA = (int)(75 * cancelAlpha);
+                using var brushCancel = new SolidBrush(Color.FromArgb(fillA, 255, 255, 255));
+                g.FillPath(brushCancel, pathCancel);
+
+                int borderA = (int)(160 * cancelAlpha);
+                using var penCancel = new Pen(Color.FromArgb(borderA, 255, 255, 255), 1.0f * superScale);
+                g.DrawPath(penCancel, pathCancel);
+
+                using var fontCancel = GetPremiumFont(8.0f * superScale, FontStyle.Bold);
+                string cancelText = "✕ Cancel Manual Timer";
+                var cSize = g.MeasureString(cancelText, fontCancel, PointF.Empty, StringFormat.GenericTypographic);
+                float cx = cancelX + (cancelW - cSize.Width) * 0.5f;
+                float cy = cancelY + (cancelH - cSize.Height) * 0.5f;
+
+                using var brushCText = new SolidBrush(Color.FromArgb((int)(250 * cancelAlpha), 255, 255, 255));
+                g.DrawString(cancelText, fontCancel, brushCText, cx, cy, StringFormat.GenericTypographic);
+            }
+
+            g.Restore(stateRunning);
+        }
+        else if (!_manualTimerRunning && settingAlpha > 0.01f)
+        {
+            // ================================================
+            // MANUAL SETTING STATE: 44px capsule height
+            // Left: "MANUAL" header
+            // Center: HH : MM : SS columns with compact chevrons
+            // Right: ▶ START button
+            // ================================================
+            var stateSetting = g.Save();
+            g.SetClip(pathManCard);
+
+            using var fontHeader = GetPremiumFont(6.8f * superScale, FontStyle.Bold);
+            using var fontNum = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
+            using var fontSep = GetPremiumFont(11.0f * superScale, FontStyle.Bold);
+            using var fontBtn = GetPremiumFont(7.5f * superScale, FontStyle.Bold);
+
+            // 1. Left Header Label
+            string title = "MANUAL";
+            using (var brushHeader = new SolidBrush(Color.FromArgb((int)(160 * settingAlpha), 255, 255, 255)))
+            {
+                var tSize = g.MeasureString(title, fontHeader, PointF.Empty, StringFormat.GenericTypographic);
+                float tx = curManX + 16f * superScale;
+                float ty = curManY + (curManH - tSize.Height) * 0.5f;
+                g.DrawString(title, fontHeader, brushHeader, tx, ty, StringFormat.GenericTypographic);
+            }
+
+            // 2. Three Columns (HH, MM, SS)
+            float colCenter = curManX + curManW * 0.46f;
+            float colSpacing = 38f * superScale;
+            float colHX = colCenter - colSpacing;
+            float colMX = colCenter;
+            float colSX = colCenter + colSpacing;
+
+            float arrowUpY = curManY + 3.5f * superScale;
+            float numY = curManY + 14.5f * superScale;
+            float arrowDownY = curManY + 34.5f * superScale;
+
+            // Draw Column HH
+            DrawManualColumn(g, superScale, colHX, arrowUpY, numY, arrowDownY,
+                _manualHours, "D2", _animHourTimer, _animHourDelta,
+                isUpHovered: _hoveredManualBtn == ManualBtnUpH,
+                isDownHovered: _hoveredManualBtn == ManualBtnDownH,
+                fontNum: fontNum,
+                alphaMul: settingAlpha);
+
+            // Separator 1 (:)
+            using (var brushSep = new SolidBrush(Color.FromArgb((int)(150 * settingAlpha), 255, 255, 255)))
+            {
+                var sSize = g.MeasureString(":", fontSep, PointF.Empty, StringFormat.GenericTypographic);
+                float sep1X = (colHX + colMX) * 0.5f - sSize.Width * 0.5f;
+                g.DrawString(":", fontSep, brushSep, sep1X, curManY + (curManH - sSize.Height) * 0.5f - 1.0f * superScale, StringFormat.GenericTypographic);
+            }
+
+            // Draw Column MM
+            DrawManualColumn(g, superScale, colMX, arrowUpY, numY, arrowDownY,
+                _manualMinutes, "D2", _animMinuteTimer, _animMinuteDelta,
+                isUpHovered: _hoveredManualBtn == ManualBtnUpM,
+                isDownHovered: _hoveredManualBtn == ManualBtnDownM,
+                fontNum: fontNum,
+                alphaMul: settingAlpha);
+
+            // Separator 2 (:)
+            using (var brushSep = new SolidBrush(Color.FromArgb((int)(150 * settingAlpha), 255, 255, 255)))
+            {
+                var sSize = g.MeasureString(":", fontSep, PointF.Empty, StringFormat.GenericTypographic);
+                float sep2X = (colMX + colSX) * 0.5f - sSize.Width * 0.5f;
+                g.DrawString(":", fontSep, brushSep, sep2X, curManY + (curManH - sSize.Height) * 0.5f - 1.0f * superScale, StringFormat.GenericTypographic);
+            }
+
+            // Draw Column SS
+            DrawManualColumn(g, superScale, colSX, arrowUpY, numY, arrowDownY,
+                _manualSeconds, "D2", _animSecondTimer, _animSecondDelta,
+                isUpHovered: _hoveredManualBtn == ManualBtnUpS,
+                isDownHovered: _hoveredManualBtn == ManualBtnDownS,
+                fontNum: fontNum,
+                alphaMul: settingAlpha);
+
+            // 3. ▶ START Button
+            float btnW = 72f * superScale;
+            float btnH = 26f * superScale;
+            float btnX = curManX + curManW - btnW - 12f * superScale;
+            float btnY = curManY + (curManH - btnH) * 0.5f;
+            float btnR = 8f * superScale;
+
+            using var pathStart = CreateRoundedRectPath(btnX, btnY, btnW, btnH, btnR, btnR, btnR, btnR);
+            bool isStartHovered = (_hoveredManualBtn == ManualBtnStart);
+
+            int startFillA = (int)((isStartHovered ? 80 : 42) * settingAlpha);
+            using var brushStartBg = new SolidBrush(Color.FromArgb(startFillA, 255, 255, 255));
+            g.FillPath(brushStartBg, pathStart);
+
+            int startBorderA = (int)((isStartHovered ? 180 : 95) * settingAlpha);
+            using var penStartRim = new Pen(Color.FromArgb(startBorderA, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(penStartRim, pathStart);
+
+            string startTxt = "▶ START";
+            var startSize = g.MeasureString(startTxt, fontBtn, PointF.Empty, StringFormat.GenericTypographic);
+            float stX = btnX + (btnW - startSize.Width) * 0.5f;
+            float stY = btnY + (btnH - startSize.Height) * 0.5f;
+
+            int textA = (int)((isStartHovered ? 255 : 235) * settingAlpha);
+            using (var brushStartText = new SolidBrush(Color.FromArgb(textA, 255, 255, 255)))
+            {
+                g.DrawString(startTxt, fontBtn, brushStartText, stX, stY, StringFormat.GenericTypographic);
+            }
+
+            g.Restore(stateSetting);
         }
     }
 
@@ -6553,6 +7862,76 @@ private static void DrawTabBauhausWeather(
         g.DrawLine(pen, cx, dialCenterY, nx, ny);
 
         g.FillEllipse(brush, cx - 1.2f * superScale, dialCenterY - 1.2f * superScale, 2.4f * superScale, 2.4f * superScale);
+    }
+
+    private static void DrawHourglassVector(Graphics g, Brush brush, float cx, float cy, float r, float superScale)
+    {
+        using var pen = new Pen(brush, 1.3f * superScale);
+        pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+        pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+        float topY = cy - r + 1.0f * superScale;
+        float botY = cy + r - 1.0f * superScale;
+        float rimHalfW = r * 0.72f;
+
+        // Top and bottom horizontal rims
+        g.DrawLine(pen, cx - rimHalfW, topY, cx + rimHalfW, topY);
+        g.DrawLine(pen, cx - rimHalfW, botY, cx + rimHalfW, botY);
+
+        // Glass contours (two opposing bezier waist curves)
+        using var pathGlass = new GraphicsPath();
+        pathGlass.StartFigure();
+        // Top-left to waist
+        pathGlass.AddBezier(
+            new PointF(cx - rimHalfW + 1.5f * superScale, topY),
+            new PointF(cx - rimHalfW * 0.5f, cy - r * 0.35f),
+            new PointF(cx - 2.0f * superScale, cy - 1.0f * superScale),
+            new PointF(cx - 1.2f * superScale, cy));
+        // Waist to bottom-left
+        pathGlass.AddBezier(
+            new PointF(cx - 1.2f * superScale, cy),
+            new PointF(cx - 2.0f * superScale, cy + 1.0f * superScale),
+            new PointF(cx - rimHalfW * 0.5f, cy + r * 0.35f),
+            new PointF(cx - rimHalfW + 1.5f * superScale, botY));
+        g.DrawPath(pen, pathGlass);
+
+        using var pathRight = new GraphicsPath();
+        pathRight.StartFigure();
+        // Top-right to waist
+        pathRight.AddBezier(
+            new PointF(cx + rimHalfW - 1.5f * superScale, topY),
+            new PointF(cx + rimHalfW * 0.5f, cy - r * 0.35f),
+            new PointF(cx + 2.0f * superScale, cy - 1.0f * superScale),
+            new PointF(cx + 1.2f * superScale, cy));
+        // Waist to bottom-right
+        pathRight.AddBezier(
+            new PointF(cx + 1.2f * superScale, cy),
+            new PointF(cx + 2.0f * superScale, cy + 1.0f * superScale),
+            new PointF(cx + rimHalfW * 0.5f, cy + r * 0.35f),
+            new PointF(cx + rimHalfW - 1.5f * superScale, botY));
+        g.DrawPath(pen, pathRight);
+
+        // Internal sand mounds
+        using (var brushSand = new SolidBrush(Color.FromArgb(170, 255, 255, 255)))
+        {
+            PointF[] topSand = {
+                new PointF(cx - rimHalfW * 0.42f, cy - r * 0.45f),
+                new PointF(cx + rimHalfW * 0.42f, cy - r * 0.45f),
+                new PointF(cx, cy - 1.5f * superScale)
+            };
+            g.FillPolygon(brushSand, topSand);
+
+            PointF[] botSand = {
+                new PointF(cx - rimHalfW * 0.52f, botY - 1.0f * superScale),
+                new PointF(cx + rimHalfW * 0.52f, botY - 1.0f * superScale),
+                new PointF(cx, cy + r * 0.32f)
+            };
+            g.FillPolygon(brushSand, botSand);
+        }
+
+        // Falling sand trickle
+        using var penTrickle = new Pen(brush, 1.0f * superScale);
+        g.DrawLine(penTrickle, cx, cy - 1.0f * superScale, cx, cy + r * 0.32f);
     }
 
     private static void DrawChronoPill(
@@ -6583,6 +7962,178 @@ private static void DrawTabBauhausWeather(
         g.DrawString(label, font, brushText, x + (w - strSize.Width) * 0.5f, y + (h - strSize.Height) * 0.5f, StringFormat.GenericTypographic);
     }
 
+    private static void DrawManualColumn(
+        Graphics g,
+        float superScale,
+        float cx,
+        float arrowUpY,
+        float numY,
+        float arrowDownY,
+        int val,
+        string format,
+        double animTimer,
+        double animDelta,
+        bool isUpHovered,
+        bool isDownHovered,
+        Font fontNum,
+        float alphaMul = 1.0f)
+    {
+        if (alphaMul <= 0.001f) return;
+        alphaMul = Math.Clamp(alphaMul, 0.0f, 1.0f);
+
+        // 1. UP Arrow (▲)
+        PointF[] upTri = {
+            new PointF(cx, arrowUpY),
+            new PointF(cx - 4.5f * superScale, arrowUpY + 5.5f * superScale),
+            new PointF(cx + 4.5f * superScale, arrowUpY + 5.5f * superScale)
+        };
+        int upA = (int)((isUpHovered ? 255 : 140) * alphaMul);
+        if (upA > 0)
+        {
+            using (var brushUp = new SolidBrush(Color.FromArgb(upA, 255, 255, 255)))
+            {
+                g.FillPolygon(brushUp, upTri);
+            }
+            if (isUpHovered)
+            {
+                using var penUpGlow = new Pen(Color.FromArgb((int)(180 * alphaMul), 255, 255, 255), 1.0f * superScale);
+                g.DrawPolygon(penUpGlow, upTri);
+            }
+        }
+
+        // 2. Number Display with Roll & Pop Animation
+        float yOffset = 0f;
+        float scale = 1.0f;
+        float glowA = 0f;
+        if (animTimer > 0.0)
+        {
+            float p = 1.0f - (float)(animTimer / 0.22);
+            // Sinusoidal bounce and vertical translation
+            yOffset = (float)(animDelta * -4.5 * Math.Sin(p * Math.PI) * superScale);
+            scale = 1.0f + 0.14f * (float)Math.Sin(p * Math.PI);
+            glowA = (float)Math.Sin(p * Math.PI);
+        }
+
+        string valStr = val.ToString(format);
+        var size = g.MeasureString(valStr, fontNum, PointF.Empty, StringFormat.GenericTypographic);
+
+        var numState = g.Save();
+        g.TranslateTransform(cx, numY + size.Height * 0.5f + yOffset);
+        if (scale != 1.0f)
+        {
+            g.ScaleTransform(scale, scale);
+        }
+
+        if (glowA > 0.01f)
+        {
+            using var brushGlow = new SolidBrush(Color.FromArgb((int)(160 * glowA * alphaMul), 255, 255, 255));
+            g.DrawString(valStr, fontNum, brushGlow, -size.Width * 0.5f, -size.Height * 0.5f, StringFormat.GenericTypographic);
+        }
+
+        using (var brushNum = new SolidBrush(Color.FromArgb((int)(255 * alphaMul), 255, 255, 255)))
+        {
+            g.DrawString(valStr, fontNum, brushNum, -size.Width * 0.5f, -size.Height * 0.5f, StringFormat.GenericTypographic);
+        }
+        g.Restore(numState);
+
+        // 3. DOWN Arrow (▼)
+        PointF[] downTri = {
+            new PointF(cx, arrowDownY + 5.5f * superScale),
+            new PointF(cx - 4.5f * superScale, arrowDownY),
+            new PointF(cx + 4.5f * superScale, arrowDownY)
+        };
+        int downA = (int)((isDownHovered ? 255 : 140) * alphaMul);
+        if (downA > 0)
+        {
+            using (var brushDown = new SolidBrush(Color.FromArgb(downA, 255, 255, 255)))
+            {
+                g.FillPolygon(brushDown, downTri);
+            }
+            if (isDownHovered)
+            {
+                using var penDownGlow = new Pen(Color.FromArgb((int)(180 * alphaMul), 255, 255, 255), 1.0f * superScale);
+                g.DrawPolygon(penDownGlow, downTri);
+            }
+        }
+    }
+
+    private static int GetActiveTimerRemainingMinutes()
+    {
+        DateTime utcNow = DateTime.UtcNow;
+        int activeSec = -1;
+        if (_chronoTimerRunning && _chronoTimerTargetUtc > utcNow)
+        {
+            int s = (int)Math.Ceiling((_chronoTimerTargetUtc - utcNow).TotalSeconds);
+            if (s > 0) activeSec = s;
+        }
+        if (_manualTimerRunning && _manualTimerTargetUtc > utcNow)
+        {
+            int s = (int)Math.Ceiling((_manualTimerTargetUtc - utcNow).TotalSeconds);
+            if (s > 0)
+            {
+                activeSec = (activeSec < 0) ? s : Math.Min(activeSec, s);
+            }
+        }
+        return (activeSec > 0) ? Math.Max(1, (int)Math.Ceiling(activeSec / 60.0)) : 0;
+    }
+
+    private static bool IsAnyTimerLive()
+    {
+        return GetHomeTimerProgress(out _, out _);
+    }
+
+    private static bool GetHomeTimerProgress(out int remainingSeconds, out int totalSeconds)
+    {
+        DateTime utcNow = DateTime.UtcNow;
+        DateTime target = DateTime.MinValue;
+        int total = 0;
+
+        void Consider(DateTime candidate, int candidateTotal)
+        {
+            if (candidate <= utcNow || (target != DateTime.MinValue && candidate >= target)) return;
+            target = candidate;
+            total = candidateTotal;
+        }
+
+        if (_chronoTimerRunning) Consider(_chronoTimerTargetUtc, _chronoTimerTotalSeconds);
+        if (_manualTimerRunning) Consider(_manualTimerTargetUtc, _manualTimerTotalSeconds);
+        if (_sleepTimerActive)
+        {
+            int sleepTotal = _sleepTimerDurationMinutes > 0
+                ? (_sleepTimerDurationMinutes * 60)
+                : Math.Max(1, (int)Math.Ceiling((_sleepTimerTargetUtc - utcNow).TotalSeconds));
+            Consider(_sleepTimerTargetUtc, sleepTotal);
+        }
+
+        if (target == DateTime.MinValue)
+        {
+            remainingSeconds = 0;
+            totalSeconds = 0;
+            return false;
+        }
+
+        remainingSeconds = Math.Max(0, (int)Math.Ceiling((target - utcNow).TotalSeconds));
+        totalSeconds = Math.Max(remainingSeconds, total);
+        return remainingSeconds > 0;
+    }
+
+    private void CancelAllActiveTimers()
+    {
+        if (_chronoTimerRunning) CancelChronoTimer();
+        if (_manualTimerRunning) CancelManualTimer();
+
+        _sleepTimerActive = false;
+        _sleepTimerTargetUtc = DateTime.MinValue;
+        _sleepTimerDurationMinutes = 0;
+        _hoveredHomeTimer = false;
+        _tabBufferCache[TabHome] = null;
+        _tabBufferCache[TabMusic] = null;
+        _lastHomeTimerRemainingSec = -1;
+        _needExpandedUpdate = true;
+        UpdateTimeMaskIfNeeded(force: true);
+        _renderSignal.Set();
+    }
+
     private void UpdateTimeMaskIfNeeded(bool force = false)
     {
         var now = DateTime.Now;
@@ -6593,15 +8144,23 @@ private static void DrawTabBauhausWeather(
         bool isTransitioning = (_playingExpandP > 0.001 && _playingExpandP < 0.999) ||
                                (_mediaElementsAlpha > 0.001 && _mediaElementsAlpha < 0.999) ||
                                (Math.Abs(_currentCompactWidth - _lastRenderedCompactWidth) > 0.25) ||
-                               (Math.Abs(_compactTimeAlpha - _lastRenderedTimeAlpha) > 0.005);
+                               (Math.Abs(_compactTimeAlpha - _lastRenderedTimeAlpha) > 0.005) ||
+                               (_timerAlarmActive && !_timerAlarmDismissed);
 
         bool stateChanged = (_isPlaying != _lastRenderedIsPlaying);
 
         bool isEqDecaying = !_isPlaying && (_eqBarHeights[0] > 0.005f || _eqBarHeights[1] > 0.005f || _eqBarHeights[2] > 0.005f || _eqBarHeights[3] > 0.005f);
 
-        if (_isPlaying || isTransitioning || isEqDecaying || stateChanged || force || now.ToString("h:mm:ss tt") != _lastTimeString)
+        int currentTimerMin = GetActiveTimerRemainingMinutes();
+        bool timerMinChanged = (currentTimerMin != _lastRenderedTimerMinutes);
+        if (timerMinChanged)
         {
-            if ((_isPlaying || isTransitioning || isEqDecaying) && !force && !stateChanged && nowSec - _lastTimeMaskUpdateTime < 0.016)
+            _lastRenderedTimerMinutes = currentTimerMin;
+        }
+
+        if (_isPlaying || isTransitioning || isEqDecaying || stateChanged || timerMinChanged || force || now.ToString("h:mm:ss tt") != _lastTimeString)
+        {
+            if ((_isPlaying || isTransitioning || isEqDecaying) && !force && !stateChanged && !timerMinChanged && nowSec - _lastTimeMaskUpdateTime < 0.016)
             {
                 return;
             }
@@ -6620,6 +8179,7 @@ private static void DrawTabBauhausWeather(
                 _currentCompactWidth,
                 _mediaElementsAlpha,
                 _compactTimeAlpha,
+                GetCompactPillHeight(),
                 track.CoverAccentColor);
 
             lock (_timeLock)
@@ -6640,12 +8200,16 @@ private static void DrawTabBauhausWeather(
         double currentCompactWidth,
         double mediaElementsAlpha,
         double timeAlpha,
+        double compactHeight,
         Color trackAccent)
     {
         const float superScale = 4.0f;
         string timeMain = now.ToString("h:mm");
         string timeSec = ":" + now.ToString("ss");
         string timeAmPm = now.ToString("tt");
+
+        int activeTimerMin = GetActiveTimerRemainingMinutes();
+        string timerPrefix = activeTimerMin > 0 ? $"{activeTimerMin}m · " : "";
 
         using var fontMain = GetPremiumFont(14.0f * superScale, FontStyle.Bold);
         using var fontSub = GetPremiumFont(6.5f * superScale, FontStyle.Bold);
@@ -6657,13 +8221,14 @@ private static void DrawTabBauhausWeather(
         var sizeMain = gMeasure.MeasureString(timeMain, fontMain, PointF.Empty, StringFormat.GenericTypographic);
         var sizeSec = gMeasure.MeasureString(timeSec, fontSub, PointF.Empty, StringFormat.GenericTypographic);
         var sizeAmPm = gMeasure.MeasureString(timeAmPm, fontSub, PointF.Empty, StringFormat.GenericTypographic);
+        var sizeTimer = string.IsNullOrEmpty(timerPrefix) ? SizeF.Empty : gMeasure.MeasureString(timerPrefix, fontMain, PointF.Empty, StringFormat.GenericTypographic);
 
         float subW = Math.Max(sizeSec.Width, sizeAmPm.Width);
         float spacingSub = 2.5f * superScale;
-        float totalClockWidth = sizeMain.Width + spacingSub + subW;
+        float totalClockWidth = sizeTimer.Width + sizeMain.Width + spacingSub + subW;
 
         int targetW = Math.Max(40, (int)Math.Round(currentCompactWidth));
-        int targetH = CompactPillHeight; // 44px
+        int targetH = (int)Math.Round(compactHeight);
         int superW = (int)(targetW * superScale);
         int superH = (int)(targetH * superScale);
 
@@ -6674,86 +8239,82 @@ private static void DrawTabBauhausWeather(
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
 
-            // 1. Left Section: Rotating Circular Vinyl Album Disc (Controlled by mediaElementsAlpha)
-            if (mediaElementsAlpha > 0.01)
+            if (_timerAlarmActive && !_timerAlarmDismissed)
             {
-                float discAlpha = (float)Math.Clamp(mediaElementsAlpha, 0.0, 1.0);
-                float discScale = 0.85f + 0.15f * discAlpha;
-                float discCx = 22.0f * superScale;
-                float discCy = 22.0f * superScale;
-                float discR = 15.0f * superScale * discScale;
-
-                var state = g.Save();
-
-                using (var fullDiscPath = new GraphicsPath())
+                DrawRingingBellVector(g, superW, superH, superScale);
+            }
+            else
+            {
+                // 1. Left Section: Non-Moving Rounded Square Album Art (Controlled by mediaElementsAlpha)
+                if (mediaElementsAlpha > 0.01)
                 {
-                    fullDiscPath.AddEllipse(discCx - discR, discCy - discR, discR * 2, discR * 2);
-                    g.SetClip(fullDiscPath);
+                    float discAlpha = (float)Math.Clamp(mediaElementsAlpha, 0.0, 1.0);
+                    float discScale = 0.85f + 0.15f * discAlpha;
+                    float artSize = (28.0f + 4.0f * (float)Math.Clamp(1.0 - timeAlpha, 0.0, 1.0)) * superScale * discScale;
+                    float artR = 6.0f * superScale * discScale;
+                    // Keep a deliberate left inset in the compact pill. The vertical
+                    // inset is 8px at full scale; the 10px left inset prevents the
+                    // rounded outer shell from making the art feel edge-hugging.
+                    float artX = (10.0f + 4.0f * (float)Math.Clamp(1.0 - timeAlpha, 0.0, 1.0)) * superScale;
+                    float artY = (superH - artSize) * 0.5f;
+                    float discCx = artX + artSize * 0.5f;
+                    float discCy = artY + artSize * 0.5f;
 
-                    // 1. FULL ROTATING ALBUM ART FILLING THE ENTIRE DISC
-                    bool coverDrawn = false;
-                    if (coverBmp != null)
+                    var state = g.Save();
+
+                    using (var artPath = CreateRoundedRectPath(artX, artY, artSize, artSize, artR, artR, artR, artR))
                     {
-                        try
+                        g.SetClip(artPath);
+
+                        // 1. Static Non-Moving Album Art
+                        bool coverDrawn = false;
+                        if (coverBmp != null)
                         {
-                            lock (coverBmp)
+                            try
                             {
-                                g.TranslateTransform(discCx, discCy);
-                                g.RotateTransform((float)vinylAngle);
-                                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                g.DrawImage(coverBmp, -discR, -discR, discR * 2, discR * 2);
-                                g.ResetTransform();
-                                coverDrawn = true;
+                                lock (coverBmp)
+                                {
+                                    g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                    g.DrawImage(coverBmp, artX, artY, artSize, artSize);
+
+                                    // Dynamic specular light gleam on top half of album art
+                                    using var brushHighlight = new LinearGradientBrush(
+                                        new RectangleF(artX, artY, artSize, artSize * 0.5f),
+                                        Color.FromArgb((int)(50 * discAlpha), 255, 255, 255),
+                                        Color.FromArgb(0, 255, 255, 255),
+                                        90f);
+                                    g.FillRectangle(brushHighlight, artX, artY, artSize, artSize * 0.5f);
+                                    coverDrawn = true;
+                                }
+                            }
+                            catch
+                            {
+                                coverDrawn = false;
                             }
                         }
-                        catch
+
+                        if (!coverDrawn)
                         {
-                            g.ResetTransform();
-                            coverDrawn = false;
+                            using var brushCenter = new SolidBrush(Color.FromArgb((int)(200 * discAlpha), trackAccent));
+                            g.FillPath(brushCenter, artPath);
+
+                            using var fontNote = GetPremiumFont(12.0f * superScale, FontStyle.Bold);
+                            var noteSize = g.MeasureString("♫", fontNote, PointF.Empty, StringFormat.GenericTypographic);
+                            using var brushNote = new SolidBrush(Color.FromArgb((int)(140 * discAlpha), 255, 255, 255));
+                            g.DrawString("♫", fontNote, brushNote, discCx - noteSize.Width * 0.5f, discCy - noteSize.Height * 0.5f, StringFormat.GenericTypographic);
+                        }
+
+                        g.ResetClip();
+
+                        // 2. Crisp Rounded Square Glass Outer Rim
+                        using (var penBorder = new Pen(Color.FromArgb((int)(160 * discAlpha), 255, 255, 255), 1.0f * superScale))
+                        {
+                            g.DrawPath(penBorder, artPath);
                         }
                     }
 
-                    if (!coverDrawn)
-                    {
-                        using var brushCenter = new SolidBrush(Color.FromArgb((int)(220 * discAlpha), trackAccent));
-                        g.FillPath(brushCenter, fullDiscPath);
-                    }
-
-                    // 2. Subtle Concentric Vinyl Micro-Grooves over Album Art
-                    for (int i = 1; i <= 3; i++)
-                    {
-                        float r = discR * (0.35f + i * 0.18f);
-                        using var penGroove = new Pen(Color.FromArgb((int)(35 * discAlpha), 255, 255, 255), 0.8f * superScale);
-                        g.DrawEllipse(penGroove, discCx - r, discCy - r, r * 2, r * 2);
-                    }
-
-                    using (var brushSheen = new SolidBrush(Color.FromArgb((int)(35 * discAlpha), 255, 255, 255)))
-                    {
-                        using var sheenPath = new GraphicsPath();
-                        sheenPath.AddPie(discCx - discR, discCy - discR, discR * 2, discR * 2, (float)(vinylAngle + 30), 45f);
-                        sheenPath.AddPie(discCx - discR, discCy - discR, discR * 2, discR * 2, (float)(vinylAngle + 210), 45f);
-                        g.FillPath(brushSheen, sheenPath);
-                    }
-
-                    // 4. Center Hollow Spindle Hole (SourceCopy transparent core)
-                    float holeR = discR * 0.14f;
-                    g.CompositingMode = CompositingMode.SourceCopy;
-                    using (var brushHole = new SolidBrush(Color.Transparent))
-                    {
-                        g.FillEllipse(brushHole, discCx - holeR, discCy - holeR, holeR * 2, holeR * 2);
-                    }
-                    g.CompositingMode = CompositingMode.SourceOver;
+                    g.Restore(state);
                 }
-                g.ResetClip();
-
-                // 5. Crisp Outer Glass Rim Pen
-                using (var penDisc = new Pen(Color.FromArgb((int)(160 * discAlpha), 255, 255, 255), 1.0f * superScale))
-                {
-                    g.DrawEllipse(penDisc, discCx - discR, discCy - discR, discR * 2, discR * 2);
-                }
-
-                g.Restore(state);
-            }
 
             // 2. Middle Section: Optical Clock Typography (Only when timeAlpha > 0.01)
             if (timeAlpha > 0.01)
@@ -6773,17 +8334,46 @@ private static void DrawTabBauhausWeather(
                 }
 
                 float textStartX = availCenter - totalClockWidth * 0.5f;
+                float curDrawX = textStartX;
                 float cy = superH * 0.5f;
                 float mainY = cy - sizeMain.Height * 0.5f - 1.25f * superScale;
                 float subTopY = cy - sizeSec.Height - 1.25f * superScale;
                 float subBotY = cy - 1.0f * superScale;
 
-                using (var brushMain = new SolidBrush(Color.FromArgb((int)(255 * clockAlpha), 255, 255, 255)))
+                if (!string.IsNullOrEmpty(timerPrefix))
                 {
-                    g.DrawString(timeMain, fontMain, brushMain, textStartX, mainY, StringFormat.GenericTypographic);
+                    int dotIdx = timerPrefix.IndexOf('·');
+                    if (dotIdx > 0)
+                    {
+                        string minStr = timerPrefix.Substring(0, dotIdx);
+                        string dotStr = timerPrefix.Substring(dotIdx);
+                        var sizeMin = g.MeasureString(minStr, fontMain, PointF.Empty, StringFormat.GenericTypographic);
+
+                        using (var brushTimer = new SolidBrush(Color.FromArgb((int)(220 * clockAlpha), 215, 225, 235)))
+                        {
+                            g.DrawString(minStr, fontMain, brushTimer, curDrawX, mainY, StringFormat.GenericTypographic);
+                        }
+                        using (var brushDot = new SolidBrush(Color.FromArgb((int)(150 * clockAlpha), 148, 163, 184)))
+                        {
+                            g.DrawString(dotStr, fontMain, brushDot, curDrawX + sizeMin.Width, mainY, StringFormat.GenericTypographic);
+                        }
+                    }
+                    else
+                    {
+                        using (var brushTimer = new SolidBrush(Color.FromArgb((int)(220 * clockAlpha), 215, 225, 235)))
+                        {
+                            g.DrawString(timerPrefix, fontMain, brushTimer, curDrawX, mainY, StringFormat.GenericTypographic);
+                        }
+                    }
+                    curDrawX += sizeTimer.Width;
                 }
 
-                float subStartX = textStartX + sizeMain.Width + spacingSub;
+                using (var brushMain = new SolidBrush(Color.FromArgb((int)(255 * clockAlpha), 255, 255, 255)))
+                {
+                    g.DrawString(timeMain, fontMain, brushMain, curDrawX, mainY, StringFormat.GenericTypographic);
+                }
+
+                float subStartX = curDrawX + sizeMain.Width + spacingSub;
                 using (var brushSec = new SolidBrush(Color.FromArgb((int)(215 * clockAlpha), 255, 255, 255)))
                 {
                     g.DrawString(timeSec, fontSub, brushSec, subStartX, subTopY, StringFormat.GenericTypographic);
@@ -6799,8 +8389,9 @@ private static void DrawTabBauhausWeather(
             if (mediaElementsAlpha > 0.01)
             {
                 float eqCx = (targetW - 16f) * superScale;
-                float eqCy = 22f * superScale;
+                float eqCy = targetH * 0.5f * superScale;
                 DrawEqualizerBars(g, eqCx, eqCy, 1.85f * superScale, 11.5f * superScale, eqBarHeights, trackAccent, (float)mediaElementsAlpha);
+            }
             }
         }
 
@@ -6855,6 +8446,95 @@ private static void DrawTabBauhausWeather(
         return (colorBuffer, targetW, targetH);
     }
 
+    private static void DrawRingingBellVector(Graphics g, int superW, int superH, float superScale)
+    {
+        float cx = superW * 0.5f;
+        float cy = superH * 0.5f;
+
+        // Constructivist minimal vector bell matching signature Liquid Glass ash-white palette
+        // 1. Clapper (protruding slightly below bell rim in subtle ash tone)
+        float clapperCy = cy + 6.2f * superScale;
+        float clapperR = 2.4f * superScale;
+        using (var clapperBrush = new SolidBrush(Color.FromArgb(240, 203, 213, 225))) // #CBD5E1 ash
+        {
+            g.FillEllipse(clapperBrush, cx - clapperR, clapperCy - clapperR, clapperR * 2, clapperR * 2);
+        }
+        using (var clapperPen = new Pen(Color.FromArgb(180, 255, 255, 255), 0.8f * superScale))
+        {
+            g.DrawEllipse(clapperPen, cx - clapperR, clapperCy - clapperR, clapperR * 2, clapperR * 2);
+        }
+
+        // 2. Bell Body Path
+        using (var bellPath = new GraphicsPath())
+        {
+            bellPath.StartFigure();
+            // Top crown left
+            bellPath.AddLine(cx - 3.2f * superScale, cy - 6.5f * superScale, cx - 4.6f * superScale, cy - 2.5f * superScale);
+            // Shoulder to flared waist
+            bellPath.AddBezier(
+                new PointF(cx - 4.6f * superScale, cy - 2.5f * superScale),
+                new PointF(cx - 5.2f * superScale, cy + 1.5f * superScale),
+                new PointF(cx - 7.5f * superScale, cy + 4.5f * superScale),
+                new PointF(cx - 8.8f * superScale, cy + 5.5f * superScale)
+            );
+            // Flared bottom rim
+            bellPath.AddLine(cx - 8.8f * superScale, cy + 5.5f * superScale, cx + 8.8f * superScale, cy + 5.5f * superScale);
+            // Right flared waist to shoulder
+            bellPath.AddBezier(
+                new PointF(cx + 8.8f * superScale, cy + 5.5f * superScale),
+                new PointF(cx + 7.5f * superScale, cy + 4.5f * superScale),
+                new PointF(cx + 5.2f * superScale, cy + 1.5f * superScale),
+                new PointF(cx + 4.6f * superScale, cy - 2.5f * superScale)
+            );
+            // Right shoulder to top crown right
+            bellPath.AddLine(cx + 4.6f * superScale, cy - 2.5f * superScale, cx + 3.2f * superScale, cy - 6.5f * superScale);
+            bellPath.CloseFigure();
+
+            // Frosted pure white to ash-silver gradient
+            using var bellGrad = new LinearGradientBrush(
+                new PointF(cx, cy - 7.0f * superScale),
+                new PointF(cx, cy + 6.0f * superScale),
+                Color.FromArgb(250, 255, 255, 255),
+                Color.FromArgb(220, 203, 213, 225)
+            );
+            g.FillPath(bellGrad, bellPath);
+
+            // Specular border
+            using var bellBorderPen = new Pen(Color.FromArgb(240, 255, 255, 255), 1.0f * superScale);
+            g.DrawPath(bellBorderPen, bellPath);
+        }
+
+        // 3. Bottom rim pill band
+        float rimW = 18.2f * superScale;
+        float rimH = 2.2f * superScale;
+        float rimX = cx - rimW * 0.5f;
+        float rimY = cy + 4.6f * superScale;
+        using (var rimBrush = new SolidBrush(Color.FromArgb(245, 241, 245, 249)))
+        {
+            g.FillRectangle(rimBrush, rimX, rimY, rimW, rimH);
+        }
+        using (var rimBorder = new Pen(Color.FromArgb(255, 255, 255, 255), 0.8f * superScale))
+        {
+            g.DrawRectangle(rimBorder, rimX, rimY, rimW, rimH);
+        }
+
+        // 4. Top suspension crown loop
+        float loopW = 5.2f * superScale;
+        float loopH = 4.4f * superScale;
+        float loopX = cx - loopW * 0.5f;
+        float loopY = cy - 9.8f * superScale;
+        using (var loopPen = new Pen(Color.FromArgb(235, 255, 255, 255), 1.4f * superScale))
+        {
+            g.DrawEllipse(loopPen, loopX, loopY, loopW, loopH);
+        }
+
+        // 5. Specular glint on left shoulder
+        using (var glintPen = new Pen(Color.FromArgb(210, 255, 255, 255), 1.1f * superScale) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        {
+            g.DrawLine(glintPen, cx - 4.2f * superScale, cy - 4.5f * superScale, cx - 5.5f * superScale, cy + 0.5f * superScale);
+        }
+    }
+
     public void StepForward()
     {
         _animDirection = 1.0;
@@ -6863,24 +8543,8 @@ private static void DrawTabBauhausWeather(
 
     public void CycleWeatherCardStyle()
     {
-        if (IsLiveWeatherMode)
-        {
-            // First press of S enters debug preview mode starting at condition 1
-            IsLiveWeatherMode = false;
-            CurrentWeatherCondition = 1;
-        }
-        else
-        {
-            CurrentWeatherCondition++;
-            if (CurrentWeatherCondition > MaxWeatherConditions)
-            {
-                // After condition 15, return to live weather mode
-                IsLiveWeatherMode = true;
-                CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
-            }
-        }
-
-        _debugStyleToastUntil = DateTime.UtcNow.AddSeconds(2.5);
+        IsLiveWeatherMode = true;
+        CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
         _tabBufferCache[TabHome] = null;
         _tabBufferCache[TabWeather] = null;
         _needExpandedUpdate = true;
@@ -7084,668 +8748,18 @@ private static void DrawTabBauhausWeather(
             string triggerPath = Path.Combine(rootDir, "take_screenshot.trigger");
             if (File.Exists(triggerPath))
             {
-                if (_progress <= 0.01)
-                {
-                    _progress = 1.0;
-                    _hoverPos = 0.0;
-                    _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                    var compGeom = ComputeGeometry(1.0, 0.0, _currentCompactWidth);
-                    ProcessAndPresent(new Point(Location.X, Location.Y), compGeom);
-                }
-                SaveDesktopScreenshotWithPill("screenshot.png");
-                File.Delete(triggerPath);
-            }
-
-            string expTriggerPath = Path.Combine(rootDir, "take_screenshot_expanded.trigger");
-            if (File.Exists(expTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                string txt = File.ReadAllText(expTriggerPath).Trim();
-                if (int.TryParse(txt, out int reqTab) && reqTab >= TabHome && reqTab <= TabChrono)
-                {
-                    SwitchTab(reqTab, immediate: true);
-                }
-                else
-                {
-                    SwitchTab(TabHome, immediate: true);
-                }
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_expanded.png");
-                if (reqTab == TabWeather)
-                {
-                    SaveDesktopScreenshotWithPill("screenshot_weather_tab.png");
-                }
-                File.Delete(expTriggerPath);
-            }
-
-            string transTriggerPath = Path.Combine(rootDir, "take_transition.trigger");
-            if (File.Exists(transTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                string txt = File.ReadAllText(transTriggerPath).Trim();
-                string[] parts = txt.Split(',');
-                int fromTab = int.TryParse(parts[0], out int f) ? f : 0;
-                int toTab = (parts.Length > 1 && int.TryParse(parts[1], out int t2)) ? t2 : 1;
-                double simP = (parts.Length > 2 && double.TryParse(parts[2], out double p)) ? p : 0.35;
-
-                SwitchTab(fromTab, immediate: true);
-                UpdateExpandedMask();
-
-                // Now transition towards toTab
-                SwitchTab(toTab, immediate: false);
-                _tabTransitionP = simP;
-                _tabIndicatorPos = fromTab + (toTab - fromTab) * (1.0 - Math.Pow(1.0 - simP, 3.0));
-                _tabIndicatorVel = (toTab - fromTab) * 3.0 * Math.Pow(1.0 - simP, 2.0) * 12.0;
-
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_transition.png");
-                File.Delete(transTriggerPath);
-            }
-
-            string splitTriggerPath = Path.Combine(rootDir, "take_home_split.trigger");
-            if (File.Exists(splitTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                _sleepTimerActive = false;
-                _homeSleepPickerOpen = false;
-                _homeSleepExpandP = 0.0;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_home_split.png");
-                File.Delete(splitTriggerPath);
-            }
-
-            string sleepTriggerPath = Path.Combine(rootDir, "take_home_sleep.trigger");
-            if (File.Exists(sleepTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _sleepTimerActive = false;
-                _homeSleepPickerOpen = true;
-                _homeSleepExpandP = 1.0;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_home_sleep.png");
-                File.Delete(sleepTriggerPath);
-            }
-
-            string sleepSelTriggerPath = Path.Combine(rootDir, "take_home_sleep_selected.trigger");
-            if (File.Exists(sleepSelTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _sleepTimerActive = true;
-                _sleepTimerDurationMinutes = 30;
-                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(30);
-                _homeSleepPickerOpen = true;
-                _homeSleepExpandP = 1.0;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_home_sleep_selected.png");
-                File.Delete(sleepSelTriggerPath);
-            }
-
-            string activeTriggerPath = Path.Combine(rootDir, "take_home_active.trigger");
-            if (File.Exists(activeTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                _sleepTimerActive = true;
-                _sleepTimerDurationMinutes = 30;
-                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(30);
-                _homeSleepPickerOpen = false;
-                _homeSleepExpandP = 0.0;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_home_active.png");
-                File.Delete(activeTriggerPath);
-            }
-
-            string hoverTimerTriggerPath = Path.Combine(rootDir, "take_home_hover_timer.trigger");
-            if (File.Exists(hoverTimerTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _sleepTimerActive = true;
-                _sleepTimerDurationMinutes = 30;
-                _sleepTimerTargetUtc = DebugSleepTimerInSeconds ? DateTime.UtcNow.AddSeconds(28) : DateTime.UtcNow.AddMinutes(28);
-                _hoveredHomeSleepBtn = HomeSleepBtnMoon;
-                _homeSleepPickerOpen = false;
-                _homeSleepExpandP = 0.0;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_home_hover_timer.png");
-                File.Delete(hoverTimerTriggerPath);
-            }
-
-            string hoverWeatherTriggerPath = Path.Combine(rootDir, "take_home_hover_weather.trigger");
-            if (File.Exists(hoverWeatherTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _hoveredHomeWeather = true;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_home_hover_weather.png");
-                File.Delete(hoverWeatherTriggerPath);
-            }
-
-            string previewStyle1Path = Path.Combine(rootDir, "take_preview_style1.trigger");
-            if (File.Exists(previewStyle1Path))
-            {
-                WeatherCardStyle = 1;
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _hoveredHomeWeather = false;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_style1_bauhaus.png");
-                File.Delete(previewStyle1Path);
-            }
-
-            string previewStyle2Path = Path.Combine(rootDir, "take_preview_style2.trigger");
-            if (File.Exists(previewStyle2Path))
-            {
-                WeatherCardStyle = 2;
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _hoveredHomeWeather = false;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_style2_precision.png");
-                File.Delete(previewStyle2Path);
-            }
-
-            string previewStyle3Path = Path.Combine(rootDir, "take_preview_style3.trigger");
-            if (File.Exists(previewStyle3Path))
-            {
-                WeatherCardStyle = 3;
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _hoveredHomeWeather = false;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_style3_prismatic.png");
-                File.Delete(previewStyle3Path);
-            }
-
-            string previewStyle4Path = Path.Combine(rootDir, "take_preview_style4.trigger");
-            if (File.Exists(previewStyle4Path))
-            {
-                WeatherCardStyle = 4;
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _hoveredHomeWeather = false;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var expGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), expGeom);
-                SaveDesktopScreenshotWithPill("screenshot_style4_bento.png");
-                File.Delete(previewStyle4Path);
-            }
-
-            string previewAllWeatherPath = Path.Combine(rootDir, "take_preview_all_weather.trigger");
-            if (File.Exists(previewAllWeatherPath))
-            {
-                try { File.Delete(previewAllWeatherPath); } catch { }
-
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-
-                // 1. Capture 15 Bauhaus conditions on Home Tab
-                string[] conditionKeys = {
-                    "sunny", "clearnight", "partlycloudyday", "partlycloudynight",
-                    "overcast", "fogmist", "drizzle", "rain", "freezingrain",
-                    "lightsnow", "heavysnow", "thunderstorm", "severehail",
-                    "sunset", "gale"
-                };
-
-                IsLiveWeatherMode = false;
-
-                for (int s = 1; s <= 15; s++)
-                {
-                    try
-                    {
-                        CurrentWeatherCondition = s;
-                        SwitchTab(TabHome, immediate: true);
-                        _tabBufferCache[TabHome] = null;
-                        UpdateExpandedMask();
-                        var geom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                        ProcessAndPresent(new Point(Location.X, Location.Y), geom);
-                        SaveDesktopScreenshotWithPill($"screenshot_bauhaus_{s:D2}_{conditionKeys[s - 1]}.png");
-                        System.Threading.Thread.Sleep(40);
-                    }
-                    catch (Exception ex)
-                    {
-                        File.WriteAllText(Path.Combine(rootDir, $"home_weather_err_{s}.txt"), ex.ToString());
-                    }
-                }
-
-                // 2. Capture 15 Bauhaus conditions on Weather Tab
-                for (int s = 1; s <= 15; s++)
-                {
-                    try
-                    {
-                        CurrentWeatherCondition = s;
-                        SwitchTab(TabWeather, immediate: true);
-                        _tabBufferCache[TabWeather] = null;
-                        UpdateExpandedMask();
-                        var geom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                        ProcessAndPresent(new Point(Location.X, Location.Y), geom);
-                        SaveDesktopScreenshotWithPill($"screenshot_weather_tab_{s:D2}_{conditionKeys[s - 1]}.png");
-                        System.Threading.Thread.Sleep(40);
-                    }
-                    catch (Exception ex)
-                    {
-                        File.WriteAllText(Path.Combine(rootDir, $"weather_tab_err_{s}.txt"), ex.ToString());
-                    }
-                }
-
-                // 3. Capture Live Weather Mode (from real API!)
+                string targetName = "screenshot.png";
                 try
                 {
-                    IsLiveWeatherMode = true;
-                    CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
-
-                    // Home tab in live weather mode
-                    SwitchTab(TabHome, immediate: true);
-                    _tabBufferCache[TabHome] = null;
-                    UpdateExpandedMask();
-                    var geomHomeLive = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                    ProcessAndPresent(new Point(Location.X, Location.Y), geomHomeLive);
-                    SaveDesktopScreenshotWithPill("screenshot_live_weather_home.png");
-                    System.Threading.Thread.Sleep(40);
-
-                    // Weather tab in live weather mode
-                    SwitchTab(TabWeather, immediate: true);
-                    _tabBufferCache[TabWeather] = null;
-                    UpdateExpandedMask();
-                    var geomTabLive = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                    ProcessAndPresent(new Point(Location.X, Location.Y), geomTabLive);
-                    SaveDesktopScreenshotWithPill("screenshot_live_weather_tab.png");
-                    System.Threading.Thread.Sleep(40);
+                    string content = File.ReadAllText(triggerPath).Trim();
+                    if (!string.IsNullOrEmpty(content)) targetName = content;
                 }
-                catch (Exception ex)
-                {
-                    File.WriteAllText(Path.Combine(rootDir, "live_weather_err.txt"), ex.ToString());
-                }
-
-                // Restore default live state on Home tab
-                SwitchTab(TabHome, immediate: true);
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var resetGeom = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), resetGeom);
-            }
-
-            string expandAnimTriggerPath = Path.Combine(rootDir, "take_home_expand_anim.trigger");
-            if (File.Exists(expandAnimTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _isPlaying = true;
-                _hasActiveMedia = true;
-                if (string.IsNullOrEmpty(_currentTrack.Title) || _currentTrack.Title == "No Media Playing")
-                {
-                    _currentTrack.Title = "Midnight City";
-                    _currentTrack.Artist = "M83";
-                }
-                SwitchTab(TabHome, immediate: true);
-                _sleepTimerActive = false;
-                _homeSleepPickerOpen = true;
-
-                // 1. Mid-expansion (p = 0.45)
-                _homeSleepExpandP = 0.45;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var geomMid = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomMid);
-                SaveDesktopScreenshotWithPill("screenshot_home_expand_mid.png");
-
-                // 2. Full-expansion (p = 1.0)
-                _homeSleepExpandP = 1.0;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var geomFull = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomFull);
-                SaveDesktopScreenshotWithPill("screenshot_home_expand_full.png");
-
-                // 3. Reset back to resting state
-                _homeSleepPickerOpen = false;
-                _homeSleepExpandP = 0.0;
-                _tabBufferCache[TabHome] = null;
-                UpdateExpandedMask();
-                var geomRest = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomRest);
-
-                File.Delete(expandAnimTriggerPath);
-            }
-
-            string chronoTriggerPath = Path.Combine(rootDir, "take_chrono_all.trigger");
-            if (File.Exists(chronoTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-
-                // 1. Idle state (resting squircle timer icon 44px)
-                SwitchTab(TabChrono, immediate: true);
-                _chronoTimerRunning = false;
-                _chronoTimerHovered = false;
-                _chronoRunningHovered = false;
-                _chronoRunningHoverP = 0.0;
-                _chronoMorphTimer = 0.0;
-                _chronoTimerAnimWidth = 44.0;
-                _hoveredChronoBtn = ChronoBtnNone;
-                _tabBufferCache[TabChrono] = null;
-                UpdateExpandedMask();
-                var geomIdle = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomIdle);
-                SaveDesktopScreenshotWithPill("screenshot_chrono_idle.png");
-
-                // 2. Expanded state (hovered: 5m, 10m, 15m, +)
-                _chronoTimerRunning = false;
-                _chronoTimerHovered = true;
-                _chronoRunningHovered = false;
-                _chronoRunningHoverP = 0.0;
-                _chronoMorphTimer = 0.0;
-                _chronoTimerAnimWidth = 200.0;
-                _hoveredChronoBtn = ChronoBtn10m; // show 10m highlighted
-                _tabBufferCache[TabChrono] = null;
-                UpdateExpandedMask();
-                var geomExp = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomExp);
-                SaveDesktopScreenshotWithPill("screenshot_chrono_expanded.png");
-
-                // 3. Running state (countdown MM:SS with amber pulse dot)
-                _chronoTimerRunning = true;
-                _chronoTimerDurationMinutes = 10;
-                _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? 10 : 600;
-                _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(7) : DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
-                _chronoTimerAnimWidth = ChronoActiveWidth;
-                _chronoTimerHovered = false;
-                _chronoRunningHovered = false;
-                _chronoRunningHoverP = 0.0;
-                _chronoMorphTimer = 0.0;
-                _hoveredChronoBtn = ChronoBtnNone;
-                _tabBufferCache[TabChrono] = null;
-                UpdateExpandedMask();
-                var geomRun = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomRun);
-                SaveDesktopScreenshotWithPill("screenshot_chrono_running.png");
-
-                // 4. Cancel hover state (hovered while running: ✕ Cancel button revealed)
-                _chronoTimerRunning = true;
-                _chronoTimerDurationMinutes = 10;
-                _chronoTimerTotalSeconds = DebugChronoTimerInSeconds ? 10 : 600;
-                _chronoTimerTargetUtc = DebugChronoTimerInSeconds ? DateTime.UtcNow.AddSeconds(7) : DateTime.UtcNow.AddMinutes(9).AddSeconds(42);
-                _chronoTimerAnimWidth = ChronoActiveWidth;
-                _chronoTimerHovered = false;
-                _chronoRunningHovered = true;
-                _chronoRunningHoverP = 1.0;
-                _chronoMorphTimer = 0.0;
-                _hoveredChronoBtn = ChronoBtnCancel;
-                _tabBufferCache[TabChrono] = null;
-                UpdateExpandedMask();
-                var geomCancel = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomCancel);
-                SaveDesktopScreenshotWithPill("screenshot_chrono_cancel_hover.png");
-
-                // Reset back to idle
-                _chronoTimerRunning = false;
-                _chronoTimerHovered = false;
-                _chronoRunningHovered = false;
-                _chronoRunningHoverP = 0.0;
-                _chronoTimerAnimWidth = 44.0;
-                _hoveredChronoBtn = ChronoBtnNone;
-                _tabBufferCache[TabChrono] = null;
-                UpdateExpandedMask();
-
-                File.Delete(chronoTriggerPath);
-            }
-
-            string musicTriggerPath = Path.Combine(rootDir, "take_music_all.trigger");
-            if (File.Exists(musicTriggerPath))
-            {
-                _progress = 1.0;
-                _hoverPos = 1.0;
-                _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
-
-                // 1. Music tab resting state (left: audio device icon, right: sleep timer moon)
-                SwitchTab(TabMusic, immediate: true);
-                _audioPickerOpen = false;
-                _audioPickerExpandP = 0.0;
-                _musicSleepPickerOpen = false;
-                _musicSleepExpandP = 0.0;
-                _sleepTimerActive = false;
-                _hoveredButton = BtnNone;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-                var geomResting = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomResting);
-                SaveDesktopScreenshotWithPill("screenshot_music_resting.png");
-
-                // 2. Audio output device picker expanded
-                _audioPickerOpen = true;
-                _audioPickerExpandP = 1.0;
-                _musicSleepPickerOpen = false;
-                _musicSleepExpandP = 0.0;
-                _sleepTimerActive = false;
-                _hoveredAudioBtn = AudioBtnChip0;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-                var geomAudio = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomAudio);
-                SaveDesktopScreenshotWithPill("screenshot_music_audio_expanded.png");
-
-                // 3. Sleep timer picker expanded (idle preset selection)
-                _audioPickerOpen = false;
-                _audioPickerExpandP = 0.0;
-                _musicSleepPickerOpen = true;
-                _musicSleepExpandP = 1.0;
-                _sleepTimerActive = false;
-                _hoveredMusicSleepBtn = MusicSleepBtn15m;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-                var geomSleep = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomSleep);
-                SaveDesktopScreenshotWithPill("screenshot_music_sleep_expanded.png");
-
-                // 3b. Sleep timer picker expanded (active running countdown state)
-                _audioPickerOpen = false;
-                _audioPickerExpandP = 0.0;
-                _musicSleepPickerOpen = true;
-                _musicSleepExpandP = 1.0;
-                _sleepTimerActive = true;
-                _sleepTimerDurationMinutes = 15;
-                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(14).AddSeconds(28);
-                _hoveredMusicSleepBtn = BtnNone;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-                var geomSleepRun = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomSleepRun);
-                SaveDesktopScreenshotWithPill("screenshot_music_sleep_expanded_running.png");
-
-                // 4. Sleep timer active state (inverted bright button with dark moon)
-                _audioPickerOpen = false;
-                _audioPickerExpandP = 0.0;
-                _musicSleepPickerOpen = false;
-                _musicSleepExpandP = 0.0;
-                _sleepTimerActive = true;
-                _sleepTimerDurationMinutes = 15;
-                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(14);
-                _hoveredButton = BtnNone;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-                var geomActive = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomActive);
-                SaveDesktopScreenshotWithPill("screenshot_music_sleep_active.png");
-
-                // 5. Sleep timer active hovered state (shows countdown "14m" or "28s")
-                _audioPickerOpen = false;
-                _audioPickerExpandP = 0.0;
-                _musicSleepPickerOpen = false;
-                _musicSleepExpandP = 0.0;
-                _sleepTimerActive = true;
-                _sleepTimerDurationMinutes = 15;
-                _sleepTimerTargetUtc = DateTime.UtcNow.AddMinutes(14);
-                _hoveredButton = BtnSleepTimer;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-                var geomActiveHover = ComputeGeometry(1.0, 1.0, _currentCompactWidth);
-                ProcessAndPresent(new Point(Location.X, Location.Y), geomActiveHover);
-                SaveDesktopScreenshotWithPill("screenshot_music_sleep_active_hover.png");
-
-                // Reset
-                _audioPickerOpen = false;
-                _audioPickerExpandP = 0.0;
-                _musicSleepPickerOpen = false;
-                _musicSleepExpandP = 0.0;
-                _sleepTimerActive = false;
-                _hoveredButton = BtnNone;
-                _hoveredAudioBtn = BtnNone;
-                _hoveredMusicSleepBtn = BtnNone;
-                _tabBufferCache[TabMusic] = null;
-                UpdateExpandedMask();
-
-                File.Delete(musicTriggerPath);
+                catch { }
+                SaveDesktopScreenshotWithPill(targetName);
+                try { File.Delete(triggerPath); } catch { }
             }
         }
-        catch (Exception ex)
-        {
-            try
-            {
-                string dir = AppDomain.CurrentDomain.BaseDirectory;
-                string rootDir = Path.GetFullPath(Path.Combine(dir, @"..\..\.."));
-                File.WriteAllText(Path.Combine(rootDir, "trigger_error.txt"), ex.ToString());
-            }
-            catch { }
-        }
+        catch { }
     }
 
     protected override bool ShowWithoutActivation => true;
@@ -7769,23 +8783,18 @@ private static void DrawTabBauhausWeather(
         IntPtr hwnd = _hwnd;
         if (hwnd == IntPtr.Zero || IsDisposed) return;
 
-        // Place immediately below the Windows Taskbar (Shell_TrayWnd).
-        // This guarantees that the auto-hide taskbar unhides smoothly in front without obstruction,
-        // while our pill stays persistently above all application and regular windows!
-        IntPtr trayHwnd = FindWindow("Shell_TrayWnd", null);
-        IntPtr targetAfter = (trayHwnd != IntPtr.Zero) ? trayHwnd : HWND_TOPMOST;
-
+        // Ensure the Dynamic Island stays persistently topmost above all open windows.
+        // If any window (browser, editor, file explorer) is placed in front of us,
+        // immediately assert HWND_TOPMOST without stealing focus or activating.
         IntPtr windowAbove = GetWindow(hwnd, GW_HWNDPREV);
-        if (windowAbove == targetAfter)
+        if (windowAbove != IntPtr.Zero)
         {
-            return;
+            SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOSENDCHANGING);
         }
-
-        SetWindowPos(
-            hwnd,
-            targetAfter,
-            0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOSENDCHANGING);
     }
 
     protected override void WndProc(ref Message m)
@@ -7799,6 +8808,12 @@ private static void DrawTabBauhausWeather(
 
         if (m.Msg == WmLButtonDblClk)
         {
+            var pt = PointToClient(Cursor.Position);
+            if (IsPointInManualTimerArrows(pt))
+            {
+                m.Result = IntPtr.Zero;
+                return;
+            }
             CollapseAndDespawnIsland();
             m.Result = IntPtr.Zero;
             return;
@@ -7841,10 +8856,17 @@ private static void DrawTabBauhausWeather(
                                    (Math.Abs(_audioPickerExpandP - (_audioPickerOpen ? 1.0 : 0.0)) > 0.001) ||
                                    (Math.Abs(_musicSleepExpandP - (_musicSleepPickerOpen ? 1.0 : 0.0)) > 0.001) ||
                                    (_chronoMorphTimer > 0.0) ||
-                                   (!_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - (_chronoTimerHovered ? 200.0 : 44.0)) > 0.5) ||
+                                   (!_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - (_chronoTimerHovered ? 372.0 : 44.0)) > 0.5) ||
                                    (_chronoTimerRunning && Math.Abs(_chronoTimerAnimWidth - ChronoActiveWidth) > 0.5) ||
                                    (_chronoTimerRunning && Math.Abs(_chronoRunningHoverP - (_chronoRunningHovered ? 1.0 : 0.0)) > 0.01) ||
-                                   (_activeTab == TabChrono && _chronoTimerRunning);
+                                   (_activeTab == TabChrono && _chronoTimerRunning) ||
+                                   _timerAlarmPendingCollapse ||
+                                   (_timerAlarmActive && !_timerAlarmDismissed) ||
+                                   (_heldManualBtn != ManualBtnNone) ||
+                                   (_manualMorphTimer > 0.0) ||
+                                   (_animHourTimer > 0.0 || _animMinuteTimer > 0.0 || _animSecondTimer > 0.0) ||
+                                   (_manualTimerRunning && Math.Abs(_manualRunningHoverP - (_manualRunningHovered ? 1.0 : 0.0)) > 0.01) ||
+                                   (_activeTab == TabChrono && _manualTimerRunning);
             int sleepTimeout = isFastAnimating ? 0 : (_hoverPos > 0.6 ? 4 : 10);
             if (sleepTimeout > 0)
             {
@@ -7864,6 +8886,24 @@ private static void DrawTabBauhausWeather(
 
             DateTime now = DateTime.Now;
             DateTime utcNow = DateTime.UtcNow;
+
+            // Press-and-hold continuous repeat for manual timer arrows
+            if (_heldManualBtn != ManualBtnNone)
+            {
+                if ((Control.MouseButtons & MouseButtons.Left) == 0)
+                {
+                    _heldManualBtn = ManualBtnNone;
+                }
+                else
+                {
+                    DateTime nowHold = DateTime.UtcNow;
+                    if (nowHold >= _manualNextRepeatTime)
+                    {
+                        _manualNextRepeatTime = nowHold.AddMilliseconds(85);
+                        ExecuteManualArrowAction(_heldManualBtn);
+                    }
+                }
+            }
 
             // Track music playback start and track change to trigger the 2-minute time display
             bool justStartedPlaying = !_lastWasPlaying && _isPlaying;
@@ -7912,10 +8952,37 @@ private static void DrawTabBauhausWeather(
                         isInsideTriggerArea = true;
                     }
 
-                    // Top edge / notch summon strip: screen bezel down to top of pill (0 <= Y < 16)
-                    if (mouseSurfaceY >= 0 && mouseSurfaceY < 16 && Math.Abs(mouseSurfaceX - _currentGeometry.CenterX) <= summonHalfWidth)
+                    // Top edge / notch summon strip. After an accidental body-trigger
+                    // dismissal, only a 4px edge line remains and it requires a steady
+                    // 0.5s dwell before the island can be summoned again.
+                    bool bodyTriggerSuppressed = utcNow < _bodyTriggerSuppressedUntilUtc;
+                    int topTriggerHeight = bodyTriggerSuppressed ? 4 : 16;
+                    if (mouseSurfaceY >= 0 && mouseSurfaceY < topTriggerHeight && Math.Abs(mouseSurfaceX - _currentGeometry.CenterX) <= summonHalfWidth)
                     {
-                        isEdgeOrNotchHover = true;
+                        if (!bodyTriggerSuppressed)
+                        {
+                            isEdgeOrNotchHover = true;
+                        }
+                        else
+                        {
+                            bool steady = _suppressedTopTriggerDwellStartedAtUtc != DateTime.MinValue &&
+                                Math.Abs(mouseSurfaceX - _suppressedTopTriggerDwellPoint.X) <= 1 &&
+                                Math.Abs(mouseSurfaceY - _suppressedTopTriggerDwellPoint.Y) <= 1;
+                            if (!steady)
+                            {
+                                _suppressedTopTriggerDwellPoint = new Point(mouseSurfaceX, mouseSurfaceY);
+                                _suppressedTopTriggerDwellStartedAtUtc = utcNow;
+                            }
+                            else if ((utcNow - _suppressedTopTriggerDwellStartedAtUtc).TotalSeconds >= 0.5)
+                            {
+                                isEdgeOrNotchHover = true;
+                            }
+                        }
+                    }
+                    else if (bodyTriggerSuppressed)
+                    {
+                        _suppressedTopTriggerDwellStartedAtUtc = DateTime.MinValue;
+                        _suppressedTopTriggerDwellPoint = Point.Empty;
                     }
                 }
                 else
@@ -7927,24 +8994,37 @@ private static void DrawTabBauhausWeather(
                         isEdgeOrNotchHover = true;
                     }
                     // Trigger area (resting pill body area: Y from 16 to 65) spawns and then expands once landed
-                    else if (mouseSurfaceY >= 16 && mouseSurfaceY <= 65 && Math.Abs(mouseSurfaceX - 300) <= 85.0)
+                    else if (utcNow >= _bodyTriggerSuppressedUntilUtc &&
+                             mouseSurfaceY >= 16 && mouseSurfaceY <= 65 && Math.Abs(mouseSurfaceX - 300) <= 85.0)
                     {
                         isInsideTriggerArea = true;
+                        if (!_userDismissed && _progress <= 0.10)
+                        {
+                            _spawnedFromBodyTrigger = true;
+                            _bodyTriggerSpawnedAtUtc = utcNow;
+                        }
                     }
                 }
 
                 cursorInPill = isInsideTriggerArea || isEdgeOrNotchHover;
 
-                // Debug Hotkey: Press 'S' to cycle through all weather looks
-                bool sPressed = (GetAsyncKeyState(0x53) & 0x8000) != 0; // 'S' key
-                if (sPressed && !_prevSKeyDown)
+                // Alarm Hover Dismissal: hovering over the ringing bell stops it immediately and restores collapsed state
+                if (_timerAlarmActive && !_timerAlarmDismissed)
                 {
-                    if (cursorInPill || _hoverPos > 0.05 || _activeTab == TabWeather)
+                    if (cursorInPill)
                     {
-                        CycleWeatherCardStyle();
+                        _timerAlarmActive = false;
+                        _timerAlarmDismissed = true;
+                        _timerAlarmPendingCollapse = false;
+                        _userDismissed = false;
+                        _hoverPos = 0.0;
+                        _hoverVel = 0.0;
+                        _unhoverShowTimeUntil = DateTime.UtcNow.AddMinutes(1);
+                        _tabBufferCache[TabChrono] = null;
+                        UpdateTimeMaskIfNeeded(force: true);
+                        _renderSignal.Set();
                     }
                 }
-                _prevSKeyDown = sPressed;
 
                 // If user dismissed the island, keep it despawned until cursor moves away and re-enters notch
                 if (_userDismissed)
@@ -7969,7 +9049,8 @@ private static void DrawTabBauhausWeather(
                 // 1. Spawning should NOT be initially expanded: must complete entry drop (_progress >= 0.82)
                 // 2. Must be inside trigger area (not at the most edge / notch strip)
                 // 3. Not dismissed by user, and not in the process of despawning (_animDirection >= 0.0)
-                isExpandHover = isInsideTriggerArea && !_userDismissed && (_progress >= 0.82) && (_animDirection >= 0.0);
+                // 4. Do not expand while alarm is ringing or pending collapse
+                isExpandHover = isInsideTriggerArea && !_userDismissed && (_progress >= 0.82) && (_animDirection >= 0.0) && !_timerAlarmActive && !_timerAlarmPendingCollapse;
 
                 // Intelligence: on hover expansion, auto-select Media Tab if active media, Home Tab if no media
                 if (!_wasHovered && isExpandHover)
@@ -8031,6 +9112,8 @@ private static void DrawTabBauhausWeather(
                         float my = mouseSurfaceY - 26f;
                         int newSleepBtn = HomeSleepBtnNone;
                         bool isSplit = _isPlaying || _hasActiveMedia || _sleepTimerActive || _homeSleepPickerOpen || (_homeSleepExpandP > 0.001);
+                        int newPlayerIdx = -1;
+                        bool newHoveredHomeTimer = IsAnyTimerLive() && IsPointInHomeTimer(mx, my);
 
                         if (my >= 36 && my <= 80 && mx >= 216 && mx <= 444)
                         {
@@ -8045,11 +9128,52 @@ private static void DrawTabBauhausWeather(
                             {
                                 newSleepBtn = HomeSleepBtnMoon;
                             }
+                            else if (!isSplit)
+                            {
+                                var players = PlayerService.GetPlayers();
+                                int count = Math.Min(3, players.Count);
+                                if (count > 0)
+                                {
+                                    float btnSize = 28f;
+                                    float btnY = 36f + (44f - btnSize) * 0.5f;
+                                    float gap = 6f;
+                                    float rightMargin = 10f;
+                                    float cardX = 216f;
+                                    float cardW = 228f;
+                                    float startX = cardX + cardW - rightMargin - (count * btnSize + (count - 1) * gap);
+                                    if (my >= btnY && my <= btnY + btnSize)
+                                    {
+                                        for (int i = 0; i < count; i++)
+                                        {
+                                            float bx = startX + i * (btnSize + gap);
+                                            if (mx >= bx && mx <= bx + btnSize)
+                                            {
+                                                newPlayerIdx = i;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                         if (newSleepBtn != _hoveredHomeSleepBtn)
                         {
                             _hoveredHomeSleepBtn = newSleepBtn;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
+
+                        if (newPlayerIdx != _hoveredHomePlayerIndex)
+                        {
+                            _hoveredHomePlayerIndex = newPlayerIdx;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
+
+                        if (newHoveredHomeTimer != _hoveredHomeTimer)
+                        {
+                            _hoveredHomeTimer = newHoveredHomeTimer;
                             _tabBufferCache[TabHome] = null;
                             _needExpandedUpdate = true;
                         }
@@ -8076,6 +9200,18 @@ private static void DrawTabBauhausWeather(
                             _tabBufferCache[TabHome] = null;
                             _needExpandedUpdate = true;
                         }
+                        if (_hoveredHomePlayerIndex != -1)
+                        {
+                            _hoveredHomePlayerIndex = -1;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
+                        if (_hoveredHomeTimer)
+                        {
+                            _hoveredHomeTimer = false;
+                            _tabBufferCache[TabHome] = null;
+                            _needExpandedUpdate = true;
+                        }
                     }
 
                     // Chrono Tab Timer Hover Interaction
@@ -8087,7 +9223,7 @@ private static void DrawTabBauhausWeather(
                         bool newChronoHovered = false;
                         bool newRunningHovered = false;
 
-                        float slot1X = 24f;
+                        float slot1X = 16f;
                         float slot1Y = 44f;
                         float slot1H = 44f;
                         float curW = (float)_chronoTimerAnimWidth;
@@ -8104,10 +9240,20 @@ private static void DrawTabBauhausWeather(
                                 newChronoHovered = true;
                                 if (curW > 120f)
                                 {
-                                    if (mx >= 24 && mx < 78.5f) newChronoBtn = ChronoBtn5m;
-                                    else if (mx >= 78.5f && mx < 125.5f) newChronoBtn = ChronoBtn10m;
-                                    else if (mx >= 125.5f && mx < 172.5f) newChronoBtn = ChronoBtn15m;
-                                    else if (mx >= 172.5f && mx <= 224f) newChronoBtn = ChronoBtnPlus;
+                                    float b1X = slot1X + 86f;
+                                    float btnW = 44f;
+                                    float plusW = 30f;
+                                    float gap = 6f;
+                                    float b2X = b1X + btnW + gap;
+                                    float b3X = b2X + btnW + gap;
+                                    float b4X = b3X + btnW + gap;
+                                    float b5X = b4X + btnW + gap;
+
+                                    if (mx >= b1X && mx < b1X + btnW) newChronoBtn = ChronoBtn5m;
+                                    else if (mx >= b2X && mx < b2X + btnW) newChronoBtn = ChronoBtn10m;
+                                    else if (mx >= b3X && mx < b3X + btnW) newChronoBtn = ChronoBtn15m;
+                                    else if (mx >= b4X && mx < b4X + btnW) newChronoBtn = ChronoBtn30m;
+                                    else if (mx >= b5X && mx <= b5X + plusW) newChronoBtn = ChronoBtnPlus;
                                 }
                                 else
                                 {
@@ -8116,36 +9262,100 @@ private static void DrawTabBauhausWeather(
                             }
                         }
 
-                        if (newChronoHovered != _chronoTimerHovered || newRunningHovered != _chronoRunningHovered || newChronoBtn != _hoveredChronoBtn)
+                        // Manual Timer Hover Interaction
+                        int newManualBtn = ManualBtnNone;
+                        bool newManualRunningHovered = false;
+
+                        float curManX = slot1X + curW + 12f;
+                        float curManW = 444f - curManX;
+                        float curManY = 44f;
+                        float curManH = 44f;
+
+                        if (my >= curManY && my <= curManY + curManH && mx >= curManX && mx <= curManX + curManW)
+                        {
+                            if (_manualTimerRunning)
+                            {
+                                newManualRunningHovered = true;
+                                newManualBtn = ManualBtnCancel;
+                            }
+                            else
+                            {
+                                if (curManW <= 60f)
+                                {
+                                    newManualBtn = ManualBtnIcon;
+                                }
+                                else if (curManW > 150f)
+                                {
+                                    float colCenter = curManX + curManW * 0.46f;
+                                    float colSpacing = 38f;
+                                    float colHX = colCenter - colSpacing;
+                                    float colMX = colCenter;
+                                    float colSX = colCenter + colSpacing;
+
+                                    float btnW = 72f;
+                                    float btnH = 26f;
+                                    float btnX = curManX + curManW - btnW - 12f;
+                                    float btnY = curManY + (curManH - btnH) * 0.5f;
+
+                                    if (my >= curManY && my <= curManY + 18f)
+                                    {
+                                        if (mx >= colHX - 16f && mx <= colHX + 16f) newManualBtn = ManualBtnUpH;
+                                        else if (mx >= colMX - 16f && mx <= colMX + 16f) newManualBtn = ManualBtnUpM;
+                                        else if (mx >= colSX - 16f && mx <= colSX + 16f) newManualBtn = ManualBtnUpS;
+                                    }
+                                    else if (my >= curManY + 26f && my <= curManY + curManH)
+                                    {
+                                        if (mx >= colHX - 16f && mx <= colHX + 16f) newManualBtn = ManualBtnDownH;
+                                        else if (mx >= colMX - 16f && mx <= colMX + 16f) newManualBtn = ManualBtnDownM;
+                                        else if (mx >= colSX - 16f && mx <= colSX + 16f) newManualBtn = ManualBtnDownS;
+                                    }
+                                    else if (mx >= btnX && mx <= btnX + btnW && my >= btnY && my <= btnY + btnH)
+                                    {
+                                        newManualBtn = ManualBtnStart;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (newChronoHovered != _chronoTimerHovered || newRunningHovered != _chronoRunningHovered || newChronoBtn != _hoveredChronoBtn ||
+                            newManualBtn != _hoveredManualBtn || newManualRunningHovered != _manualRunningHovered)
                         {
                             _chronoTimerHovered = newChronoHovered;
                             _chronoRunningHovered = newRunningHovered;
                             _hoveredChronoBtn = newChronoBtn;
+                            _hoveredManualBtn = newManualBtn;
+                            _manualRunningHovered = newManualRunningHovered;
                             _tabBufferCache[TabChrono] = null;
                             _needExpandedUpdate = true;
                         }
                     }
-                    else if (_chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone)
+                    else if (_chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone || _hoveredManualBtn != ManualBtnNone || _manualRunningHovered)
                     {
                         _chronoTimerHovered = false;
                         _chronoRunningHovered = false;
                         _hoveredChronoBtn = ChronoBtnNone;
+                        _hoveredManualBtn = ManualBtnNone;
+                        _manualRunningHovered = false;
                         _tabBufferCache[TabChrono] = null;
                         _needExpandedUpdate = true;
                     }
                 }
             }
 
-            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _hoveredHomeWeather || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone || _hoveredAudioBtn != BtnNone || _hoveredMusicSleepBtn != BtnNone))
+            if (!cursorInPill && (_hoveredButton != BtnNone || _hoveredHomeSleepBtn != HomeSleepBtnNone || _hoveredHomeTimer || _hoveredHomeWeather || _hoveredHomePlayerIndex != -1 || _chronoTimerHovered || _chronoRunningHovered || _hoveredChronoBtn != ChronoBtnNone || _hoveredManualBtn != ManualBtnNone || _manualRunningHovered || _hoveredAudioBtn != BtnNone || _hoveredMusicSleepBtn != BtnNone))
             {
                 _hoveredButton = BtnNone;
                 _hoveredAudioBtn = BtnNone;
                 _hoveredMusicSleepBtn = BtnNone;
                 _hoveredHomeSleepBtn = HomeSleepBtnNone;
+                _hoveredHomeTimer = false;
                 _hoveredHomeWeather = false;
+                _hoveredHomePlayerIndex = -1;
                 _chronoTimerHovered = false;
                 _chronoRunningHovered = false;
                 _hoveredChronoBtn = ChronoBtnNone;
+                _hoveredManualBtn = ManualBtnNone;
+                _manualRunningHovered = false;
                 _tabBufferCache[TabHome] = null;
                 _tabBufferCache[TabMusic] = null;
                 _tabBufferCache[TabChrono] = null;
@@ -8164,11 +9374,15 @@ private static void DrawTabBauhausWeather(
             // 2. Music active: spawns
             // 3. Unhovered: stays spawned showing time for 1 minute
             // 4. Hovered: stays spawned
+            // 5. Active Countdown Timer or Alarm: stays spawned (NEVER despawns due to inactivity)
             // Otherwise: despawns and hides
             bool isOClock = (now.Minute < 3);
             bool isUnhoverActive = (utcNow < _unhoverShowTimeUntil);
             bool isSpawnHover = cursorInPill && !_userDismissed;
-            bool shouldBeSpawned = !_userDismissed && (isSpawnHover || _hasActiveMedia || isOClock || isUnhoverActive);
+            bool isTimerRunning = (_chronoTimerRunning && _chronoTimerTargetUtc > utcNow) ||
+                                  (_manualTimerRunning && _manualTimerTargetUtc > utcNow);
+            bool isAlarmActive = (_timerAlarmActive && !_timerAlarmDismissed) || _timerAlarmPendingCollapse;
+            bool shouldBeSpawned = !_userDismissed && (isSpawnHover || _hasActiveMedia || isOClock || isUnhoverActive || isTimerRunning || isAlarmActive);
 
             if (shouldBeSpawned)
             {
@@ -8214,13 +9428,19 @@ private static void DrawTabBauhausWeather(
             }
             else
             {
-                shouldShowTime = isMusicTimeActive || isUnhoverActive || isOClock;
+                shouldShowTime = isMusicTimeActive || isUnhoverActive || isOClock || isTimerRunning;
             }
 
             double targetTimeAlpha = shouldShowTime ? 1.0 : 0.0;
             _compactTimeAlpha += (targetTimeAlpha - _compactTimeAlpha) * Math.Min(1.0, 8.0 * dt);
 
-            if (_hasActiveMedia)
+            if (_timerAlarmActive && !_timerAlarmDismissed)
+            {
+                // Alarm active: shrink resting pill into a compact circular bubble (44px diameter)
+                double targetWidth = CompactPillHeight;
+                _currentCompactWidth += (targetWidth - _currentCompactWidth) * Math.Min(1.0, 16.0 * dt);
+            }
+            else if (_hasActiveMedia)
             {
                 // Smoothly expand pill for media
                 _playingExpandP += (1.0 - _playingExpandP) * Math.Min(1.0, 10.0 * dt);
@@ -8252,7 +9472,9 @@ private static void DrawTabBauhausWeather(
                     if (_playingExpandP < 0.001) _playingExpandP = 0.0;
                 }
 
-                double targetWidth = CompactPausedWidth;
+                bool hasRunningTimer = (_chronoTimerRunning && _chronoTimerTargetUtc > utcNow) ||
+                                       (_manualTimerRunning && _manualTimerTargetUtc > utcNow);
+                double targetWidth = hasRunningTimer ? 186.0 : CompactPausedWidth;
                 _currentCompactWidth += (targetWidth - _currentCompactWidth) * Math.Min(1.0, 10.0 * dt);
             }
 
@@ -8398,6 +9620,21 @@ private static void DrawTabBauhausWeather(
                 _lastHoverCountdownSec = -1;
             }
 
+            // Keep the Home cancel tile's countdown and perimeter ring current.
+            if (_activeTab == TabHome && GetHomeTimerProgress(out int homeTimerRemainingSec, out _))
+            {
+                if (homeTimerRemainingSec != _lastHomeTimerRemainingSec)
+                {
+                    _lastHomeTimerRemainingSec = homeTimerRemainingSec;
+                    _tabBufferCache[TabHome] = null;
+                    _needExpandedUpdate = true;
+                }
+            }
+            else if (!IsAnyTimerLive())
+            {
+                _lastHomeTimerRemainingSec = -1;
+            }
+
             // Sleep timer expiration check: automatically pauses playback when countdown finishes
             if (_sleepTimerActive && _sleepTimerTargetUtc != DateTime.MinValue && utcNow >= _sleepTimerTargetUtc)
             {
@@ -8428,7 +9665,7 @@ private static void DrawTabBauhausWeather(
                 UpdateExpandedMask();
             }
 
-            if (nowSec - _lastZOrderCheckTime >= 0.20)
+            if (nowSec - _lastZOrderCheckTime >= 0.05)
             {
                 _lastZOrderCheckTime = nowSec;
                 EnsureSystemZOrder();
@@ -8446,6 +9683,7 @@ private static void DrawTabBauhausWeather(
             _currentGeometry = geom;
 
             ProcessAndPresent(new Point(rect.Left, rect.Top), geom);
+            CheckScreenshotTrigger();
         }
         catch (Exception)
         {
@@ -8454,12 +9692,31 @@ private static void DrawTabBauhausWeather(
     }
 }
 
-    private static PillGeometry ComputeGeometry(double spawnP, double hoverP, double compactWidth)
+    private double GetCompactPillHeight()
+    {
+        if (!_hasActiveMedia) return CompactPillHeight;
+        return CompactPillHeight + 8.0 * Math.Clamp(1.0 - _compactTimeAlpha, 0.0, 1.0);
+    }
+
+    private PillGeometry ComputeGeometry(double spawnP, double hoverP, double compactWidth)
     {
         double targetCenterX = SurfaceWidth * 0.5;
 
+        // Alarm physical vibration physics (high-frequency left-right shake of the liquid glass circle)
+        if (_timerAlarmActive && !_timerAlarmDismissed && hoverP < 0.5)
+        {
+            double elapsed = (DateTime.UtcNow - _timerAlarmStartTime).TotalSeconds;
+            if (elapsed < _timerAlarmDuration)
+            {
+                double decay = Math.Clamp(1.0 - (elapsed / _timerAlarmDuration), 0.2, 1.0);
+                double shakeOffset = Math.Sin(elapsed * 24.0 * Math.PI) * 7.5 * decay;
+                targetCenterX += shakeOffset;
+            }
+        }
+
         double restingHalfWidth = (compactWidth * 0.5) + ((DefaultPillWidth * 0.5) - (compactWidth * 0.5)) * hoverP;
-        double restingHalfHeight = (CompactPillHeight * 0.5) + ((DefaultPillHeight * 0.5) - (CompactPillHeight * 0.5)) * hoverP;
+        double compactHeight = GetCompactPillHeight();
+        double restingHalfHeight = (compactHeight * 0.5) + ((DefaultPillHeight * 0.5) - (compactHeight * 0.5)) * hoverP;
 
         restingHalfWidth = Math.Max(20.0, restingHalfWidth);
         restingHalfHeight = Math.Max(18.0, restingHalfHeight);
@@ -8487,7 +9744,7 @@ private static void DrawTabBauhausWeather(
         currentHalfHeight = Math.Max(spawnRadius, currentHalfHeight);
 
         double clampedHover = Math.Clamp(hoverP, 0.0, 1.0);
-        double targetRadius = (CompactPillHeight * 0.5) + (38.0 - (CompactPillHeight * 0.5)) * clampedHover;
+        double targetRadius = (compactHeight * 0.5) + (38.0 - (compactHeight * 0.5)) * clampedHover;
         double currentRadius = Math.Min(targetRadius, Math.Min(currentHalfWidth, currentHalfHeight));
 
         return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
@@ -8938,9 +10195,6 @@ private static void DrawTabBauhausWeather(
                     {
                         float bcx = 0, bhs = 0, br = 0;
                         if (x >= 152 && x <= 184) { bcx = 168f; bhs = 15f; br = 7f; }
-                        else if (x >= 269 && x <= 305) { bcx = 287f; bhs = 17f; br = 8.5f; }
-                        else if (x >= 313 && x <= 357) { bcx = 335f; bhs = 21f; br = 11f; }
-                        else if (x >= 365 && x <= 401) { bcx = 383f; bhs = 17f; br = 8.5f; }
                         else if (x >= 486 && x <= 518) { bcx = 502f; bhs = 15f; br = 7f; }
 
                         if (bhs > 0)
@@ -9049,7 +10303,7 @@ private static void DrawTabBauhausWeather(
 
             if (textAlpha > 0.005 && timeColors != null && timeW > 0 && timeH > 0)
             {
-                int startX = (int)Math.Round((SurfaceWidth * 0.5) - timeW * 0.5);
+                int startX = (int)Math.Round(geom.CenterX - timeW * 0.5);
                 int startY = TopPadding;
 
                 for (int ty = 0; ty < timeH; ty++)
@@ -9214,8 +10468,6 @@ private static void DrawTabBauhausWeather(
                 }
             }
             catch { }
-
-            CheckScreenshotTrigger();
         }
     }
 
@@ -9231,6 +10483,10 @@ private static void DrawTabBauhausWeather(
             {
                 _reusableSuperBmp?.Dispose();
                 _reusableSuperBmp = null;
+                _reusableFastBmp?.Dispose();
+                _reusableFastBmp = null;
+                _tabPrecomputeBmp?.Dispose();
+                _tabPrecomputeBmp = null;
                 _topBarBmp?.Dispose();
                 _topBarBmp = null;
             }

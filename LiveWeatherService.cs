@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Globalization;
+using System.IO;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -10,8 +11,8 @@ namespace LiquidGlassCircle;
 
 public class WeatherModel
 {
-    public string City { get; set; } = "SAN FRANCISCO";
-    public string Country { get; set; } = "US";
+    public string City { get; set; } = "SOUTH ARYAD";
+    public string Country { get; set; } = "IN";
     public double Temperature { get; set; } = 28.0;
     public double ApparentTemperature { get; set; } = 27.0;
     public double TempMax { get; set; } = 31.0;
@@ -72,32 +73,71 @@ public static class LiveWeatherService
         });
     }
 
+    public static (bool useAuto, string city, string country, double lat, double lon) LoadLocationConfig()
+    {
+        try
+        {
+            string[] searchPaths =
+            {
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "weather_config.json"),
+                Path.Combine(Environment.CurrentDirectory, "weather_config.json")
+            };
+
+            foreach (var path in searchPaths)
+            {
+                if (File.Exists(path))
+                {
+                    string json = File.ReadAllText(path);
+                    using var doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+                    bool auto = root.TryGetProperty("use_auto_location", out var autoProp) && autoProp.GetBoolean();
+                    string c = root.TryGetProperty("city", out var cProp) ? (cProp.GetString() ?? "SOUTH ARYAD") : "SOUTH ARYAD";
+                    string co = root.TryGetProperty("country", out var coProp) ? (coProp.GetString() ?? "IN") : "IN";
+                    double la = root.TryGetProperty("latitude", out var laProp) ? laProp.GetDouble() : 9.5255;
+                    double lo = root.TryGetProperty("longitude", out var loProp) ? loProp.GetDouble() : 76.3310;
+                    return (auto, c, co, la, lo);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[LiveWeather] Config load error: {ex.Message}");
+        }
+
+        // Default location: South Aryad, Alappuzha, Kerala
+        return (false, "SOUTH ARYAD", "IN", 9.5255, 76.3310);
+    }
+
     public static async Task RefreshLiveWeatherAsync()
     {
         try
         {
-            // 1. IP Geolocation
-            double lat = 37.7749;
-            double lon = -122.4194;
-            string city = "SAN FRANCISCO";
-            string country = "US";
+            // 1. Resolve Location (Config file override or IP Geolocation)
+            var (useAuto, cfgCity, cfgCountry, cfgLat, cfgLon) = LoadLocationConfig();
+            double lat = cfgLat;
+            double lon = cfgLon;
+            string city = cfgCity;
+            string country = cfgCountry;
 
-            try
+            if (useAuto)
             {
-                string geoJson = await _httpClient.GetStringAsync("http://ip-api.com/json");
-                using var docGeo = JsonDocument.Parse(geoJson);
-                var rootGeo = docGeo.RootElement;
-                if (rootGeo.TryGetProperty("status", out var statusProp) && statusProp.GetString() == "success")
+                try
                 {
-                    if (rootGeo.TryGetProperty("lat", out var latProp)) lat = latProp.GetDouble();
-                    if (rootGeo.TryGetProperty("lon", out var lonProp)) lon = lonProp.GetDouble();
-                    if (rootGeo.TryGetProperty("city", out var cityProp)) city = cityProp.GetString() ?? city;
-                    if (rootGeo.TryGetProperty("countryCode", out var ccProp)) country = ccProp.GetString() ?? country;
+                    string geoJson = await _httpClient.GetStringAsync("http://ip-api.com/json");
+                    using var docGeo = JsonDocument.Parse(geoJson);
+                    var rootGeo = docGeo.RootElement;
+                    if (rootGeo.TryGetProperty("status", out var statusProp) && statusProp.GetString() == "success")
+                    {
+                        if (rootGeo.TryGetProperty("lat", out var latProp)) lat = latProp.GetDouble();
+                        if (rootGeo.TryGetProperty("lon", out var lonProp)) lon = lonProp.GetDouble();
+                        if (rootGeo.TryGetProperty("city", out var cityProp)) city = cityProp.GetString() ?? city;
+                        if (rootGeo.TryGetProperty("countryCode", out var ccProp)) country = ccProp.GetString() ?? country;
+                    }
                 }
-            }
-            catch
-            {
-                // Fallback coordinates if geo service fails
+                catch
+                {
+                    // Fallback to configured coordinates if geo service fails
+                }
             }
 
             // 2. Open-Meteo Forecast Query
@@ -349,20 +389,20 @@ public static class LiveWeatherService
         {
             1 => new WeatherModel
             {
-                City = "SAN FRANCISCO",
-                Country = "US",
-                Temperature = 28,
-                TempMax = 31,
-                TempMin = 19,
-                ApparentTemperature = 27,
-                Humidity = 42,
+                City = "SOUTH ARYAD",
+                Country = "IN",
+                Temperature = 29,
+                TempMax = 32,
+                TempMin = 24,
+                ApparentTemperature = 33,
+                Humidity = 78,
                 WindSpeed = 12,
                 UvIndex = 8,
                 BauhausConditionIndex = 1,
                 ConditionName = "SUNNY",
                 IsDay = true,
-                Subtitle = "High: 31°  ·  Low: 19°  ·  Feels: 27°",
-                ChipData = new[,] { { "WIND", "12 km/h" }, { "HUMIDITY", "42%" }, { "UV INDEX", "8 High" } }
+                Subtitle = "High: 32°  ·  Low: 24°  ·  Feels: 33°",
+                ChipData = new[,] { { "WIND", "12 km/h" }, { "HUMIDITY", "78%" }, { "UV INDEX", "8 High" } }
             },
             2 => new WeatherModel
             {

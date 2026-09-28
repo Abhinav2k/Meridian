@@ -1,5 +1,6 @@
 bin/
 obj/
+build-verify/
 .vs/
 .omx/
 *.user

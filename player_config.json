@@ -1,0 +1,14 @@
+{
+  "players": [
+    {
+      "name": "Spotify",
+      "url": "C:\\Users\\abhin\\AppData\\Roaming\\Spotify\\Spotify.exe",
+      "icon": "spotify"
+    },
+    {
+      "name": "YouTube Music",
+      "url": "https://music.youtube.com",
+      "icon": "ytmusic"
+    }
+  ]
+}
