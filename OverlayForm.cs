@@ -1731,6 +1731,12 @@ internal sealed class OverlayForm : Form
             _renderSignal.Set();
         };
 
+        FormClosing += (s, e) =>
+        {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "closing.log"),
+                $"Reason: {e.CloseReason}\nStackTrace:\n{new System.Diagnostics.StackTrace(true)}");
+        };
+
         Shown += async (_, _) =>
         {
             TimeBeginPeriod(1);
@@ -9268,6 +9274,23 @@ private static void DrawTabBauhausWeather(
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
                     double mouseSdf = outDist + insideDist - curR;
 
+                    if (_currentGeometry.NotchP > 0.001)
+                    {
+                        double filletR = 14.0 * _currentGeometry.NotchP;
+                        double topY = _currentGeometry.CenterY - _currentGeometry.HalfHeight;
+                        double yRel = mouseSurfaceY - topY;
+                        if (yRel >= 0.0 && yRel <= filletR + 4.0 && Math.Abs(px) >= _currentGeometry.HalfWidth - 1.0)
+                        {
+                            double u = Math.Abs(px) - (_currentGeometry.HalfWidth + filletR);
+                            double v = yRel - filletR;
+                            if (u <= 0.0 && v <= 0.0)
+                            {
+                                double dist = Math.Sqrt(u * u + v * v);
+                                mouseSdf = Math.Min(mouseSdf, filletR - dist);
+                            }
+                        }
+                    }
+
                     // Trigger area: physically inside or directly touching the pill body (supports notch attached at Y=0)
                     double sdfTolerance = _hoverPos > 0.3 ? 4.0 : 2.0;
                     double minTriggerY = (_currentGeometry.NotchP > 0.1) ? 0.0 : 14.0;
@@ -10336,6 +10359,12 @@ private static void DrawTabBauhausWeather(
             double straightHTop = Math.Max(0.0, geom.HalfHeight - topR);
             double straightHBot = Math.Max(0.0, geom.HalfHeight - botR);
 
+            double filletR = 14.0 * notchP;
+            double topY = geom.CenterY - geom.HalfHeight;
+            double earCx = geom.HalfWidth + filletR;
+            double earCy = filletR;
+            bool hasNotchFillet = filletR > 0.01;
+
             for (int y = 0; y < SurfaceHeight; y++)
             {
                 int rowIdx = y * SurfaceWidth;
@@ -10346,6 +10375,10 @@ private static void DrawTabBauhausWeather(
                 double curStrW = isTop ? straightWTop : straightWBot;
                 double curStrH = isTop ? straightHTop : straightHBot;
                 double qy = absPy - curStrH;
+
+                double yRel = y - topY;
+                bool inEarBandY = hasNotchFillet && (yRel >= 0.0) && (yRel <= filletR + 8.0);
+                double vEar = inEarBandY ? (yRel - earCy) : 0.0;
 
                 for (int x = 0; x < SurfaceWidth; x++)
                 {
@@ -10359,6 +10392,23 @@ private static void DrawTabBauhausWeather(
                     double outsideDist = Math.Sqrt(outsideX * outsideX + outsideY * outsideY);
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
                     double sdf = outsideDist + insideDist - curR;
+
+                    // Notch concave corner fillet (MacBook notch flare into top screen bezel)
+                    if (inEarBandY && absPx >= geom.HalfWidth - 1.0)
+                    {
+                        double uEar = absPx - earCx;
+                        if (uEar <= 0.0 && vEar <= 0.0)
+                        {
+                            double earDist = Math.Sqrt(uEar * uEar + vEar * vEar);
+                            double earSdf = filletR - earDist;
+                            sdf = Math.Min(sdf, earSdf);
+                        }
+                        else if (uEar > 0.0 && vEar <= 0.0)
+                        {
+                            double tipDist = Math.Sqrt(uEar * uEar + yRel * yRel);
+                            sdf = Math.Min(sdf, tipDist);
+                        }
+                    }
 
                     // Subpixel Hermite anti-aliased edge alpha (C1-smooth transition)
                     double edgeFactor = Math.Clamp((-sdf + 0.75) * (1.0 / 1.5), 0.0, 1.0);
@@ -10381,6 +10431,27 @@ private static void DrawTabBauhausWeather(
                         double sOutDist = Math.Sqrt(sOutX * sOutX + sOutY * sOutY);
                         double sInDist = Math.Min(0.0, Math.Max(absPx - sCurStrW, sqy));
                         double shadowSdf = sOutDist + sInDist - sCurR;
+
+                        if (hasNotchFillet && absPx >= geom.HalfWidth - 1.0)
+                        {
+                            double sYRel = yRel - 3.0;
+                            if (sYRel >= 0.0 && sYRel <= filletR + 8.0)
+                            {
+                                double uEar = absPx - earCx;
+                                double svEar = sYRel - earCy;
+                                if (uEar <= 0.0 && svEar <= 0.0)
+                                {
+                                    double sEarDist = Math.Sqrt(uEar * uEar + svEar * svEar);
+                                    double sEarSdf = filletR - sEarDist;
+                                    shadowSdf = Math.Min(shadowSdf, sEarSdf);
+                                }
+                                else if (uEar > 0.0 && svEar <= 0.0)
+                                {
+                                    double sTipDist = Math.Sqrt(uEar * uEar + sYRel * sYRel);
+                                    shadowSdf = Math.Min(shadowSdf, sTipDist);
+                                }
+                            }
+                        }
 
                         // Contact shadow (hugs edge within 5px)
                         double cNorm = Math.Clamp((shadowSdf + 1.0) * (1.0 / 6.0), 0.0, 1.0);
@@ -10425,6 +10496,25 @@ private static void DrawTabBauhausWeather(
                     {
                         gx = vx / vLen;
                         gy = vy / vLen;
+                    }
+
+                    if (inEarBandY && absPx >= geom.HalfWidth - 1.0)
+                    {
+                        double uEar = absPx - earCx;
+                        if (uEar <= 0.0 && vEar <= 0.0)
+                        {
+                            double earDist = Math.Sqrt(uEar * uEar + vEar * vEar);
+                            if (earDist > 1e-4)
+                            {
+                                double earGx = Math.Sign(px) * (-uEar / earDist);
+                                double earGy = -vEar / earDist;
+                                double blend = Math.Clamp((absPx - (geom.HalfWidth - 1.0)) / (filletR + 1.0), 0.0, 1.0);
+                                gx = gx * (1.0 - blend) + earGx * blend;
+                                gy = gy * (1.0 - blend) + earGy * blend;
+                                double gLen = Math.Sqrt(gx * gx + gy * gy);
+                                if (gLen > 1e-7) { gx /= gLen; gy /= gLen; }
+                            }
+                        }
                     }
 
                     // Physical surface slope sinTheta: zero at center, smoothly steepening to 0.90 at outer edge
