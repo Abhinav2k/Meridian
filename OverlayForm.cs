@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Windows.Media.Control;
@@ -487,14 +488,16 @@ internal sealed class OverlayForm : Form
         public readonly double HalfWidth;
         public readonly double HalfHeight;
         public readonly double Radius;
+        public readonly double NotchP;
 
-        public PillGeometry(double cx, double cy, double hw, double hh, double r)
+        public PillGeometry(double cx, double cy, double hw, double hh, double r, double notchP = 0.0)
         {
             CenterX = cx;
             CenterY = cy;
             HalfWidth = hw;
             HalfHeight = hh;
             Radius = r;
+            NotchP = notchP;
         }
     }
 
@@ -1001,6 +1004,7 @@ internal sealed class OverlayForm : Form
     private double _clickAnimTimer = 0.0;
     private bool _wasHovered = false;
     private bool _wasCursorInPill = false;
+    private double _notchAttachment = 0.0;
 
     // Home Tab Sleep Timer Widget State
     private const int HomeSleepBtnNone = 0;
@@ -1829,6 +1833,11 @@ internal sealed class OverlayForm : Form
             else if (e.KeyCode == Keys.R)
             {
                 ReplayFromStart();
+            }
+            else if (e.KeyCode == Keys.S)
+            {
+                // Debug: cycle through all 15 weather conditions (S → 1 → 2 → … → 15 → live)
+                CycleWeatherCardStyle();
             }
         };
 
@@ -4006,7 +4015,9 @@ internal sealed class OverlayForm : Form
         const float radius = 20f;
         float dx = mx - cx;
         float dy = my - cy;
-        return dx * dx + dy * dy <= radius * radius;
+        if (dx * dx + dy * dy <= radius * radius) return true;
+        // Text area hit box beside the bell tile
+        return mx >= 56f && mx <= 165f && my >= 95f && my <= 128f;
     }
 
     private static void DrawHomeActiveTimer(Graphics g, float superScale)
@@ -4056,6 +4067,24 @@ internal sealed class OverlayForm : Form
         DrawRingingBellVector(g, (int)(38f * bellScale), (int)(38f * bellScale), bellScale);
         g.Restore(state);
 
+        // Digital countdown and status label next to bell tile
+        float textX = (cx + radius + 8f) * superScale;
+        int mins = remainingSeconds / 60;
+        int secs = remainingSeconds % 60;
+        string timeStr = $"{mins:D2}:{secs:D2}";
+        string statusStr = isHovered ? "CANCEL TIMER" : "REMAINING";
+
+        using var fontTime = GetPremiumFont(12.5f * superScale, FontStyle.Bold);
+        using var fontStatus = GetPremiumFont(6.2f * superScale, FontStyle.Bold);
+        using var brushTime = new SolidBrush(isHovered
+            ? Color.FromArgb(255, 255, 140, 140)
+            : Color.FromArgb(248, 250, 252, 255));
+        using var brushStatus = new SolidBrush(isHovered
+            ? Color.FromArgb(240, 255, 110, 110)
+            : Color.FromArgb(160, 195, 215, 230));
+
+        g.DrawString(timeStr, fontTime, brushTime, textX, (cy - 12.5f) * superScale, StringFormat.GenericTypographic);
+        g.DrawString(statusStr, fontStatus, brushStatus, textX, (cy + 2.5f) * superScale, StringFormat.GenericTypographic);
     }
 
     private static void DrawTabHomeContent(
@@ -4432,7 +4461,7 @@ internal sealed class OverlayForm : Form
             var stateC2 = g.Save();
             g.SetClip(pathC2);
 
-            DrawHomeBauhausWeather(g, superScale, cardX, c2Y, cardW, c2H, cardR, pathC2, CurrentWeatherCondition);
+            DrawHomeWeatherCard(g, superScale, cardX, c2Y, cardW, c2H, pathC2, CurrentWeatherCondition);
 
             g.Restore(stateC2);
         }
@@ -6304,7 +6333,284 @@ private static void DrawHomeBauhausWeather(Graphics g, float superScale, float c
         float superScale,
         int targetW)
     {
-        DrawTabBauhausWeather(g, superScale, targetW, CurrentWeatherCondition);
+        DrawTabWeatherCard(g, superScale, targetW, CurrentWeatherCondition);
+    }
+
+    private static Color GetWeatherAccent(int condition) => condition switch
+    {
+        1 or 3 => Color.FromArgb(238, 190, 112),
+        2 or 4 => Color.FromArgb(177, 177, 222),
+        6 or 7 or 8 or 9 or 10 or 11 or 12 or 13 or 15 => Color.FromArgb(145, 190, 212),
+        14 => Color.FromArgb(225, 157, 119),
+        _ => Color.FromArgb(177, 190, 201)
+    };
+
+    private static void DrawWeatherArtwork(Graphics g, float cx, float cy, float size, int condition, Color accent)
+    {
+        // A softly lit, dimensional weather mark gives the card a visual focal point
+        // without competing with the live temperature and forecast.
+        float halo = size * 0.48f;
+        using (var glow = new PathGradientBrush(new[] {
+                   new PointF(cx - halo, cy), new PointF(cx, cy - halo),
+                   new PointF(cx + halo, cy), new PointF(cx, cy + halo) }))
+        {
+            glow.CenterPoint = new PointF(cx, cy);
+            glow.CenterColor = Color.FromArgb(85, accent);
+            glow.SurroundColors = new[] { Color.FromArgb(0, accent) };
+            g.FillEllipse(glow, cx - halo, cy - halo, halo * 2f, halo * 2f);
+        }
+
+        // Special Condition 14: Golden Sunset / Dusk (Sinking sun over horizon)
+        if (condition == 14)
+        {
+            float sunDuskR = size * 0.22f;
+            float horizonY = cy + size * 0.08f;
+            using (var duskBrush = new LinearGradientBrush(
+                new RectangleF(cx - sunDuskR, horizonY - sunDuskR, sunDuskR * 2f, sunDuskR * 2f),
+                Color.FromArgb(255, 255, 205, 116), Color.FromArgb(255, 235, 110, 68), 90f))
+            {
+                g.FillPie(duskBrush, cx - sunDuskR, horizonY - sunDuskR, sunDuskR * 2f, sunDuskR * 2f, 180, 180);
+            }
+            using (var horizonPen = new Pen(Color.FromArgb(235, 255, 180, 120), Math.Max(1.4f, size * 0.032f)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(horizonPen, cx - size * 0.35f, horizonY, cx + size * 0.35f, horizonY);
+            }
+            using (var rayPen = new Pen(Color.FromArgb(160, 255, 200, 140), Math.Max(1.1f, size * 0.024f)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(rayPen, cx - size * 0.20f, horizonY + size * 0.12f, cx + size * 0.20f, horizonY + size * 0.12f);
+            }
+            return;
+        }
+
+        // Special Condition 15: Windy / Gale / Squall (Sweeping aerodynamic streamlines)
+        if (condition == 15)
+        {
+            using var penWind = new Pen(Color.FromArgb(225, accent), Math.Max(1.4f, size * 0.032f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLine(penWind, cx - size * 0.34f, cy - size * 0.14f, cx + size * 0.26f, cy - size * 0.14f);
+            g.DrawLine(penWind, cx - size * 0.22f, cy + size * 0.06f, cx + size * 0.36f, cy + size * 0.06f);
+            g.DrawLine(penWind, cx - size * 0.30f, cy + size * 0.26f, cx + size * 0.18f, cy + size * 0.26f);
+            return;
+        }
+
+        bool night = condition is 2 or 4;
+        bool sunny = condition is 1 or 3;
+        bool storm = condition is 12 or 13;
+        float sunR = size * 0.22f;
+        float sunX = cx + (sunny || night ? -size * 0.08f : 0f);
+        float sunY = cy - size * 0.08f;
+
+        if (night)
+        {
+            using var moon = new SolidBrush(Color.FromArgb(245, 239, 229, 194));
+            g.FillEllipse(moon, sunX - sunR, sunY - sunR, sunR * 2f, sunR * 2f);
+            using var cut = new SolidBrush(Color.FromArgb(232, 35, 42, 53));
+            g.FillEllipse(cut, sunX - sunR * 0.25f, sunY - sunR * 1.12f, sunR * 1.9f, sunR * 1.9f);
+        }
+        else if (sunny)
+        {
+            using var sunGlow = new SolidBrush(Color.FromArgb(48, 255, 205, 116));
+            using var sun = new LinearGradientBrush(
+                new RectangleF(sunX - sunR, sunY - sunR, sunR * 2f, sunR * 2f),
+                Color.FromArgb(255, 255, 232, 166), Color.FromArgb(255, 244, 169, 94), 45f);
+            g.FillEllipse(sunGlow, sunX - sunR * 1.55f, sunY - sunR * 1.55f, sunR * 3.1f, sunR * 3.1f);
+            g.FillEllipse(sun, sunX - sunR, sunY - sunR, sunR * 2f, sunR * 2f);
+        }
+
+        // Only pure Sunny (1) and Clear Night (2) return early without drawing cloud
+        if (condition is 1 or 2) return;
+
+        float cloudW = size * 0.78f;
+        float cloudH = size * 0.39f;
+        float cloudX = cx - cloudW * 0.5f + size * 0.05f;
+        float cloudY = cy - cloudH * 0.18f;
+        using var cloudPath = new GraphicsPath();
+        cloudPath.StartFigure();
+        cloudPath.AddBezier(cloudX + cloudW * 0.13f, cloudY + cloudH * 0.78f,
+            cloudX - cloudW * 0.02f, cloudY + cloudH * 0.58f,
+            cloudX + cloudW * 0.08f, cloudY + cloudH * 0.25f,
+            cloudX + cloudW * 0.30f, cloudY + cloudH * 0.28f);
+        cloudPath.AddBezier(cloudX + cloudW * 0.30f, cloudY + cloudH * 0.28f,
+            cloudX + cloudW * 0.36f, cloudY - cloudH * 0.06f,
+            cloudX + cloudW * 0.73f, cloudY + cloudH * 0.02f,
+            cloudX + cloudW * 0.76f, cloudY + cloudH * 0.39f);
+        cloudPath.AddBezier(cloudX + cloudW * 0.76f, cloudY + cloudH * 0.39f,
+            cloudX + cloudW * 1.04f, cloudY + cloudH * 0.39f,
+            cloudX + cloudW * 1.02f, cloudY + cloudH * 0.86f,
+            cloudX + cloudW * 0.78f, cloudY + cloudH * 0.87f);
+        cloudPath.AddLine(cloudX + cloudW * 0.20f, cloudY + cloudH * 0.87f,
+                          cloudX + cloudW * 0.78f, cloudY + cloudH * 0.87f);
+        cloudPath.CloseFigure();
+        using (var cloudFill = new LinearGradientBrush(
+                   new PointF(cloudX, cloudY), new PointF(cloudX, cloudY + cloudH),
+                   Color.FromArgb(250, 246, 249, 252), Color.FromArgb(225, 177, 197, 215)))
+            g.FillPath(cloudFill, cloudPath);
+        using (var cloudRim = new Pen(Color.FromArgb(135, 255, 255, 255), Math.Max(1f, size * 0.018f)))
+            g.DrawPath(cloudRim, cloudPath);
+
+        // Partly cloudy day (3), partly cloudy night (4), and overcast (5) have no precipitation
+        if (condition is 3 or 4 or 5) return;
+
+        // Condition 6: Fog & Mist (Horizontal mist scanlines)
+        if (condition == 6)
+        {
+            using var penFog = new Pen(Color.FromArgb(190, accent), Math.Max(1.2f, size * 0.026f)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLine(penFog, cx - size * 0.28f, cy + size * 0.33f, cx + size * 0.24f, cy + size * 0.33f);
+            g.DrawLine(penFog, cx - size * 0.18f, cy + size * 0.44f, cx + size * 0.32f, cy + size * 0.44f);
+            g.DrawLine(penFog, cx - size * 0.24f, cy + size * 0.55f, cx + size * 0.14f, cy + size * 0.55f);
+            return;
+        }
+
+        using var weatherStroke = new Pen(Color.FromArgb(225, accent), Math.Max(1.4f, size * 0.035f))
+        { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        if (storm)
+        {
+            using var bolt = new SolidBrush(Color.FromArgb(255, 255, 218, 139));
+            PointF[] points = { new(cx - size * 0.02f, cy + size * 0.16f),
+                new(cx - size * 0.13f, cy + size * 0.40f), new(cx - size * 0.01f, cy + size * 0.37f),
+                new(cx - size * 0.08f, cy + size * 0.59f), new(cx + size * 0.13f, cy + size * 0.29f),
+                new(cx + size * 0.02f, cy + size * 0.31f), new(cx + size * 0.10f, cy + size * 0.16f) };
+            g.FillPolygon(bolt, points);
+        }
+        else if (condition is 10 or 11)
+        {
+            using var snow = new Pen(Color.FromArgb(228, 226, 242, 255), Math.Max(1.2f, size * 0.025f));
+            foreach (float ox in new[] { -0.15f, 0.12f })
+            {
+                float sx = cx + size * ox, sy = cy + size * 0.44f, r = size * 0.075f;
+                g.DrawLine(snow, sx - r, sy, sx + r, sy); g.DrawLine(snow, sx, sy - r, sx, sy + r);
+                g.DrawLine(snow, sx - r * .7f, sy - r * .7f, sx + r * .7f, sy + r * .7f);
+                g.DrawLine(snow, sx - r * .7f, sy + r * .7f, sx + r * .7f, sy - r * .7f);
+            }
+        }
+        else
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                float rx = cx + size * (-0.17f + i * 0.16f);
+                g.DrawLine(weatherStroke, rx, cy + size * 0.34f, rx - size * 0.055f, cy + size * 0.51f);
+            }
+        }
+    }
+
+    private static void DrawHomeWeatherCard(
+        Graphics g, float scale, float x, float y, float width, float height,
+        GraphicsPath clip, int condition)
+    {
+        WeatherModel weather = IsLiveWeatherMode
+            ? LiveWeatherService.Current
+            : LiveWeatherService.GetMockWeather(condition);
+        Color accent = GetWeatherAccent(condition);
+
+        using (var panel = new LinearGradientBrush(
+                   new PointF(x, y), new PointF(x + width, y + height),
+                   Color.FromArgb(_hoveredHomeWeather ? 76 : 58, 35, 41, 51),
+                   Color.FromArgb(_hoveredHomeWeather ? 92 : 70, 17, 22, 30)))
+            g.FillPath(panel, clip);
+
+        DrawWeatherArtwork(g, x + width - 27f * scale, y + height * 0.53f, 44f * scale, condition, accent);
+
+        float left = x + 12f * scale;
+        using var fontMeta = GetPremiumFont(6.2f * scale, FontStyle.Bold);
+        using var fontTemp = GetPremiumFont(18f * scale, FontStyle.Bold);
+        using var fontCondition = GetPremiumFont(7.6f * scale, FontStyle.Bold);
+        using var fontSummary = GetPremiumFont(6.1f * scale, FontStyle.Regular);
+        using var primary = new SolidBrush(Color.FromArgb(248, 246, 247, 249));
+        using var secondary = new SolidBrush(Color.FromArgb(174, 205, 212, 222));
+        using var accentBrush = new SolidBrush(accent);
+        var format = StringFormat.GenericTypographic;
+
+        string location = weather.City.Trim().ToUpperInvariant();
+        string meta = $"{DateTime.Now:ddd}  ·  {location}";
+        g.DrawString(meta, fontMeta, secondary, left, y + 4.5f * scale, format);
+
+        float tempY = y + 13f * scale;
+        g.DrawString(weather.FormattedTemp, fontTemp, primary, left, tempY, format);
+        float tempWidth = g.MeasureString(weather.FormattedTemp, fontTemp, PointF.Empty, format).Width;
+        float detailX = left + tempWidth + 9f * scale;
+        g.DrawString(weather.ConditionName, fontCondition, accentBrush, detailX, y + 15f * scale, format);
+        g.DrawString(weather.Subtitle, fontSummary, secondary, detailX, y + 26f * scale, format);
+
+        if (_hoveredHomeWeather)
+        {
+            using var arrowFont = GetPremiumFont(11f * scale, FontStyle.Regular);
+            using var arrowBrush = new SolidBrush(Color.FromArgb(210, 244, 246, 249));
+            g.DrawString("›", arrowFont, arrowBrush, x + width - 13f * scale,
+                         y + height * 0.5f - 7f * scale, StringFormat.GenericDefault);
+        }
+    }
+
+    private static void DrawTabWeatherCard(Graphics g, float scale, int targetWidth, int condition)
+    {
+        WeatherModel weather = IsLiveWeatherMode
+            ? LiveWeatherService.Current
+            : LiveWeatherService.GetMockWeather(condition);
+        Color accent = GetWeatherAccent(condition);
+
+        float x = 22f * scale;
+        float y = 34f * scale;
+        float width = targetWidth * scale - 44f * scale;
+        float height = 104f * scale;
+        float radius = 13f * scale;
+        using var cardPath = CreateRoundedRectPath(x, y, width, height, radius, radius, radius, radius);
+        using (var background = new LinearGradientBrush(
+                   new PointF(x, y), new PointF(x + width, y + height),
+                   Color.FromArgb(206, 30, 36, 45), Color.FromArgb(194, 19, 24, 32)))
+            g.FillPath(background, cardPath);
+        DrawWeatherArtwork(g, x + width - 37f * scale, y + 43f * scale, 58f * scale, condition, accent);
+        using (var border = new Pen(Color.FromArgb(42, 255, 255, 255), 1f * scale))
+            g.DrawPath(border, cardPath);
+
+        float inset = 14f * scale;
+        using var format = new StringFormat(StringFormat.GenericTypographic);
+        using var locationFont = GetPremiumFont(8f * scale, FontStyle.Bold);
+        using var dateFont = GetPremiumFont(7.2f * scale, FontStyle.Regular);
+        using var tempFont = GetPremiumFont(31f * scale, FontStyle.Bold);
+        using var conditionFont = GetPremiumFont(11f * scale, FontStyle.Bold);
+        using var detailFont = GetPremiumFont(8f * scale, FontStyle.Regular);
+        using var metricLabelFont = GetPremiumFont(6.7f * scale, FontStyle.Bold);
+        using var metricValueFont = GetPremiumFont(9.2f * scale, FontStyle.Bold);
+        using var primary = new SolidBrush(Color.FromArgb(250, 247, 248, 250));
+        using var secondary = new SolidBrush(Color.FromArgb(164, 201, 208, 219));
+        using var accentBrush = new SolidBrush(accent);
+
+        string city = weather.City.Trim().ToUpperInvariant();
+        g.FillEllipse(accentBrush, x + inset, y + 11f * scale, 5f * scale, 5f * scale);
+        g.DrawString(city, locationFont, primary, x + inset + 10f * scale, y + 9f * scale, format);
+
+        string date = DateTime.Now.ToString("dddd, MMM d", CultureInfo.InvariantCulture).ToUpperInvariant();
+        var dateSize = g.MeasureString(date, dateFont, PointF.Empty, format);
+        g.DrawString(date, dateFont, secondary,
+                     x + width - inset - dateSize.Width, y + 9.5f * scale, format);
+
+        float heroY = y + 21f * scale;
+        g.DrawString(weather.FormattedTemp, tempFont, primary, x + inset - 1f * scale, heroY, format);
+        float tempWidth = g.MeasureString(weather.FormattedTemp, tempFont, PointF.Empty, format).Width;
+        float textX = x + inset + tempWidth + 12f * scale;
+        g.DrawString(weather.ConditionName, conditionFont, accentBrush, textX, y + 31f * scale, format);
+        g.DrawString(weather.Subtitle, detailFont, secondary, textX, y + 49f * scale, format);
+
+        float metricsTop = y + 73f * scale;
+        using (var separator = new Pen(Color.FromArgb(34, 255, 255, 255), 1f * scale))
+            g.DrawLine(separator, x + inset, metricsTop - 4f * scale, x + width - inset, metricsTop - 4f * scale);
+
+        string[,] metrics = weather.ChipData;
+        float usableWidth = width - inset * 2f;
+        float columnWidth = usableWidth / 3f;
+        using (var separator = new Pen(Color.FromArgb(25, 255, 255, 255), 1f * scale))
+        {
+            g.DrawLine(separator, x + inset + columnWidth, metricsTop + 1f * scale,
+                       x + inset + columnWidth, y + height - 9f * scale);
+            g.DrawLine(separator, x + inset + columnWidth * 2f, metricsTop + 1f * scale,
+                       x + inset + columnWidth * 2f, y + height - 9f * scale);
+        }
+
+        using var mutedMetric = new SolidBrush(Color.FromArgb(157, 255, 255, 255));
+        for (int i = 0; i < 3; i++)
+        {
+            float metricX = x + inset + i * columnWidth + (i == 0 ? 0 : 10f * scale);
+            g.DrawString(metrics[i, 0], metricLabelFont, mutedMetric, metricX, metricsTop, format);
+            g.DrawString(metrics[i, 1], metricValueFont, primary, metricX, metricsTop + 11f * scale, format);
+        }
     }
 
 private static void DrawTabBauhausWeather(
@@ -8543,8 +8849,23 @@ private static void DrawTabBauhausWeather(
 
     public void CycleWeatherCardStyle()
     {
-        IsLiveWeatherMode = true;
-        CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
+        if (IsLiveWeatherMode)
+        {
+            // First press of S enters debug preview mode starting at condition 1
+            IsLiveWeatherMode = false;
+            CurrentWeatherCondition = 1;
+        }
+        else
+        {
+            CurrentWeatherCondition++;
+            if (CurrentWeatherCondition > MaxWeatherConditions)
+            {
+                // After condition 15, return to live weather mode
+                IsLiveWeatherMode = true;
+                CurrentWeatherCondition = LiveWeatherService.Current.BauhausConditionIndex;
+            }
+        }
+
         _tabBufferCache[TabHome] = null;
         _tabBufferCache[TabWeather] = null;
         _needExpandedUpdate = true;
@@ -8866,6 +9187,7 @@ private static void DrawTabBauhausWeather(
                                    (_manualMorphTimer > 0.0) ||
                                    (_animHourTimer > 0.0 || _animMinuteTimer > 0.0 || _animSecondTimer > 0.0) ||
                                    (_manualTimerRunning && Math.Abs(_manualRunningHoverP - (_manualRunningHovered ? 1.0 : 0.0)) > 0.01) ||
+                                   (_notchAttachment > 0.001 && _notchAttachment < 0.999) ||
                                    (_activeTab == TabChrono && _manualTimerRunning);
             int sleepTimeout = isFastAnimating ? 0 : (_hoverPos > 0.6 ? 4 : 10);
             if (sleepTimeout > 0)
@@ -8935,19 +9257,21 @@ private static void DrawTabBauhausWeather(
                 {
                     double px = mouseSurfaceX - _currentGeometry.CenterX;
                     double py = mouseSurfaceY - _currentGeometry.CenterY;
-                    double straightW = Math.Max(0.0, _currentGeometry.HalfWidth - _currentGeometry.Radius);
-                    double straightH = Math.Max(0.0, _currentGeometry.HalfHeight - _currentGeometry.Radius);
+                    double curR = (py < 0) ? _currentGeometry.Radius * (1.0 - _currentGeometry.NotchP) : _currentGeometry.Radius;
+                    double straightW = Math.Max(0.0, _currentGeometry.HalfWidth - curR);
+                    double straightH = Math.Max(0.0, _currentGeometry.HalfHeight - curR);
                     double qx = Math.Abs(px) - straightW;
                     double qy = Math.Abs(py) - straightH;
                     double outX = Math.Max(0.0, qx);
                     double outY = Math.Max(0.0, qy);
                     double outDist = Math.Sqrt(outX * outX + outY * outY);
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
-                    double mouseSdf = outDist + insideDist - _currentGeometry.Radius;
+                    double mouseSdf = outDist + insideDist - curR;
 
-                    // Trigger area: physically inside or directly touching the pill body (Y >= 14 and mouseSdf <= tolerance)
+                    // Trigger area: physically inside or directly touching the pill body (supports notch attached at Y=0)
                     double sdfTolerance = _hoverPos > 0.3 ? 4.0 : 2.0;
-                    if (mouseSurfaceY >= 14 && mouseSdf <= sdfTolerance)
+                    double minTriggerY = (_currentGeometry.NotchP > 0.1) ? 0.0 : 14.0;
+                    if (mouseSurfaceY >= minTriggerY && mouseSdf <= sdfTolerance)
                     {
                         isInsideTriggerArea = true;
                     }
@@ -9026,16 +9350,18 @@ private static void DrawTabBauhausWeather(
                     }
                 }
 
-                // If user dismissed the island, keep it despawned until cursor moves away and re-enters notch
+                // A dismissed island must not reclaim the pointer when the user moves
+                // through the area below it to reach another control. Re-arm only on
+                // a deliberate return to the narrow top notch, never the broader body.
                 if (_userDismissed)
                 {
                     if (!cursorInPill)
                     {
                         _cursorWasInsideNotch = false;
                     }
-                    else if (!_cursorWasInsideNotch)
+                    else if (isEdgeOrNotchHover && !_cursorWasInsideNotch)
                     {
-                        // Cursor re-entered the notch from outside! Summon pill back!
+                        // Cursor re-entered the top notch from outside: summon the island.
                         _userDismissed = false;
                         _cursorWasInsideNotch = true;
                     }
@@ -9478,6 +9804,16 @@ private static void DrawTabBauhausWeather(
                 _currentCompactWidth += (targetWidth - _currentCompactWidth) * Math.Min(1.0, 10.0 * dt);
             }
 
+            // Attached Notch Dynamics:
+            // When music is playing, the island is unexpanded, and time is hidden (displaying only artwork & visualizer),
+            // smoothly dock flush against the top screen bezel as an attached physical notch.
+            // When hovered or when time is showing, detach and return to default floating geometry.
+            bool isMusicOnlyResting = _hasActiveMedia && (_compactTimeAlpha < 0.15) && (_mediaElementsAlpha > 0.4) &&
+                                      (_hoverPos < 0.05) && (_progress > 0.82) && !_timerAlarmActive && !_userDismissed;
+            double targetNotch = isMusicOnlyResting ? 1.0 : 0.0;
+            _notchAttachment += (targetNotch - _notchAttachment) * Math.Min(1.0, 10.0 * dt);
+            if (Math.Abs(_notchAttachment - targetNotch) < 0.001) _notchAttachment = targetNotch;
+
             // Animate tactile button click bounce
             if (_clickAnimTimer > 0.0)
             {
@@ -9695,7 +10031,13 @@ private static void DrawTabBauhausWeather(
     private double GetCompactPillHeight()
     {
         if (!_hasActiveMedia) return CompactPillHeight;
-        return CompactPillHeight + 8.0 * Math.Clamp(1.0 - _compactTimeAlpha, 0.0, 1.0);
+        double baseH = CompactPillHeight + 8.0 * Math.Clamp(1.0 - _compactTimeAlpha, 0.0, 1.0);
+        if (_notchAttachment > 0.001)
+        {
+            double notchP = _notchAttachment * _notchAttachment * (3.0 - 2.0 * _notchAttachment);
+            return baseH + (36.0 - baseH) * notchP;
+        }
+        return baseH;
     }
 
     private PillGeometry ComputeGeometry(double spawnP, double hoverP, double compactWidth)
@@ -9714,20 +10056,23 @@ private static void DrawTabBauhausWeather(
             }
         }
 
+        double notchP = _notchAttachment * _notchAttachment * (3.0 - 2.0 * _notchAttachment);
+        double restingTopY = TopPadding * (1.0 - notchP);
+
         double restingHalfWidth = (compactWidth * 0.5) + ((DefaultPillWidth * 0.5) - (compactWidth * 0.5)) * hoverP;
         double compactHeight = GetCompactPillHeight();
         double restingHalfHeight = (compactHeight * 0.5) + ((DefaultPillHeight * 0.5) - (compactHeight * 0.5)) * hoverP;
 
         restingHalfWidth = Math.Max(20.0, restingHalfWidth);
-        restingHalfHeight = Math.Max(18.0, restingHalfHeight);
-        double restingCenterY = TopPadding + restingHalfHeight;
+        restingHalfHeight = Math.Max(16.0, restingHalfHeight);
+        double restingCenterY = restingTopY + restingHalfHeight;
 
         double spawnRadius = 14.0;
         double spawnCenterY = -spawnRadius;
 
         if (spawnP <= 0.0)
         {
-            return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius);
+            return new PillGeometry(targetCenterX, spawnCenterY, spawnRadius, spawnRadius, spawnRadius, notchP);
         }
 
         double dropProgress = Math.Clamp(spawnP / 0.45, 0.0, 1.0);
@@ -9747,7 +10092,7 @@ private static void DrawTabBauhausWeather(
         double targetRadius = (compactHeight * 0.5) + (38.0 - (compactHeight * 0.5)) * clampedHover;
         double currentRadius = Math.Min(targetRadius, Math.Min(currentHalfWidth, currentHalfHeight));
 
-        return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius);
+        return new PillGeometry(targetCenterX, currentCenterY, currentHalfWidth, currentHalfHeight, currentRadius, notchP);
     }
 
     private static double EaseInOutCubic(double x)
@@ -9983,25 +10328,37 @@ private static void DrawTabBauhausWeather(
                 strH = Math.Max(0.0, pH * 0.5 - panelR);
             }
 
+            double notchP = geom.NotchP;
+            double topR = geom.Radius * (1.0 - notchP);
+            double botR = geom.Radius;
+            double straightWTop = Math.Max(0.0, geom.HalfWidth - topR);
+            double straightWBot = Math.Max(0.0, geom.HalfWidth - botR);
+            double straightHTop = Math.Max(0.0, geom.HalfHeight - topR);
+            double straightHBot = Math.Max(0.0, geom.HalfHeight - botR);
+
             for (int y = 0; y < SurfaceHeight; y++)
             {
                 int rowIdx = y * SurfaceWidth;
                 double py = y - geom.CenterY;
                 double absPy = Math.Abs(py);
-                double qy = absPy - straightH;
+                bool isTop = py < 0.0;
+                double curR = isTop ? topR : botR;
+                double curStrW = isTop ? straightWTop : straightWBot;
+                double curStrH = isTop ? straightHTop : straightHBot;
+                double qy = absPy - curStrH;
 
                 for (int x = 0; x < SurfaceWidth; x++)
                 {
                     int idx = rowIdx + x;
                     double px = x - geom.CenterX;
                     double absPx = Math.Abs(px);
-                    double qx = absPx - straightW;
+                    double qx = absPx - curStrW;
 
                     double outsideX = Math.Max(0.0, qx);
                     double outsideY = Math.Max(0.0, qy);
                     double outsideDist = Math.Sqrt(outsideX * outsideX + outsideY * outsideY);
                     double insideDist = Math.Min(0.0, Math.Max(qx, qy));
-                    double sdf = outsideDist + insideDist - geom.Radius;
+                    double sdf = outsideDist + insideDist - curR;
 
                     // Subpixel Hermite anti-aliased edge alpha (C1-smooth transition)
                     double edgeFactor = Math.Clamp((-sdf + 0.75) * (1.0 / 1.5), 0.0, 1.0);
@@ -10014,12 +10371,16 @@ private static void DrawTabBauhausWeather(
                     {
                         double spy = py - 3.0;
                         double absSpy = Math.Abs(spy);
-                        double sqy = absSpy - straightH;
-                        double sOutX = Math.Max(0.0, qx);
+                        bool isSpyTop = spy < 0.0;
+                        double sCurR = isSpyTop ? topR : botR;
+                        double sCurStrW = isSpyTop ? straightWTop : straightWBot;
+                        double sCurStrH = isSpyTop ? straightHTop : straightHBot;
+                        double sqy = absSpy - sCurStrH;
+                        double sOutX = Math.Max(0.0, absPx - sCurStrW);
                         double sOutY = Math.Max(0.0, sqy);
                         double sOutDist = Math.Sqrt(sOutX * sOutX + sOutY * sOutY);
-                        double sInDist = Math.Min(0.0, Math.Max(qx, sqy));
-                        double shadowSdf = sOutDist + sInDist - geom.Radius;
+                        double sInDist = Math.Min(0.0, Math.Max(absPx - sCurStrW, sqy));
+                        double shadowSdf = sOutDist + sInDist - sCurR;
 
                         // Contact shadow (hugs edge within 5px)
                         double cNorm = Math.Clamp((shadowSdf + 1.0) * (1.0 / 6.0), 0.0, 1.0);
@@ -10304,7 +10665,7 @@ private static void DrawTabBauhausWeather(
             if (textAlpha > 0.005 && timeColors != null && timeW > 0 && timeH > 0)
             {
                 int startX = (int)Math.Round(geom.CenterX - timeW * 0.5);
-                int startY = TopPadding;
+                int startY = (int)Math.Round(geom.CenterY - timeH * 0.5);
 
                 for (int ty = 0; ty < timeH; ty++)
                 {
@@ -10331,13 +10692,17 @@ private static void DrawTabBauhausWeather(
                         // SDF Physical Containment Check: ensure clock, disc, and equalizer pixels lie strictly inside the glass pill
                         double ppx = dstX - geom.CenterX;
                         double ppy = dstY - geom.CenterY;
-                        double pqx = Math.Abs(ppx) - straightW;
-                        double pqy = Math.Abs(ppy) - straightH;
+                        bool isPpyTop = ppy < 0.0;
+                        double pCurR = isPpyTop ? topR : botR;
+                        double pCurStrW = isPpyTop ? straightWTop : straightWBot;
+                        double pCurStrH = isPpyTop ? straightHTop : straightHBot;
+                        double pqx = Math.Abs(ppx) - pCurStrW;
+                        double pqy = Math.Abs(ppy) - pCurStrH;
                         double pOutX = Math.Max(0.0, pqx);
                         double pOutY = Math.Max(0.0, pqy);
                         double pOutDist = Math.Sqrt(pOutX * pOutX + pOutY * pOutY);
                         double pInDist = Math.Min(0.0, Math.Max(pqx, pqy));
-                        double pSdf = pOutDist + pInDist - geom.Radius;
+                        double pSdf = pOutDist + pInDist - pCurR;
 
                         if (pSdf > -0.5) continue;
 
