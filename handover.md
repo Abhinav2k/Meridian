@@ -92,11 +92,20 @@
   - Border resizing suppressed via `WM_NCHITTEST` returning `HTCLIENT` for hits 10..17 to maintain fixed layout without unwanted resize cursors.
   - Native header dragging via `SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HT_CAPTION, IntPtr.Zero)`.
   - Direct 32-bit premultiplied ARGB (`Format32bppPArgb`) presentation backed by top-down Win32 DIBSection (`FastSurface`), clearing to `0x00000000` (Alpha = 0 for full GPU Mica/Acrylic visibility) and blitting to window DC via `BitBlt` in $< 0.1\text{ms}$ at 0% CPU.
+- **macOS System Settings Design Architecture (`SettingsForm.cs`, `SettingsForm.UI.cs`, `SettingsForm.Events.cs`)**:
+  - Re-architected with authentic modern Apple macOS System Settings (Ventura / Sonoma / Sequoia) visual design language:
+    - **Proportions**: 860×580 canvas with a 220px navigation sidebar and 592px content card area.
+    - **macOS Traffic Lights**: Circular Close (`#FF5F56`), Minimize (`#FFBD2E`), and Zoom (`#27C93F`) controls at top-left `(18..70, 16..28)` with subtle interactive glyphs (`×`, `−`, `+`) on hover.
+    - **Sidebar Navigation**: Dedicated search field (`#sidebar_search`) with magnifying glass icon and clear button, plus navigation tabs styled with Apple SF-symbol style squircle badges with vibrant linear gradients (Blue, Sky Blue, Music Pink/Red, Orange, Slate) and active selection pill highlights.
+    - **Inset Grouped Cards**: Settings rows organized in rounded cards (`radius: 10px`) with translucent dark glass backgrounds (`Color.FromArgb(18, 255, 255, 255)`), delicate hairline borders (`Color.FromArgb(32, 255, 255, 255)`), uppercase section labels, and 16px inset hairline row dividers.
+    - **Apple Toggle Switches**: 40×24px pill tracks with Apple Green (`#34C759`) active state and 20px white circular knobs with soft drop shadows.
+    - **Apple Segmented Pickers**: Inset translucent pill containers with raised active segments for multi-option selection.
+    - **macOS Styled Buttons & Inputs**: Primary blue action pills, secondary glass buttons, destructive red pills, and text fields with focused glow outlines.
 - **5 Settings Tabs**:
   1. **Island & Notch**: Toggle bezel attached notch mode, segmented selector for music start / track change display duration (`Instant (0s)`, `15s`, `30s`, `60s`, `120s`), and idle despawn timeout (`15s`, `30s`, `60s`, `120s`, `Always`).
   2. **Live Weather**: Auto IP Geolocation toggle, manual coordinates (city, country code, latitude, longitude), persistent save, and immediate live weather refresh test.
   3. **Media Players**: Active player list with instant launch and delete actions, custom player addition with native executable file browser (`.exe`) and icon selector (`Spotify`, `YT Music`, `Music`).
-  4. **Shortcuts & System**: One-click generation of Windows Desktop `.lnk` shortcuts for both Settings and Dynamic Island via Windows COM `WScript.Shell`, plus Windows login startup toggle.
+  4. **Shortcuts & System**: Windows startup toggle, desktop `.lnk` shortcuts, hardware backdrop switcher (Acrylic, Mica Alt, Mica), and glass translucency picker (78%, 85%, 92%, 100%).
   5. **About & Keys**: Island process monitor (shows active PID / running state), process controls (Restart, Launch, Stop), and comprehensive keyboard shortcuts cheat sheet.
 - **Dynamic Configuration Sync**:
   - `AppSettings.cs` monitors `settings.json` via `FileSystemWatcher`.

@@ -15,8 +15,9 @@ public sealed partial class SettingsForm : Form
 {
     private const int CardX = 0;
     private const int CardY = 0;
-    private const int CardWidth = 820;
-    private const int CardHeight = 560;
+    private const int CardWidth = 860;
+    private const int CardHeight = 580;
+    private const int SidebarWidth = 220;
 
     private const int WM_NCLBUTTONDOWN = 0xA1;
     private const int HT_CAPTION = 0x2;
@@ -217,9 +218,10 @@ public sealed partial class SettingsForm : Form
     private string _newPlayerUrl = "";
     private string _newPlayerIcon = "music";
 
-    // Window dragging & controls
-    private bool _isCloseHovered;
-    private bool _isMinHovered;
+    // macOS Window controls & search
+    private bool _isTrafficLightsHovered;
+    private int _hoveredTrafficLight = -1; // 0 = close, 1 = min, 2 = zoom
+    private string _searchText = "";
 
     private float _scale = 1.0f;
     public float ScaleFactor => _scale;

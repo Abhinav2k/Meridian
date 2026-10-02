@@ -18,46 +18,69 @@ public sealed partial class SettingsForm
         int mouseX = (int)Math.Round(e.X / _scale);
         int mouseY = (int)Math.Round(e.Y / _scale);
 
-        // 1. Header Dragging
-        int dragXStart = CardX + 20;
-        int dragXEnd = CardX + CardWidth - 90;
-        int dragYStart = CardY + 10;
-        int dragYEnd = CardY + 54;
-        if (mouseX >= dragXStart && mouseX <= dragXEnd && mouseY >= dragYStart && mouseY <= dragYEnd)
+        // 1. macOS Traffic Lights (x: 18..70, y: 16..28)
+        if (mouseY >= 14 && mouseY <= 30)
+        {
+            // Close: 18..30
+            if (mouseX >= 16 && mouseX <= 32)
+            {
+                Close();
+                return;
+            }
+            // Minimize: 38..50
+            if (mouseX >= 36 && mouseX <= 52)
+            {
+                WindowState = FormWindowState.Minimized;
+                return;
+            }
+            // Zoom: 58..70
+            if (mouseX >= 56 && mouseX <= 72)
+            {
+                WindowState = (WindowState == FormWindowState.Maximized) ? FormWindowState.Normal : FormWindowState.Maximized;
+                return;
+            }
+        }
+
+        // 2. Window Dragging
+        // Drag allowed on content header (SidebarWidth..CardWidth, 0..50)
+        // or on top sidebar empty area (74..SidebarWidth, 0..42)
+        bool isContentHeader = (mouseX >= SidebarWidth && mouseX <= CardWidth && mouseY >= 0 && mouseY <= 50);
+        bool isSidebarHeader = (mouseX >= 74 && mouseX <= SidebarWidth && mouseY >= 0 && mouseY <= 42);
+
+        if (isContentHeader || isSidebarHeader)
         {
             ReleaseCapture();
             SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HT_CAPTION, IntPtr.Zero);
             return;
         }
 
-        // 2. Minimize & Close Buttons
-        int btnY = CardY + 16;
-        int closeX = CardX + CardWidth - 44;
-        int minX = CardX + CardWidth - 80;
-
-        if (mouseX >= minX && mouseX <= minX + 28 && mouseY >= btnY && mouseY <= btnY + 28)
+        // 3. Sidebar Search Field (16, 44, 188, 28)
+        if (mouseX >= 16 && mouseX <= 204 && mouseY >= 44 && mouseY <= 72)
         {
-            WindowState = FormWindowState.Minimized;
+            // Clear button if active
+            if (!string.IsNullOrEmpty(_searchText) && mouseX >= 184 && mouseX <= 202)
+            {
+                _searchText = "";
+                InvalidateAndRender();
+                return;
+            }
+
+            _activeInputField = "sidebar_search";
+            InvalidateAndRender();
             return;
         }
 
-        if (mouseX >= closeX && mouseX <= closeX + 28 && mouseY >= btnY && mouseY <= btnY + 28)
-        {
-            Close();
-            return;
-        }
-
-        // 3. Sidebar Tabs
-        int sideX = CardX + 20;
-        int sideY = CardY + 68;
-        int sideW = 186;
-        int tabH = 42;
-        int tabSpacing = 6;
+        // 4. Sidebar Navigation Tabs
+        int tabStartY = 82;
+        int tabH = 38;
+        int tabSpacing = 4;
+        int tabW = 196;
+        int tabX = 12;
 
         for (int i = 0; i < 5; i++)
         {
-            int currentY = sideY + i * (tabH + tabSpacing);
-            if (mouseX >= sideX && mouseX <= sideX + sideW && mouseY >= currentY && mouseY <= currentY + tabH)
+            int currentY = tabStartY + i * (tabH + tabSpacing);
+            if (mouseX >= tabX && mouseX <= tabX + tabW && mouseY >= currentY && mouseY <= currentY + tabH)
             {
                 _activeTab = (SettingsTab)i;
                 _activeInputField = "";
@@ -66,10 +89,11 @@ public sealed partial class SettingsForm
             }
         }
 
-        // 4. Content Area Clicks
-        int contentX = CardX + 236;
-        int contentY = CardY + 68;
-        int contentW = 564;
+        // 5. Content Area Clicks
+        int headerH = 50;
+        int contentX = SidebarWidth + 24;
+        int contentY = headerH + 14;
+        int contentW = CardWidth - SidebarWidth - 48; // 592
 
         switch (_activeTab)
         {
@@ -93,9 +117,11 @@ public sealed partial class SettingsForm
 
     private void HandleClickIslandNotch(int x, int y, int cx, int cy, int cw)
     {
-        int card1Y = cy + 46;
-        // Toggle Switch: Attached Notch
-        if (x >= cx + cw - 74 && x <= cx + cw - 28 && y >= card1Y + 26 && y <= card1Y + 52)
+        int card1Y = cy + 20;
+        int card1H = 64;
+
+        // Toggle Switch: Attached Bezel Notch Mode
+        if (x >= cx + cw - 60 && x <= cx + cw - 12 && y >= card1Y + 16 && y <= card1Y + 48)
         {
             AppSettings.Current.MusicNotchEnabled = !AppSettings.Current.MusicNotchEnabled;
             AppSettings.Current.Save();
@@ -104,41 +130,47 @@ public sealed partial class SettingsForm
             return;
         }
 
-        // Music Start / Track Change Segment Buttons
-        int card2Y = card1Y + 96;
-        int segW = 98;
-        int segH = 32;
-        int segSpacing = 8;
-        int segStartX = cx + 16;
-        int segStartY = card2Y + 64;
+        // Section 2: Display & Timeout Durations
+        int sec2Y = card1Y + card1H + 20;
+        int card2Y = sec2Y + 20;
 
-        double[] timerVals = { 0.0, 15.0, 30.0, 60.0, 120.0 };
-        for (int i = 0; i < timerVals.Length; i++)
+        // Row 1: Music Track Change Window Segmented Control (x + cw - 380, card2Y + 18, 364, 28)
+        int seg1X = cx + cw - 380;
+        int seg1Y = card2Y + 18;
+        int seg1W = 364;
+        int seg1H = 28;
+
+        if (x >= seg1X && x <= seg1X + seg1W && y >= seg1Y && y <= seg1Y + seg1H)
         {
-            int bx = segStartX + i * (segW + segSpacing);
-            if (x >= bx && x <= bx + segW && y >= segStartY && y <= segStartY + segH)
+            double[] timerVals = { 0.0, 15.0, 30.0, 60.0, 120.0 };
+            float itemW = (seg1W - 4f) / timerVals.Length;
+            int idx = (int)((x - seg1X - 2) / itemW);
+            if (idx >= 0 && idx < timerVals.Length)
             {
-                AppSettings.Current.MusicTimeDisplaySeconds = timerVals[i];
+                AppSettings.Current.MusicTimeDisplaySeconds = timerVals[idx];
                 AppSettings.Current.Save();
-                ShowToast($"✓ Music track display set to {timerVals[i]}s");
+                ShowToast($"✓ Music track display set to {timerVals[idx]}s");
                 InvalidateAndRender();
                 return;
             }
         }
 
-        // Idle Despawn Segment Buttons
-        int card3Y = card2Y + 126;
-        segStartX = cx + 16;
-        segStartY = card3Y + 64;
-        double[] idleVals = { 15.0, 30.0, 60.0, 120.0, 999999.0 };
-        for (int i = 0; i < idleVals.Length; i++)
+        // Row 2: Idle Despawn Segmented Control (x + cw - 380, card2Y + 76 + 18, 364, 28)
+        int seg2X = cx + cw - 380;
+        int seg2Y = card2Y + 76 + 18;
+        int seg2W = 364;
+        int seg2H = 28;
+
+        if (x >= seg2X && x <= seg2X + seg2W && y >= seg2Y && y <= seg2Y + seg2H)
         {
-            int bx = segStartX + i * (segW + segSpacing);
-            if (x >= bx && x <= bx + segW && y >= segStartY && y <= segStartY + segH)
+            double[] idleVals = { 15.0, 30.0, 60.0, 120.0, 999999.0 };
+            float itemW = (seg2W - 4f) / idleVals.Length;
+            int idx = (int)((x - seg2X - 2) / itemW);
+            if (idx >= 0 && idx < idleVals.Length)
             {
-                AppSettings.Current.IdleDespawnSeconds = idleVals[i];
+                AppSettings.Current.IdleDespawnSeconds = idleVals[idx];
                 AppSettings.Current.Save();
-                string label = idleVals[i] > 1000 ? "Always Visible" : $"{idleVals[i]}s";
+                string label = idleVals[idx] > 1000 ? "Always Visible" : $"{idleVals[idx]}s";
                 ShowToast($"✓ Idle timeout set to {label}");
                 InvalidateAndRender();
                 return;
@@ -148,61 +180,52 @@ public sealed partial class SettingsForm
 
     private void HandleClickWeather(int x, int y, int cx, int cy, int cw)
     {
-        int card1Y = cy + 46;
+        int card1Y = cy + 20;
+        int card1H = 64;
+
         // Auto-Location Toggle
-        if (x >= cx + cw - 74 && x <= cx + cw - 28 && y >= card1Y + 22 && y <= card1Y + 48)
+        if (x >= cx + cw - 60 && x <= cx + cw - 12 && y >= card1Y + 16 && y <= card1Y + 48)
         {
             _weatherUseAuto = !_weatherUseAuto;
             InvalidateAndRender();
             return;
         }
 
-        int card2Y = card1Y + 86;
-        int inputY1 = card2Y + 62;
-        int inputY2 = card2Y + 114;
+        int sec2Y = card1Y + card1H + 20;
+        int card2Y = sec2Y + 20;
 
-        // Input field selection
-        if (x >= cx + 90 && x <= cx + 340 && y >= inputY1 && y <= inputY1 + 30)
+        // Row 1 Text Fields: City (x + 110, card2Y + 14, 210, 28) & Country (x + 410, card2Y + 14, 166, 28)
+        if (x >= cx + 110 && x <= cx + 320 && y >= card2Y + 14 && y <= card2Y + 42)
         {
             _activeInputField = "weather_city";
             InvalidateAndRender();
             return;
         }
-        if (x >= cx + 420 && x <= cx + 520 && y >= inputY1 && y <= inputY1 + 30)
+        if (x >= cx + 410 && x <= cx + 576 && y >= card2Y + 14 && y <= card2Y + 42)
         {
             _activeInputField = "weather_country";
             InvalidateAndRender();
             return;
         }
-        if (x >= cx + 90 && x <= cx + 340 && y >= inputY2 && y <= inputY2 + 30)
+
+        // Row 2 Text Fields: Lat (x + 110, card2Y + 58 + 14, 210, 28) & Lon (x + 410, card2Y + 58 + 14, 166, 28)
+        int row2Y = card2Y + 58;
+        if (x >= cx + 110 && x <= cx + 320 && y >= row2Y + 14 && y <= row2Y + 42)
         {
             _activeInputField = "weather_lat";
             InvalidateAndRender();
             return;
         }
-        if (x >= cx + 420 && x <= cx + 520 && y >= inputY2 && y <= inputY2 + 30)
+        if (x >= cx + 410 && x <= cx + 576 && y >= row2Y + 14 && y <= row2Y + 42)
         {
             _activeInputField = "weather_lon";
             InvalidateAndRender();
             return;
         }
 
-        _activeInputField = "";
-
-        // Save Button
-        int btnY = card2Y + 166;
-        if (x >= cx + 16 && x <= cx + 186 && y >= btnY && y <= btnY + 34)
-        {
-            double.TryParse(_weatherLat, out double lat);
-            double.TryParse(_weatherLon, out double lon);
-            LiveWeatherService.SaveLocationConfig(_weatherUseAuto, _weatherCity, _weatherCountry, lat, lon);
-            ShowToast("✓ Weather configuration saved!");
-            InvalidateAndRender();
-            return;
-        }
-
-        // Refresh Button
-        if (x >= cx + 196 && x <= cx + 366 && y >= btnY && y <= btnY + 34)
+        // Row 3 Buttons: Refresh Now (x + cw - 240, card2Y + 116 + 14, 104, 28), Save Config (x + cw - 124, card2Y + 116 + 14, 108, 28)
+        int row3Y = card2Y + 116;
+        if (x >= cx + cw - 240 && x <= cx + cw - 136 && y >= row3Y + 14 && y <= row3Y + 42)
         {
             _weatherStatus = "Updating...";
             InvalidateAndRender();
@@ -221,27 +244,41 @@ public sealed partial class SettingsForm
             });
             return;
         }
+
+        if (x >= cx + cw - 124 && x <= cx + cw - 16 && y >= row3Y + 14 && y <= row3Y + 42)
+        {
+            double.TryParse(_weatherLat, out double lat);
+            double.TryParse(_weatherLon, out double lon);
+            LiveWeatherService.SaveLocationConfig(_weatherUseAuto, _weatherCity, _weatherCountry, lat, lon);
+            ShowToast("✓ Weather configuration saved!");
+            InvalidateAndRender();
+            return;
+        }
+
+        _activeInputField = "";
+        InvalidateAndRender();
     }
 
     private void HandleClickPlayers(int x, int y, int cx, int cy, int cw)
     {
-        int card1Y = cy + 46;
-        int listH = Math.Min(150, Math.Max(70, _players.Count * 44 + 36));
+        int card1Y = cy + 20;
+        int listRows = Math.Max(1, _players.Count);
+        int card1H = listRows * 48;
 
         // Existing Player Row actions
         for (int i = 0; i < _players.Count; i++)
         {
-            int rowY = card1Y + 36 + i * 40;
-            // Launch
-            if (x >= cx + cw - 160 && x <= cx + cw - 92 && y >= rowY + 2 && y <= rowY + 30)
+            int rowY = card1Y + i * 48;
+            // Launch: x + cw - 146, rowY + 10, 64, 26
+            if (x >= cx + cw - 146 && x <= cx + cw - 82 && y >= rowY + 10 && y <= rowY + 36)
             {
                 var p = _players[i];
                 PlayerService.LaunchPlayer(p);
                 ShowToast($"✓ Launched {p.Name}");
                 return;
             }
-            // Delete
-            if (x >= cx + cw - 82 && x <= cx + cw - 18 && y >= rowY + 2 && y <= rowY + 30)
+            // Delete: x + cw - 74, rowY + 10, 60, 26
+            if (x >= cx + cw - 74 && x <= cx + cw - 14 && y >= rowY + 10 && y <= rowY + 36)
             {
                 string removed = _players[i].Name;
                 _players.RemoveAt(i);
@@ -252,40 +289,47 @@ public sealed partial class SettingsForm
             }
         }
 
-        // Add Player Card
-        int card2Y = card1Y + listH + 16;
-        int addY1 = card2Y + 42;
-        int addY2 = card2Y + 82;
+        // Section 2: Add New Launcher
+        int sec2Y = card1Y + card1H + 20;
+        int card2Y = sec2Y + 20;
 
-        if (x >= cx + 90 && x <= cx + 230 && y >= addY1 && y <= addY1 + 30)
+        // Row 1: App Name (cx + 100, card2Y + 12, 160, 28)
+        if (x >= cx + 100 && x <= cx + 260 && y >= card2Y + 12 && y <= card2Y + 40)
         {
             _activeInputField = "new_player_name";
             InvalidateAndRender();
             return;
         }
 
-        // Icon Segments
-        string[] icVals = { "spotify", "ytmusic", "music" };
-        for (int i = 0; i < icVals.Length; i++)
+        // Row 1: Icon Segmented Control (cx + 320, card2Y + 12, 256, 28)
+        int icSegX = cx + 320;
+        int icSegY = card2Y + 12;
+        int icSegW = 256;
+        int icSegH = 28;
+        if (x >= icSegX && x <= icSegX + icSegW && y >= icSegY && y <= icSegY + icSegH)
         {
-            int bx = cx + 295 + i * 82;
-            if (x >= bx && x <= bx + 76 && y >= addY1 && y <= addY1 + 30)
+            string[] icVals = { "spotify", "ytmusic", "music" };
+            float segW = (icSegW - 4f) / icVals.Length;
+            int idx = (int)((x - icSegX - 2) / segW);
+            if (idx >= 0 && idx < icVals.Length)
             {
-                _newPlayerIcon = icVals[i];
+                _newPlayerIcon = icVals[idx];
                 InvalidateAndRender();
                 return;
             }
         }
 
-        if (x >= cx + 90 && x <= cx + 430 && y >= addY2 && y <= addY2 + 30)
+        // Row 2: Path / URL (cx + 100, card2Y + 50 + 12 = card2Y + 62, 380, 28)
+        int addRow2Y = card2Y + 50;
+        if (x >= cx + 100 && x <= cx + 480 && y >= addRow2Y + 12 && y <= addRow2Y + 40)
         {
             _activeInputField = "new_player_url";
             InvalidateAndRender();
             return;
         }
 
-        // Browse Button
-        if (x >= cx + 440 && x <= cx + 530 && y >= addY2 && y <= addY2 + 30)
+        // Browse Button (cx + 490, addRow2Y + 12, 86, 28)
+        if (x >= cx + 490 && x <= cx + 576 && y >= addRow2Y + 12 && y <= addRow2Y + 40)
         {
             using var ofd = new OpenFileDialog
             {
@@ -304,8 +348,9 @@ public sealed partial class SettingsForm
             return;
         }
 
-        // Add Player Button
-        if (x >= cx + 16 && x <= cx + 146 && y >= card2Y + 122 && y <= card2Y + 152)
+        // Row 3: Submit Button (cx + 16, card2Y + 100 + 11 = card2Y + 111, 170, 30)
+        int addRow3Y = card2Y + 100;
+        if (x >= cx + 16 && x <= cx + 186 && y >= addRow3Y + 11 && y <= addRow3Y + 41)
         {
             if (string.IsNullOrWhiteSpace(_newPlayerName) || string.IsNullOrWhiteSpace(_newPlayerUrl))
             {
@@ -324,35 +369,15 @@ public sealed partial class SettingsForm
         }
 
         _activeInputField = "";
+        InvalidateAndRender();
     }
 
     private void HandleClickShortcuts(int x, int y, int cx, int cy, int cw)
     {
-        int card1Y = cy + 46;
-        // Settings Desktop Shortcut
-        if (x >= cx + cw - 176 && x <= cx + cw - 16 && y >= card1Y + 22 && y <= card1Y + 56)
-        {
-            bool ok = AppSettings.CreateDesktopShortcut("Meridian Settings.lnk", "--settings", "Meridian Settings & Control");
-            if (ok) ShowToast("⭐ Settings shortcut created on Desktop!");
-            else ShowToast("⚠️ Failed to create shortcut");
-            InvalidateAndRender();
-            return;
-        }
+        int card1Y = cy + 20;
 
-        // Island Desktop Shortcut
-        int card2Y = card1Y + 88;
-        if (x >= cx + cw - 176 && x <= cx + cw - 16 && y >= card2Y + 22 && y <= card2Y + 56)
-        {
-            bool ok = AppSettings.CreateDesktopShortcut("Meridian Island.lnk", "", "Meridian Dynamic Island");
-            if (ok) ShowToast("⭐ Dynamic Island shortcut created on Desktop!");
-            else ShowToast("⚠️ Failed to create shortcut");
-            InvalidateAndRender();
-            return;
-        }
-
-        // Windows Startup Toggle
-        int card3Y = card2Y + 88;
-        if (x >= cx + cw - 74 && x <= cx + cw - 28 && y >= card3Y + 22 && y <= card3Y + 48)
+        // Row 1: Start with Windows Toggle (cx + cw - 56, card1Y + 14, 40, 24)
+        if (x >= cx + cw - 60 && x <= cx + cw - 12 && y >= card1Y + 10 && y <= card1Y + 42)
         {
             bool nextState = !AppSettings.IsRunOnStartup();
             AppSettings.SetRunOnStartup(nextState);
@@ -361,39 +386,63 @@ public sealed partial class SettingsForm
             return;
         }
 
-        // Card 4: Hardware Backdrop & Glass Translucency
-        int card4Y = card3Y + 80;
-        int bBtnW = 160;
-        int bBtnH = 30;
-        int bSpacing = 10;
-        int bStartX = cx + 16;
-        int bStartY = card4Y + 48;
-
-        int[] backdropVals = { 3, 4, 2 };
-        for (int i = 0; i < backdropVals.Length; i++)
+        // Row 2: Settings Desktop Shortcut (cx + cw - 124, card1Y + 52 + 12 = card1Y + 64, 108, 28)
+        int row2Y = card1Y + 52;
+        if (x >= cx + cw - 124 && x <= cx + cw - 16 && y >= row2Y + 12 && y <= row2Y + 40)
         {
-            int optX = bStartX + i * (bBtnW + bSpacing);
-            if (x >= optX && x <= optX + bBtnW && y >= bStartY && y <= bStartY + bBtnH)
+            bool ok = AppSettings.CreateDesktopShortcut("Meridian Settings.lnk", "--settings", "Meridian Settings & Control");
+            if (ok) ShowToast("⭐ Settings shortcut created on Desktop!");
+            else ShowToast("⚠️ Failed to create shortcut");
+            InvalidateAndRender();
+            return;
+        }
+
+        // Row 3: Island Desktop Shortcut (cx + cw - 124, card1Y + 104 + 12 = card1Y + 116, 108, 28)
+        int row3Y = card1Y + 104;
+        if (x >= cx + cw - 124 && x <= cx + cw - 16 && y >= row3Y + 12 && y <= row3Y + 40)
+        {
+            bool ok = AppSettings.CreateDesktopShortcut("Meridian Island.lnk", "", "Meridian Dynamic Island");
+            if (ok) ShowToast("⭐ Dynamic Island shortcut created on Desktop!");
+            else ShowToast("⚠️ Failed to create shortcut");
+            InvalidateAndRender();
+            return;
+        }
+
+        // Section 2: Hardware Backdrop & Glass Translucency
+        int card1H = 156;
+        int sec2Y = card1Y + card1H + 20;
+        int card2Y = sec2Y + 20;
+
+        // Row 1: Backdrop Segmented Control (cx + cw - 280, card2Y + 18, 264, 28)
+        int bSegX = cx + cw - 280;
+        int bSegY = card2Y + 18;
+        int bSegW = 264;
+        int bSegH = 28;
+        if (x >= bSegX && x <= bSegX + bSegW && y >= bSegY && y <= bSegY + bSegH)
+        {
+            int[] backdropVals = { 3, 4, 2 }; // Acrylic, Mica Alt, Mica
+            float segW = (bSegW - 4f) / backdropVals.Length;
+            int idx = (int)((x - bSegX - 2) / segW);
+            if (idx >= 0 && idx < backdropVals.Length)
             {
-                ApplyBackdrop(backdropVals[i]);
+                ApplyBackdrop(backdropVals[idx]);
                 return;
             }
         }
 
-        // Translucency Presets
-        int tBtnW = 120;
-        int tBtnH = 30;
-        int tSpacing = 8;
-        int tStartX = cx + 16;
-        int tStartY = card4Y + 134;
-
-        double[] transVals = { 0.78, 0.85, 0.92, 1.0 };
-        for (int i = 0; i < transVals.Length; i++)
+        // Row 2: Translucency Segmented Control (cx + cw - 380, card2Y + 74 + 18, 364, 28)
+        int tSegX = cx + cw - 380;
+        int tSegY = card2Y + 74 + 18;
+        int tSegW = 364;
+        int tSegH = 28;
+        if (x >= tSegX && x <= tSegX + tSegW && y >= tSegY && y <= tSegY + tSegH)
         {
-            int optX = tStartX + i * (tBtnW + tSpacing);
-            if (x >= optX && x <= optX + tBtnW && y >= tStartY && y <= tStartY + tBtnH)
+            double[] transVals = { 0.78, 0.85, 0.92, 1.0 };
+            float segW = (tSegW - 4f) / transVals.Length;
+            int idx = (int)((x - tSegX - 2) / segW);
+            if (idx >= 0 && idx < transVals.Length)
             {
-                ApplyTransparency(transVals[i], showToast: true);
+                ApplyTransparency(transVals[idx], showToast: true);
                 return;
             }
         }
@@ -401,9 +450,10 @@ public sealed partial class SettingsForm
 
     private void HandleClickAbout(int x, int y, int cx, int cy, int cw)
     {
-        int card1Y = cy + 46;
-        // Restart Island
-        if (x >= cx + cw - 210 && x <= cx + cw - 114 && y >= card1Y + 24 && y <= card1Y + 58)
+        int card1Y = cy + 20;
+
+        // Restart Island Button (cx + cw - 190, card1Y + 18, 76, 30)
+        if (x >= cx + cw - 190 && x <= cx + cw - 114 && y >= card1Y + 18 && y <= card1Y + 48)
         {
             StopIslandProcesses();
             StartIslandProcess();
@@ -412,8 +462,8 @@ public sealed partial class SettingsForm
             return;
         }
 
-        // Launch / Stop Island
-        if (x >= cx + cw - 104 && x <= cx + cw - 12 && y >= card1Y + 24 && y <= card1Y + 58)
+        // Launch / Stop Island Button (cx + cw - 104, card1Y + 18, 88, 30)
+        if (x >= cx + cw - 104 && x <= cx + cw - 16 && y >= card1Y + 18 && y <= card1Y + 48)
         {
             int currentId = Environment.ProcessId;
             var list = Process.GetProcessesByName("Meridian");
@@ -476,35 +526,38 @@ public sealed partial class SettingsForm
         int mouseX = (int)Math.Round(e.X / _scale);
         int mouseY = (int)Math.Round(e.Y / _scale);
 
-        int btnY = CardY + 16;
-        int closeX = CardX + CardWidth - 44;
-        int minX = CardX + CardWidth - 80;
-
-        bool closeHov = (mouseX >= closeX && mouseX <= closeX + 28 && mouseY >= btnY && mouseY <= btnY + 28);
-        bool minHov = (mouseX >= minX && mouseX <= minX + 28 && mouseY >= btnY && mouseY <= btnY + 28);
+        // Traffic lights hover (x: 16..72, y: 14..30)
+        bool trafficHov = (mouseX >= 16 && mouseX <= 72 && mouseY >= 14 && mouseY <= 30);
+        int hoveredLight = -1;
+        if (trafficHov)
+        {
+            if (mouseX >= 16 && mouseX <= 32) hoveredLight = 0;
+            else if (mouseX >= 36 && mouseX <= 52) hoveredLight = 1;
+            else if (mouseX >= 56 && mouseX <= 72) hoveredLight = 2;
+        }
 
         // Sidebar tabs hover
-        int sideX = CardX + 20;
-        int sideY = CardY + 68;
-        int sideW = 186;
-        int tabH = 42;
-        int tabSpacing = 6;
+        int tabStartY = 82;
+        int tabH = 38;
+        int tabSpacing = 4;
+        int tabW = 196;
+        int tabX = 12;
         int hovTab = -1;
 
         for (int i = 0; i < 5; i++)
         {
-            int currentY = sideY + i * (tabH + tabSpacing);
-            if (mouseX >= sideX && mouseX <= sideX + sideW && mouseY >= currentY && mouseY <= currentY + tabH)
+            int currentY = tabStartY + i * (tabH + tabSpacing);
+            if (mouseX >= tabX && mouseX <= tabX + tabW && mouseY >= currentY && mouseY <= currentY + tabH)
             {
                 hovTab = i;
                 break;
             }
         }
 
-        if (closeHov != _isCloseHovered || minHov != _isMinHovered || hovTab != _hoveredTab)
+        if (trafficHov != _isTrafficLightsHovered || hoveredLight != _hoveredTrafficLight || hovTab != _hoveredTab)
         {
-            _isCloseHovered = closeHov;
-            _isMinHovered = minHov;
+            _isTrafficLightsHovered = trafficHov;
+            _hoveredTrafficLight = hoveredLight;
             _hoveredTab = hovTab;
             InvalidateAndRender();
         }
@@ -513,10 +566,10 @@ public sealed partial class SettingsForm
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        if (_isCloseHovered || _isMinHovered || _hoveredTab != -1)
+        if (_isTrafficLightsHovered || _hoveredTrafficLight != -1 || _hoveredTab != -1)
         {
-            _isCloseHovered = false;
-            _isMinHovered = false;
+            _isTrafficLightsHovered = false;
+            _hoveredTrafficLight = -1;
             _hoveredTab = -1;
             InvalidateAndRender();
         }
@@ -556,6 +609,9 @@ public sealed partial class SettingsForm
     {
         switch (_activeInputField)
         {
+            case "sidebar_search":
+                _searchText = modifier(_searchText);
+                break;
             case "weather_city":
                 _weatherCity = modifier(_weatherCity);
                 break;
