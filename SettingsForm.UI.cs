@@ -248,6 +248,10 @@ public sealed partial class SettingsForm
                 {
                     g.FillPath(brushGlyph, capsulePath);
                 }
+                using (var camBrush = new SolidBrush(Color.FromArgb(200, 0, 100, 220)))
+                {
+                    g.FillEllipse(camBrush, x + 7.5f, y + 11.5f, 3f, 3f);
+                }
                 break;
             case 1: // Weather sun
                 g.FillEllipse(brushGlyph, x + 8, y + 8, 10, 10);
@@ -687,21 +691,11 @@ public sealed partial class SettingsForm
 
         bool isIslandRunning = Process.GetProcessesByName("Meridian").Length > 1;
 
-        // Glowing Meridian Orb Badge
-        using (var orbPath = new GraphicsPath())
-        {
-            int ox = x + 16;
-            int oy = card1Y + 14;
-            orbPath.AddEllipse(ox, oy, 40, 40);
-            using var lgb = new LinearGradientBrush(new Point(ox, oy), new Point(ox + 40, oy + 40),
-                Color.FromArgb(235, 100, 180, 255), Color.FromArgb(170, 40, 90, 200));
-            g.FillPath(lgb, orbPath);
-            using var rimPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1.2f);
-            g.DrawPath(rimPen, orbPath);
-        }
+        // Official Meridian Logo Icon
+        LogoRenderer.DrawLogo(g, x + 14, card1Y + 12, 44, drawBackground: true);
 
-        g.DrawString("Meridian Dynamic Island · v1.0", fontBody, brushWhite, x + 68, card1Y + 16);
-        g.DrawString(".NET 10 Windows Forms with Optical SDF Lens Refraction", fontSub, brushMuted, x + 68, card1Y + 36);
+        g.DrawString("Meridian Dynamic Island", fontBody, brushWhite, x + 68, card1Y + 16);
+        g.DrawString("v2.0 · Per-Monitor V2 High-DPI & Hardware Acrylic", fontSub, brushMuted, x + 68, card1Y + 36);
 
         // Status pill & control buttons
         string statusText = isIslandRunning ? "🟢 Running" : "⚪ Stopped";

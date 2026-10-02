@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <!-- Background Obsidian Gradient -->
+    <linearGradient id="obsidianGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A0C12" />
+      <stop offset="100%" stop-color="#121620" />
+    </linearGradient>
+
+    <!-- Meridian Orbital Arc Gradient -->
+    <linearGradient id="orbitGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00F2FE" />
+      <stop offset="50%" stop-color="#007AFF" />
+      <stop offset="100%" stop-color="#AF52DE" />
+    </linearGradient>
+
+    <!-- Island Body Gradient -->
+    <linearGradient id="islandGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#141822" />
+      <stop offset="100%" stop-color="#06080C" />
+    </linearGradient>
+
+    <!-- Core Nebula Glow Filter -->
+    <radialGradient id="nebulaGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#0096FF" stop-opacity="0.45" />
+      <stop offset="60%" stop-color="#AF52DE" stop-opacity="0.15" />
+      <stop offset="100%" stop-color="#000000" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Island Drop Shadow -->
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#000000" flood-opacity="0.7" />
+    </filter>
+  </defs>
+
+  <!-- Squircle Canvas Body -->
+  <rect x="4" y="4" width="504" height="504" rx="114.688" fill="url(#obsidianGrad)" stroke="rgba(255, 255, 255, 0.16)" stroke-width="3" />
+
+  <!-- Core Optical Glow -->
+  <circle cx="256" cy="256" r="215.04" fill="url(#nebulaGlow)" />
+
+  <!-- Meridian Celestial Orbit (Back Arc) -->
+  <g transform="translate(256, 256) rotate(-22)">
+    <ellipse cx="0" cy="0" rx="194.56" ry="71.68" fill="none" stroke="rgba(0, 200, 255, 0.35)" stroke-width="12.288" stroke-dasharray="307.2 307.2" stroke-dashoffset="307.2" />
+    <ellipse cx="0" cy="0" rx="174.08" ry="61.44" fill="none" stroke="rgba(175, 82, 222, 0.2)" stroke-width="1.5" />
+  </g>
+
+  <!-- Central Dynamic Island Capsule -->
+  <rect x="133.12" y="199.68" width="245.76" height="112.64" rx="56.32" fill="url(#islandGrad)" stroke="rgba(255, 255, 255, 0.24)" stroke-width="2.5" filter="url(#shadow)" />
+
+  <!-- Specular Top Rim Gloss -->
+  <path d="M 174.08 207.36 Q 256 204.8 337.92 207.36" fill="none" stroke="rgba(255, 255, 255, 0.4)" stroke-width="2" stroke-linecap="round" />
+
+  <!-- Left Camera Aperture -->
+  <circle cx="199.68" cy="256" r="23.552" fill="#0F1624" stroke="rgba(74, 144, 226, 0.6)" stroke-width="1.5" />
+  <circle cx="205.824" cy="249.856" r="7.68" fill="#00F2FE" opacity="0.9" />
+
+  <!-- Right Sensor Indicator -->
+  <circle cx="312.32" cy="256" r="20.48" fill="#0C121C" />
+  <circle cx="312.32" cy="256" r="6.144" fill="#34C759" opacity="0.9" />
+
+  <!-- Meridian Celestial Orbit (Front Glowing Arc) -->
+  <g transform="translate(256, 256) rotate(-22)">
+    <path d="M -194.56 0 A 194.56 71.68 0 0 0 194.56 0" fill="none" stroke="url(#orbitGrad)" stroke-width="13.312" stroke-linecap="round" />
+  </g>
+
+  <!-- Celestial Zenith Beacon Star -->
+  <g transform="translate(414.72, 189.44)">
+    <circle cx="0" cy="0" r="20.48" fill="rgba(0, 242, 254, 0.4)" />
+    <path d="M 0 -19.456 Q 0 0 19.456 0 Q 0 0 0 19.456 Q 0 0 -19.456 0 Q 0 0 0 -19.456 Z" fill="#FFFFFF" />
+  </g>
+</svg>

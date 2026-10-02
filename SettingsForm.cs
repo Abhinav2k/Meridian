@@ -242,6 +242,15 @@ public sealed partial class SettingsForm : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = true;
         Text = "Meridian Settings";
+        try
+        {
+            string icoPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Assets", "meridian.ico");
+            if (File.Exists(icoPath))
+            {
+                Icon = new Icon(icoPath);
+            }
+        }
+        catch { }
         StartPosition = FormStartPosition.CenterScreen;
         _scale = DeviceDpi / 96.0f;
         int scaledW = (int)Math.Round(CardWidth * _scale);

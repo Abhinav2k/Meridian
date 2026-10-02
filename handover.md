@@ -150,6 +150,22 @@
   - Discontinued `ClearTypeGridFit` on 32-bit transparent ARGB surfaces to eliminate RGB subpixel smudging and dark fringing.
   - Replaced unhinted 21MB private variable font loading with native Windows system font cache rasterization, achieving razor-sharp pixel snapping across 1080p and 4K displays.
 
+### G. Official Meridian Logo & Branding Assets System
+- **Brand Visual Concept**:
+  - **Obsidian Space Squircle**: Apple iOS/macOS curvature ($R = 0.224 \times \text{size}$) with an obsidian space gradient (`#0A0C12` to `#121620`) and frosted translucent glass hairline border (`rgba(255, 255, 255, 0.16)`).
+  - **Core Nebula Bloom**: Ambient chromatic glow radiating cyan/blue core light (`rgba(0, 150, 255, 0.45)` to deep iris violet).
+  - **3D Meridian Celestial Orbit**: Tilted at $-22^\circ$ in dual hemisphere layers:
+    - **Back Arc**: Semi-translucent cyan latitude arc sweeping behind the island body.
+    - **Front Arc**: Glowing linear gradient arc (Electric Cyan `#00F2FE` $\to$ Neon Blue `#007AFF` $\to$ Iris Violet `#AF52DE`) sweeping across in front of the island.
+  - **Dynamic Island Central Floating Capsule**: Dark smoked glass pill container (`#161A26` to `#06080C`) with drop shadow depth elevation, top specular gloss reflection curve, and dual optical apertures (left deep-navy camera lens with cyan refraction dot, right sensor with Apple Green `#34C759` indicator spark).
+  - **Celestial Zenith Beacon Star**: 4-point radiant diamond star and corona at the orbital meridian crest ($X \approx 81\%, Y \approx 37\%$).
+- **Asset Suite & Generation**:
+  - [`Assets/meridian.ico`](file:///C:/Users/abhin/Workspace/liquid%20glass/Assets/meridian.ico): Multi-frame Windows icon embedded into `Meridian.exe` via `<ApplicationIcon>` in `Meridian.csproj`, containing PNG frames for 16×16, 24×24, 32×32, 48×48, 64×64, 128×128, and 256×256 px.
+  - [`Assets/meridian-logo.png`](file:///C:/Users/abhin/Workspace/liquid%20glass/Assets/meridian-logo.png): High-resolution 512×512 master branding artwork.
+  - [`Assets/meridian-logo.svg`](file:///C:/Users/abhin/Workspace/liquid%20glass/Assets/meridian-logo.svg): Scalable vector graphics definition for web, GitHub, and documentation.
+  - [`LogoRenderer.cs`](file:///C:/Users/abhin/Workspace/liquid%20glass/LogoRenderer.cs): In-app procedural GDI+ vector renderer supporting `DrawLogo()`, `CreateBitmap()`, `SaveIco()`, and `SaveSvg()`.
+  - **In-App Integration**: Rendered natively in `SettingsForm.UI.cs` ("About Meridian" section) and bound to Windows desktop shortcuts (`Meridian Settings.lnk`, `Meridian Island.lnk`).
+
 ---
 
 ## 4. Build, Run, and Diagnostics Runbook
