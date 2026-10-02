@@ -12,7 +12,7 @@ using Windows.Media.Devices;
 using Windows.Devices.Enumeration;
 using Windows.Storage.Streams;
 
-namespace LiquidGlassCircle;
+namespace Meridian;
 
 public sealed class AudioDeviceInfo
 {
@@ -186,6 +186,7 @@ internal sealed class OverlayForm : Form
 
     private const int TopPadding = 18;
     private const double AnimationDuration = 0.85; // seconds
+    private static double MusicTimeDisplaySeconds => AppSettings.Current.MusicTimeDisplaySeconds; // seconds time is shown on music start / track change
 
     private const uint WdaExcludeFromCapture = 0x11;
     private const int WmNcHitTest = 0x84;
@@ -2027,7 +2028,7 @@ internal sealed class OverlayForm : Form
 
                 if ((!prevPlaying && _isPlaying) || (_isPlaying && !string.IsNullOrEmpty(_currentTrack.Title) && _currentTrack.Title != prevTitle && _currentTrack.Title != "No Media Playing"))
                 {
-                    _musicTimeDisplayUntil = DateTime.UtcNow.AddMinutes(2);
+                    _musicTimeDisplayUntil = DateTime.UtcNow.AddSeconds(MusicTimeDisplaySeconds);
                 }
             }
             else
@@ -2959,7 +2960,8 @@ internal sealed class OverlayForm : Form
                 {
                     Path.Combine(baseDir, "Fonts"),
                     Path.Combine(baseDir, @"..\..\..", "Fonts"),
-                    @"C:\Users\abhin\Workspace\liquid glass\Fonts"
+                    @"C:\Users\abhin\Workspace\liquid glass\Fonts",
+                    @"C:\Users\abhin\Workspace\meridian\Fonts"
                 };
 
                 foreach (var dir in searchDirs)
@@ -3010,28 +3012,19 @@ internal sealed class OverlayForm : Form
 
         lock (_fontLock)
         {
-            if (_sfProFamily != null)
-            {
-                try
-                {
-                    if (_sfProFamily.IsStyleAvailable(style))
-                    {
-                        return new Font(_sfProFamily, sizeInPoints, style);
-                    }
-                    return new Font(_sfProFamily, sizeInPoints, FontStyle.Regular);
-                }
-                catch { }
-            }
+            string preferredFamily = sizeInPoints >= 18f ? "Segoe UI Variable Display" : "Segoe UI Variable Text";
+            string fallbackFamily = sizeInPoints >= 18f ? "Segoe UI Variable Text" : "Segoe UI Variable Display";
 
             string[] fontCandidates = new[]
             {
-                "SF Pro Display",
-                "SF Pro Text",
-                "SF Pro",
-                "Segoe UI Variable Display",
-                "Segoe UI Variable Text",
-                "Aptos Display",
+                preferredFamily,
+                fallbackFamily,
+                "Segoe UI Variable Small",
                 "Segoe UI",
+                "Aptos Display",
+                "SF Pro Text",
+                "SF Pro Display",
+                "SF Pro",
                 "Bahnschrift"
             };
 
@@ -3046,6 +3039,19 @@ internal sealed class OverlayForm : Form
                         return font;
                     }
                     font.Dispose();
+                }
+                catch { }
+            }
+
+            if (_sfProFamily != null)
+            {
+                try
+                {
+                    if (_sfProFamily.IsStyleAvailable(style))
+                    {
+                        return new Font(_sfProFamily, sizeInPoints, style);
+                    }
+                    return new Font(_sfProFamily, sizeInPoints, FontStyle.Regular);
                 }
                 catch { }
             }
@@ -8902,7 +8908,7 @@ private static void DrawTabBauhausWeather(
         _renderSignal.Set();
     }
 
-    public void SaveSnapshot(string filename = "liquid-glass-snapshot.png")
+    public void SaveSnapshot(string filename = "meridian-snapshot.png")
     {
         try
         {
@@ -9233,12 +9239,12 @@ private static void DrawTabBauhausWeather(
                 }
             }
 
-            // Track music playback start and track change to trigger the 2-minute time display
+            // Track music playback start and track change to trigger the 30-second time display
             bool justStartedPlaying = !_lastWasPlaying && _isPlaying;
             bool trackChanged = _isPlaying && !string.IsNullOrEmpty(_currentTrack.Title) && _currentTrack.Title != _lastPlayingTrackTitle && _currentTrack.Title != "No Media Playing";
             if (justStartedPlaying || trackChanged)
             {
-                _musicTimeDisplayUntil = utcNow.AddMinutes(2);
+                _musicTimeDisplayUntil = utcNow.AddSeconds(MusicTimeDisplaySeconds);
                 _userDismissed = false;
             }
             _lastWasPlaying = _isPlaying;
@@ -9766,8 +9772,8 @@ private static void DrawTabBauhausWeather(
             }
 
             // Compact Time Visibility & Width Dynamics:
-            // Music playing: time displays for 2 minutes (or 1 min on unhover, or 3 mins on o'clock).
-            // Then time disappears, leaving only rotating disc + visualizer, and the pill gets shorter in length!
+            // Music playing: time displays for 30 seconds on track start/change (or 3 mins on o'clock, or timer).
+            // Then time disappears, leaving only rotating disc + visualizer, and the pill docks into the notch!
             bool isMusicTimeActive = (utcNow < _musicTimeDisplayUntil);
 
             bool shouldShowTime;
@@ -9777,7 +9783,8 @@ private static void DrawTabBauhausWeather(
             }
             else
             {
-                shouldShowTime = isMusicTimeActive || isUnhoverActive || isOClock || isTimerRunning;
+                // When music is playing, don't re-display the clock on unhover unless within the 30s music window
+                shouldShowTime = isMusicTimeActive || isOClock || isTimerRunning;
             }
 
             double targetTimeAlpha = shouldShowTime ? 1.0 : 0.0;
@@ -9833,7 +9840,7 @@ private static void DrawTabBauhausWeather(
             // When hovered or when time is showing, detach and return to default floating geometry.
             bool isMusicOnlyResting = _hasActiveMedia && (_compactTimeAlpha < 0.15) && (_mediaElementsAlpha > 0.4) &&
                                       (_hoverPos < 0.05) && (_progress > 0.82) && !_timerAlarmActive && !_userDismissed;
-            double targetNotch = isMusicOnlyResting ? 1.0 : 0.0;
+            double targetNotch = (isMusicOnlyResting && AppSettings.Current.MusicNotchEnabled) ? 1.0 : 0.0;
             _notchAttachment += (targetNotch - _notchAttachment) * Math.Min(1.0, 10.0 * dt);
             if (Math.Abs(_notchAttachment - targetNotch) < 0.001) _notchAttachment = targetNotch;
 
@@ -10146,9 +10153,18 @@ private static void DrawTabBauhausWeather(
         fixed (byte* pBlurred = _blurredBuffer)
         fixed (byte* pHeavyBlurred = _heavyBlurBuffer)
         {
-            // 1. Box downsample (600x250 -> 300x125)
-            for (int y = 0; y < HalfHeight; y++)
+            nint rawPtr = (nint)pRaw;
+            nint dstPtr = (nint)pDst;
+            nint halfRawPtr = (nint)pHalfRaw;
+            nint blurHPtr = (nint)pBlurH;
+            nint blurredPtr = (nint)pBlurred;
+            nint heavyBlurredPtr = (nint)pHeavyBlurred;
+
+            // 1. Box downsample (600x250 -> 300x125) (Parallel)
+            Parallel.For(0, HalfHeight, y =>
             {
+                byte* raw = (byte*)rawPtr;
+                byte* halfRaw = (byte*)halfRawPtr;
                 int srcRow0 = (y * 2) * SurfaceWidth * 4;
                 int srcRow1 = (y * 2 + 1) * SurfaceWidth * 4;
                 int dstRow = y * HalfWidth * 4;
@@ -10161,19 +10177,21 @@ private static void DrawTabBauhausWeather(
 
                     for (int c = 0; c < 3; c++)
                     {
-                        int sum = pRaw[srcRow0 + srcX0 + c] +
-                                  pRaw[srcRow0 + srcX1 + c] +
-                                  pRaw[srcRow1 + srcX0 + c] +
-                                  pRaw[srcRow1 + srcX1 + c];
-                        pHalfRaw[dstX + c] = (byte)(sum >> 2);
+                        int sum = raw[srcRow0 + srcX0 + c] +
+                                  raw[srcRow0 + srcX1 + c] +
+                                  raw[srcRow1 + srcX0 + c] +
+                                  raw[srcRow1 + srcX1 + c];
+                        halfRaw[dstX + c] = (byte)(sum >> 2);
                     }
-                    pHalfRaw[dstX + 3] = 255;
+                    halfRaw[dstX + 3] = 255;
                 }
-            }
+            });
 
-            // 2a. Single-pass 5-tap Gaussian Blur on 300x125 (standard interior blur)
-            for (int y = 0; y < HalfHeight; y++)
+            // 2a. Single-pass 5-tap Gaussian Blur on 300x125 (standard interior blur) (Parallel)
+            Parallel.For(0, HalfHeight, y =>
             {
+                byte* halfRaw = (byte*)halfRawPtr;
+                byte* blurH = (byte*)blurHPtr;
                 int rowOffset = y * HalfWidth * 4;
                 for (int x = 0; x < HalfWidth; x++)
                 {
@@ -10190,19 +10208,21 @@ private static void DrawTabBauhausWeather(
 
                     for (int c = 0; c < 3; c++)
                     {
-                        int sum = pHalfRaw[offM2 + c] +
-                                  (pHalfRaw[offM1 + c] << 2) +
-                                  pHalfRaw[off0 + c] * 6 +
-                                  (pHalfRaw[offP1 + c] << 2) +
-                                  pHalfRaw[offP2 + c];
-                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                        int sum = halfRaw[offM2 + c] +
+                                  (halfRaw[offM1 + c] << 2) +
+                                  halfRaw[off0 + c] * 6 +
+                                  (halfRaw[offP1 + c] << 2) +
+                                  halfRaw[offP2 + c];
+                        blurH[off0 + c] = (byte)(sum >> 4);
                     }
-                    pBlurH[off0 + 3] = 255;
+                    blurH[off0 + 3] = 255;
                 }
-            }
+            });
 
-            for (int y = 0; y < HalfHeight; y++)
+            Parallel.For(0, HalfHeight, y =>
             {
+                byte* blurH = (byte*)blurHPtr;
+                byte* blurred = (byte*)blurredPtr;
                 int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
                 int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
                 int y0 = y * HalfWidth * 4;
@@ -10220,20 +10240,22 @@ private static void DrawTabBauhausWeather(
 
                     for (int c = 0; c < 3; c++)
                     {
-                        int sum = pBlurH[offM2 + c] +
-                                  (pBlurH[offM1 + c] << 2) +
-                                  pBlurH[off0 + c] * 6 +
-                                  (pBlurH[offP1 + c] << 2) +
-                                  pBlurH[offP2 + c];
-                        pBlurred[off0 + c] = (byte)(sum >> 4);
+                        int sum = blurH[offM2 + c] +
+                                  (blurH[offM1 + c] << 2) +
+                                  blurH[off0 + c] * 6 +
+                                  (blurH[offP1 + c] << 2) +
+                                  blurH[offP2 + c];
+                        blurred[off0 + c] = (byte)(sum >> 4);
                     }
-                    pBlurred[off0 + 3] = 255;
+                    blurred[off0 + 3] = 255;
                 }
-            }
+            });
 
-            // 2b. Second-pass cascade Gaussian Blur on 300x125 (deep, creamy frosted glass blur)
-            for (int y = 0; y < HalfHeight; y++)
+            // 2b. Second-pass cascade Gaussian Blur on 300x125 (deep, creamy frosted glass blur) (Parallel)
+            Parallel.For(0, HalfHeight, y =>
             {
+                byte* blurred = (byte*)blurredPtr;
+                byte* blurH = (byte*)blurHPtr;
                 int rowOffset = y * HalfWidth * 4;
                 for (int x = 0; x < HalfWidth; x++)
                 {
@@ -10250,19 +10272,21 @@ private static void DrawTabBauhausWeather(
 
                     for (int c = 0; c < 3; c++)
                     {
-                        int sum = pBlurred[offM2 + c] +
-                                  (pBlurred[offM1 + c] << 2) +
-                                  pBlurred[off0 + c] * 6 +
-                                  (pBlurred[offP1 + c] << 2) +
-                                  pBlurred[offP2 + c];
-                        pBlurH[off0 + c] = (byte)(sum >> 4);
+                        int sum = blurred[offM2 + c] +
+                                  (blurred[offM1 + c] << 2) +
+                                  blurred[off0 + c] * 6 +
+                                  (blurred[offP1 + c] << 2) +
+                                  blurred[offP2 + c];
+                        blurH[off0 + c] = (byte)(sum >> 4);
                     }
-                    pBlurH[off0 + 3] = 255;
+                    blurH[off0 + 3] = 255;
                 }
-            }
+            });
 
-            for (int y = 0; y < HalfHeight; y++)
+            Parallel.For(0, HalfHeight, y =>
             {
+                byte* blurH = (byte*)blurHPtr;
+                byte* heavyBlurred = (byte*)heavyBlurredPtr;
                 int ym2 = Math.Max(0, y - 2) * HalfWidth * 4;
                 int ym1 = Math.Max(0, y - 1) * HalfWidth * 4;
                 int y0 = y * HalfWidth * 4;
@@ -10280,16 +10304,16 @@ private static void DrawTabBauhausWeather(
 
                     for (int c = 0; c < 3; c++)
                     {
-                        int sum = pBlurH[offM2 + c] +
-                                  (pBlurH[offM1 + c] << 2) +
-                                  pBlurH[off0 + c] * 6 +
-                                  (pBlurH[offP1 + c] << 2) +
-                                  pBlurH[offP2 + c];
-                        pHeavyBlurred[off0 + c] = (byte)(sum >> 4);
+                        int sum = blurH[offM2 + c] +
+                                  (blurH[offM1 + c] << 2) +
+                                  blurH[off0 + c] * 6 +
+                                  (blurH[offP1 + c] << 2) +
+                                  blurH[offP2 + c];
+                        heavyBlurred[off0 + c] = (byte)(sum >> 4);
                     }
-                    pHeavyBlurred[off0 + 3] = 255;
+                    heavyBlurred[off0 + 3] = 255;
                 }
-            }
+            });
 
             // 3. Apple-Grade Liquid Glass Physical Optics Engine
             double straightW = Math.Max(0.0, geom.HalfWidth - geom.Radius);
@@ -10365,9 +10389,41 @@ private static void DrawTabBauhausWeather(
             double earCy = filletR;
             bool hasNotchFillet = filletR > 0.01;
 
-            for (int y = 0; y < SurfaceHeight; y++)
+            double boundHalfW = geom.HalfWidth + (hasNotchFillet ? filletR : 0.0) + 26.0;
+            double boundHalfH = geom.HalfHeight + 26.0;
+            int minXBound = Math.Max(0, (int)Math.Floor(geom.CenterX - boundHalfW));
+            int maxXBound = Math.Min(SurfaceWidth - 1, (int)Math.Ceiling(geom.CenterX + boundHalfW));
+            int minYBound = Math.Max(0, (int)Math.Floor(geom.CenterY - boundHalfH));
+            int maxYBound = Math.Min(SurfaceHeight - 1, (int)Math.Ceiling(geom.CenterY + boundHalfH));
+
+            if (hasExpandedMusicPanel)
             {
+                minXBound = Math.Max(0, Math.Min(minXBound, (int)Math.Floor(pcx - strW - panelR - 26.0)));
+                maxXBound = Math.Min(SurfaceWidth - 1, Math.Max(maxXBound, (int)Math.Ceiling(pcx + strW + panelR + 26.0)));
+                minYBound = Math.Max(0, Math.Min(minYBound, (int)Math.Floor(pcy - strH - panelR - 26.0)));
+                maxYBound = Math.Min(SurfaceHeight - 1, Math.Max(maxYBound, (int)Math.Ceiling(pcy + strH + panelR + 26.0)));
+            }
+
+            Parallel.For(0, SurfaceHeight, y =>
+            {
+                uint* dst = (uint*)dstPtr;
                 int rowIdx = y * SurfaceWidth;
+
+                if (y < minYBound || y > maxYBound)
+                {
+                    new Span<uint>(dst + rowIdx, SurfaceWidth).Clear();
+                    return;
+                }
+
+                if (minXBound > 0)
+                    new Span<uint>(dst + rowIdx, minXBound).Clear();
+                if (maxXBound < SurfaceWidth - 1)
+                    new Span<uint>(dst + rowIdx + maxXBound + 1, SurfaceWidth - 1 - maxXBound).Clear();
+
+                byte* raw = (byte*)rawPtr;
+                byte* blurred = (byte*)blurredPtr;
+                byte* heavyBlurred = (byte*)heavyBlurredPtr;
+
                 double py = y - geom.CenterY;
                 double absPy = Math.Abs(py);
                 bool isTop = py < 0.0;
@@ -10380,7 +10436,7 @@ private static void DrawTabBauhausWeather(
                 bool inEarBandY = hasNotchFillet && (yRel >= 0.0) && (yRel <= filletR + 8.0);
                 double vEar = inEarBandY ? (yRel - earCy) : 0.0;
 
-                for (int x = 0; x < SurfaceWidth; x++)
+                for (int x = minXBound; x <= maxXBound; x++)
                 {
                     int idx = rowIdx + x;
                     double px = x - geom.CenterX;
@@ -10468,7 +10524,7 @@ private static void DrawTabBauhausWeather(
 
                     if (a == 0)
                     {
-                        pDst[idx] = (shadowA > 0) ? ((uint)shadowA << 24) : 0;
+                        dst[idx] = (shadowA > 0) ? ((uint)shadowA << 24) : 0;
                         continue;
                     }
 
@@ -10554,8 +10610,8 @@ private static void DrawTabBauhausWeather(
                         int w01R = (int)((1.0 - fxR) * fyR * 256.0);
                         int w11R = Math.Max(0, 256 - (w00R + w10R + w01R));
                         int r0R = iyR * SurfaceWidth * 4, r1R = (iyR + 1) * SurfaceWidth * 4;
-                        rawR = (pRaw[r0R + (ixR << 2) + 2] * w00R + pRaw[r0R + ((ixR + 1) << 2) + 2] * w10R +
-                                pRaw[r1R + (ixR << 2) + 2] * w01R + pRaw[r1R + ((ixR + 1) << 2) + 2] * w11R) >> 8;
+                        rawR = (raw[r0R + (ixR << 2) + 2] * w00R + raw[r0R + ((ixR + 1) << 2) + 2] * w10R +
+                                raw[r1R + (ixR << 2) + 2] * w01R + raw[r1R + ((ixR + 1) << 2) + 2] * w11R) >> 8;
 
                         int ixG = (int)baseSx, iyG = (int)baseSy;
                         double fxG = baseSx - ixG, fyG = baseSy - iyG;
@@ -10564,18 +10620,18 @@ private static void DrawTabBauhausWeather(
                         int w01G = (int)((1.0 - fxG) * fyG * 256.0);
                         int w11G = Math.Max(0, 256 - (w00G + w10G + w01G));
                         int r0G = iyG * SurfaceWidth * 4, r1G = (iyG + 1) * SurfaceWidth * 4;
-                        rawG = (pRaw[r0G + (ixG << 2) + 1] * w00G + pRaw[r0G + ((ixG + 1) << 2) + 1] * w10G +
-                                pRaw[r1G + (ixG << 2) + 1] * w01G + pRaw[r1G + ((ixG + 1) << 2) + 1] * w11G) >> 8;
+                        rawG = (raw[r0G + (ixG << 2) + 1] * w00G + raw[r0G + ((ixG + 1) << 2) + 1] * w10G +
+                                raw[r1G + (ixG << 2) + 1] * w01G + raw[r1G + ((ixG + 1) << 2) + 1] * w11G) >> 8;
 
                         int ixB = (int)sxB, iyB = (int)syB;
-                        double fxB = sxB - ixB, fyB = syB - iyB;
+                        double fxB = sxB - ixB, fyB = baseSy - iyB;
                         int w00B = (int)((1.0 - fxB) * (1.0 - fyB) * 256.0);
                         int w10B = (int)(fxB * (1.0 - fyB) * 256.0);
                         int w01B = (int)((1.0 - fxB) * fyB * 256.0);
                         int w11B = Math.Max(0, 256 - (w00B + w10B + w01B));
                         int r0B = iyB * SurfaceWidth * 4, r1B = (iyB + 1) * SurfaceWidth * 4;
-                        rawB = (pRaw[r0B + (ixB << 2)] * w00B + pRaw[r0B + ((ixB + 1) << 2)] * w10B +
-                                pRaw[r1B + (ixB << 2)] * w01B + pRaw[r1B + ((ixB + 1) << 2)] * w11B) >> 8;
+                        rawB = (raw[r0B + (ixB << 2)] * w00B + raw[r0B + ((ixB + 1) << 2)] * w10B +
+                                raw[r1B + (ixB << 2)] * w01B + raw[r1B + ((ixB + 1) << 2)] * w11B) >> 8;
                     }
                     else
                     {
@@ -10594,9 +10650,9 @@ private static void DrawTabBauhausWeather(
                         int o01 = r1 + (ix << 2);
                         int o11 = r1 + ((ix + 1) << 2);
 
-                        rawB = (pRaw[o00] * w00 + pRaw[o10] * w10 + pRaw[o01] * w01 + pRaw[o11] * w11) >> 8;
-                        rawG = (pRaw[o00 + 1] * w00 + pRaw[o10 + 1] * w10 + pRaw[o01 + 1] * w01 + pRaw[o11 + 1] * w11) >> 8;
-                        rawR = (pRaw[o00 + 2] * w00 + pRaw[o10 + 2] * w10 + pRaw[o01 + 2] * w01 + pRaw[o11 + 2] * w11) >> 8;
+                        rawB = (raw[o00] * w00 + raw[o10] * w10 + raw[o01] * w01 + raw[o11] * w11) >> 8;
+                        rawG = (raw[o00 + 1] * w00 + raw[o10 + 1] * w10 + raw[o01 + 1] * w01 + raw[o11 + 1] * w11) >> 8;
+                        rawR = (raw[o00 + 2] * w00 + raw[o10 + 2] * w10 + raw[o01 + 2] * w01 + raw[o11 + 2] * w11) >> 8;
                     }
 
                     // Velvet Refracted Blur sample from half-res blurred buffers
@@ -10613,16 +10669,16 @@ private static void DrawTabBauhausWeather(
                     int bo01 = ((biy + 1) * HalfWidth + bix) * 4;
                     int bo11 = ((biy + 1) * HalfWidth + bix + 1) * 4;
 
-                    int bStd = (pBlurred[bo00] * bw00 + pBlurred[bo10] * bw10 + pBlurred[bo01] * bw01 + pBlurred[bo11] * bw11) >> 8;
-                    int gStd = (pBlurred[bo00 + 1] * bw00 + pBlurred[bo10 + 1] * bw10 + pBlurred[bo01 + 1] * bw01 + pBlurred[bo11 + 1] * bw11) >> 8;
-                    int rStd = (pBlurred[bo00 + 2] * bw00 + pBlurred[bo10 + 2] * bw10 + pBlurred[bo01 + 2] * bw01 + pBlurred[bo11 + 2] * bw11) >> 8;
+                    int bStd = (blurred[bo00] * bw00 + blurred[bo10] * bw10 + blurred[bo01] * bw01 + blurred[bo11] * bw11) >> 8;
+                    int gStd = (blurred[bo00 + 1] * bw00 + blurred[bo10 + 1] * bw10 + blurred[bo01 + 1] * bw01 + blurred[bo11 + 1] * bw11) >> 8;
+                    int rStd = (blurred[bo00 + 2] * bw00 + blurred[bo10 + 2] * bw10 + blurred[bo01 + 2] * bw01 + blurred[bo11 + 2] * bw11) >> 8;
 
-                    int bHvy = (pHeavyBlurred[bo00] * bw00 + pHeavyBlurred[bo10] * bw10 + pHeavyBlurred[bo01] * bw01 + pHeavyBlurred[bo11] * bw11) >> 8;
-                    int gHvy = (pHeavyBlurred[bo00 + 1] * bw00 + pHeavyBlurred[bo10 + 1] * bw10 + pHeavyBlurred[bo01 + 1] * bw01 + pHeavyBlurred[bo11 + 1] * bw11) >> 8;
-                    int rHvy = (pHeavyBlurred[bo00 + 2] * bw00 + pHeavyBlurred[bo10 + 2] * bw10 + pHeavyBlurred[bo01 + 2] * bw01 + pHeavyBlurred[bo11 + 2] * bw11) >> 8;
+                    int bHvy = (heavyBlurred[bo00] * bw00 + heavyBlurred[bo10] * bw10 + heavyBlurred[bo01] * bw01 + heavyBlurred[bo11] * bw11) >> 8;
+                    int gHvy = (heavyBlurred[bo00 + 1] * bw00 + heavyBlurred[bo10 + 1] * bw10 + heavyBlurred[bo01 + 1] * bw01 + heavyBlurred[bo11 + 1] * bw11) >> 8;
+                    int rHvy = (heavyBlurred[bo00 + 2] * bw00 + heavyBlurred[bo10 + 2] * bw10 + heavyBlurred[bo01 + 2] * bw01 + heavyBlurred[bo11 + 2] * bw11) >> 8;
 
-                    // Deep creamy cascade blur: 75% heavy in center, 100% heavy at edge
-                    double heavyBlend = 0.75 + 0.25 * k;
+                    // Deep creamy cascade blur: amplified heavy blur blend (85% to 100%)
+                    double heavyBlend = 0.85 + 0.15 * k;
                     int blurB = (int)(bStd * (1.0 - heavyBlend) + bHvy * heavyBlend);
                     int blurG = (int)(gStd * (1.0 - heavyBlend) + gHvy * heavyBlend);
                     int blurR = (int)(rStd * (1.0 - heavyBlend) + rHvy * heavyBlend);
@@ -10663,21 +10719,21 @@ private static void DrawTabBauhausWeather(
                         }
                     }
 
-                    // Optical diffusion mix: creamy backdrop blur with higher intensity at edges (86%), decreasing to 70% in center
-                    double diffusionMix = 0.64 + 0.22 * k;
+                    // Optical diffusion mix: enhanced creamy backdrop blur diffusion (82% to 98%)
+                    double diffusionMix = 0.82 + 0.16 * k;
                     if (btnBlurFactor > 0.01)
                     {
-                        diffusionMix = Math.Max(diffusionMix, 0.82 + btnBlurFactor * 0.16);
+                        diffusionMix = Math.Max(diffusionMix, 0.92 + btnBlurFactor * 0.08);
                     }
 
                     int trR = (int)(rawR * (1.0 - diffusionMix) + blurR * diffusionMix);
                     int trG = (int)(rawG * (1.0 - diffusionMix) + blurG * diffusionMix);
                     int trB = (int)(rawB * (1.0 - diffusionMix) + blurB * diffusionMix);
 
-                    // Liquid glass elegant smoked transmission: 78% transmission + refined obsidian body
-                    int rGlass = (trR * 200 + 40 * 56) >> 8;
-                    int gGlass = (trG * 200 + 44 * 56) >> 8;
-                    int bGlass = (trB * 200 + 56 * 56) >> 8;
+                    // Liquid glass elegant smoked transmission: 86% transmission + refined obsidian body
+                    int rGlass = (trR * 220 + 40 * 36) >> 8;
+                    int gGlass = (trG * 220 + 44 * 36) >> 8;
+                    int bGlass = (trB * 220 + 56 * 36) >> 8;
 
                     // Specular Highlights & 3D Glass Illumination: sharpest at edges, tapering smoothly inward
                     double specKey = 0.0;
@@ -10732,9 +10788,9 @@ private static void DrawTabBauhausWeather(
                     uint pR = (uint)((finR * a) / 255);
                     uint pG = (uint)((finG * a) / 255);
                     uint pB = (uint)((finB * a) / 255);
-                    pDst[idx] = ((uint)finalA << 24) | (pR << 16) | (pG << 8) | pB;
+                    dst[idx] = ((uint)finalA << 24) | (pR << 16) | (pG << 8) | pB;
                 }
-            }
+            });
 
             // ========================================================
             // COMPACT CLOCK & ROTATING VINYL COMPOSITING (32-bit ARGB)
@@ -10757,10 +10813,11 @@ private static void DrawTabBauhausWeather(
                 int startX = (int)Math.Round(geom.CenterX - timeW * 0.5);
                 int startY = (int)Math.Round(geom.CenterY - timeH * 0.5);
 
-                for (int ty = 0; ty < timeH; ty++)
+                Parallel.For(0, timeH, ty =>
                 {
+                    uint* dst = (uint*)dstPtr;
                     int dstY = startY + ty;
-                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+                    if (dstY < 0 || dstY >= SurfaceHeight) return;
 
                     int srcRow = ty * timeW;
                     int dstRow = dstY * SurfaceWidth;
@@ -10775,7 +10832,7 @@ private static void DrawTabBauhausWeather(
                         if (srcA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
-                        uint bg = pDst[dstIdx];
+                        uint bg = dst[dstIdx];
                         byte bgA = (byte)(bg >> 24);
                         if (bgA == 0) continue;
 
@@ -10811,9 +10868,9 @@ private static void DrawTabBauhausWeather(
                         uint pG = (uint)Math.Clamp(Math.Round(srcG * textAlpha + bgG * invAlpha), 0, 255);
                         uint pB = (uint)Math.Clamp(Math.Round(srcB * textAlpha + bgB * invAlpha), 0, 255);
 
-                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                        dst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
                     }
-                }
+                });
             }
 
             // ========================================================
@@ -10836,10 +10893,11 @@ private static void DrawTabBauhausWeather(
                 int startX = (int)Math.Round((SurfaceWidth * 0.5) - expW * 0.5);
                 int startY = TopPadding + 8;
 
-                for (int ty = 0; ty < expH; ty++)
+                Parallel.For(0, expH, ty =>
                 {
+                    uint* dst = (uint*)dstPtr;
                     int dstY = startY + ty;
-                    if (dstY < 0 || dstY >= SurfaceHeight) continue;
+                    if (dstY < 0 || dstY >= SurfaceHeight) return;
 
                     int srcRow = ty * expW;
                     int dstRow = dstY * SurfaceWidth;
@@ -10854,7 +10912,7 @@ private static void DrawTabBauhausWeather(
                         if (srcA == 0) continue;
 
                         int dstIdx = dstRow + dstX;
-                        uint bg = pDst[dstIdx];
+                        uint bg = dst[dstIdx];
                         byte bgA = (byte)(bg >> 24);
                         if (bgA == 0) continue;
 
@@ -10889,9 +10947,9 @@ private static void DrawTabBauhausWeather(
                         uint pG = (uint)Math.Clamp(Math.Round(srcG * finalAlpha + bgG * invAlpha), 0, 255);
                         uint pB = (uint)Math.Clamp(Math.Round(srcB * finalAlpha + bgB * invAlpha), 0, 255);
 
-                        pDst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
+                        dst[dstIdx] = ((uint)bgA << 24) | (pR << 16) | (pG << 8) | pB;
                     }
-                }
+                });
             }
         }
 

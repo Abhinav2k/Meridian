@@ -1,12 +1,11 @@
-LIQUID GLASS CIRCLE — AGENT HANDOFF CONTEXT
-============================================
+MERIDIAN DYNAMIC ISLAND — AGENT HANDOFF CONTEXT
+===============================================
 
 User goal
 ---------
-Build a medium-sized draggable liquid-glass circle that lives directly on the
-desktop, not inside a normal framed window. It should feel live while dragging,
-with the desktop visible through it, blur/refraction, and an iPhone-like liquid
-glass appearance.
+Build a luxury dynamic island desktop overlay (Meridian) that lives directly on the
+desktop, not inside a normal framed window. It should feel live, with the desktop
+visible through it, blur/refraction, and an iPhone / visionOS liquid glass appearance.
 
 User preference / working rule
 ------------------------------
@@ -14,70 +13,35 @@ If a quality gap is technically doable, implement it instead of presenting it
 as a limitation. Continue iterating and testing. Do not leave known doable work
 as a caveat.
 
-Starting state
---------------
-The workspace started effectively empty (only OMX runtime state existed and
-there was no git repository). A fresh Windows desktop prototype was created.
-The machine has .NET SDK 10.0.203 and Windows Desktop runtime installed.
-
-Implementation history
-----------------------
-1. First pass used WPF:
-   - Full-screen transparent borderless Window.
-   - 280px circular visual with gradient layers, rings, drop shadow, and
-     animated sheen.
-   - Native WM_NCHITTEST returned HTTRANSPARENT outside the circle.
-   - Dragging and Escape-to-close were implemented.
-   - Added live CopyFromScreen texture capture and initial pixel refraction.
-
-2. WPF startup/visibility was unreliable in the execution environment:
-   - The process stayed alive but the native WPF window was hidden/zero-sized.
-   - Explicit startup, activation, SetWindowPos, and ShowWindow attempts did
-     not produce a usable visible native surface.
-
-3. Current implementation switched to native WinForms:
-   - The old WPF files were deleted: App.xaml, App.xaml.cs, MainWindow.xaml,
-     MainWindow.xaml.cs.
-   - Current entry point is Program.cs.
-   - Current overlay implementation is OverlayForm.cs.
-
 Current project
 ---------------
-LiquidGlassCircle.csproj:
-   - TargetFramework: net10.0-windows
+Meridian.csproj:
+   - TargetFramework: net10.0-windows10.0.19041.0
    - OutputType: WinExe
+   - AssemblyName: Meridian
+   - RootNamespace: Meridian
+   - ApplicationHighDpiMode: PerMonitorV2
    - UseWindowsForms: true
    - UseWPF: false
-   - AllowUnsafeBlocks: true (currently not required by the final code but kept
-     available for future pixel/GPU optimizations)
+   - AllowUnsafeBlocks: true
    - Nullable and implicit usings enabled.
 
 Program.cs:
    - STAThread entry point.
    - ApplicationConfiguration.Initialize().
-   - Runs Application.Run(new OverlayForm()).
+   - Manages --settings switch and normal dynamic island overlay execution.
+   - Automatically registers desktop shortcuts (Meridian Settings.lnk, Meridian Island.lnk).
 
 Overlay behavior
 ----------------
 OverlayForm is:
    - Borderless, topmost, hidden from taskbar and Alt+Tab.
    - Positioned permanently at the topmost center of the screen with top padding.
-   - Target shape is a sleek curved rectangle (pill): 500px width x 64px height with 32px corner radius.
-   - Dynamic spawn & morph animation: Spawns as a tiny liquid droplet (radius 14px) from above the top screen edge, drops down to center with an elastic spring, and fluidly blooms/morphs into the full-width liquid glass pill.
-   - Draggability toggled off to maintain permanent top-center status.
+   - Dynamic spawn & morph animation: Spawns as a tiny liquid droplet, drops down with an elastic spring, and fluidly blooms/morphs into the compact clock pill or expands into full media / weather / system cards.
    - Escape closes the app.
    - Space or Left-Click on the pill replays the spawn and morph animation.
-   - S key saves a high-resolution PNG snapshot (liquid-glass-snapshot.png).
+   - S key saves a high-resolution PNG snapshot (meridian-snapshot.png).
    - WmNcHitTest returns HTTRANSPARENT outside the curved pill so underlying apps and browser tabs remain fully clickable and interactive.
-
-Live glass pipeline
--------------------
-   - Dedicated high-priority render thread running at ~120 FPS (8ms interval).
-   - Direct GPU DWM Compositing via Win32 UpdateLayeredWindow with per-pixel 32-bit premultiplied ARGB.
-   - Multi-pass separable Gaussian blur (2 passes) applied in real-time.
-   - Dynamic Inigo Quilez Rounded Box SDF evaluates exact distance fields during morphing.
-   - Real-time meniscus lens refraction, subpixel anti-aliasing, crystal tint, ambient dome light, and crisp bevel specular rim.
-   - Zero per-frame memory allocation.
 
 Commands
 --------
@@ -88,12 +52,6 @@ From the project directory:
 
 Direct executable:
 
-    .\bin\Debug\net10.0-windows\LiquidGlassCircle.exe
-
-Validation completed
----------------------
-   - dotnet build completed successfully with 0 warnings and 0 errors.
-   - Verified 120 FPS continuous GPU compositing with zero GC pressure.
-   - Git repository initialized with clean history and commits.
+    .\bin\Release\net10.0-windows10.0.19041.0\Meridian.exe
 
 

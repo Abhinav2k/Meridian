@@ -6,7 +6,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
-namespace LiquidGlassCircle;
+namespace Meridian;
 
 public sealed class PlayerItem
 {
@@ -133,6 +133,29 @@ public static class PlayerService
         catch (Exception ex)
         {
             Debug.WriteLine($"[PlayerConfig] Failed to launch {player.Url}: {ex.Message}");
+        }
+    }
+
+    public static void SavePlayers(IEnumerable<PlayerItem> players)
+    {
+        lock (_lock)
+        {
+            try
+            {
+                string configPath = FindConfigFile() ?? Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "player_config.json");
+                var list = new List<PlayerItem>(players);
+                var data = new { players = list };
+                string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(configPath, json);
+                _cachedPlayers = list;
+                _lastWriteTimeUtc = File.GetLastWriteTimeUtc(configPath);
+                _lastLoadedUtc = DateTime.UtcNow;
+                PlayersChanged?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[PlayerConfig] Save error: {ex.Message}");
+            }
         }
     }
 

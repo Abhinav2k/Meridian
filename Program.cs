@@ -1,7 +1,7 @@
 using System;
 using System.Windows.Forms;
 
-namespace LiquidGlassCircle;
+namespace Meridian;
 
 internal static class Program
 {
@@ -24,7 +24,40 @@ internal static class Program
         try
         {
             ApplicationConfiguration.Initialize();
-            Application.Run(new OverlayForm());
+
+            bool isSettings = false;
+            if (args != null && args.Length > 0)
+            {
+                foreach (var arg in args)
+                {
+                    if (arg.Equals("--settings", StringComparison.OrdinalIgnoreCase) ||
+                        arg.Equals("-settings", StringComparison.OrdinalIgnoreCase) ||
+                        arg.Equals("/settings", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isSettings = true;
+                        break;
+                    }
+                }
+            }
+
+            // Ensure desktop shortcuts are created on first run
+            if (!AppSettings.IsDesktopShortcutPresent("Meridian Settings.lnk"))
+            {
+                AppSettings.CreateDesktopShortcut("Meridian Settings.lnk", "--settings", "Meridian Settings & Control");
+            }
+            if (!AppSettings.IsDesktopShortcutPresent("Meridian Island.lnk"))
+            {
+                AppSettings.CreateDesktopShortcut("Meridian Island.lnk", "", "Meridian Dynamic Island");
+            }
+
+            if (isSettings)
+            {
+                Application.Run(new SettingsForm());
+            }
+            else
+            {
+                Application.Run(new OverlayForm());
+            }
         }
         catch (Exception ex)
         {

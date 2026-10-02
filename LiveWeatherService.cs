@@ -7,7 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace LiquidGlassCircle;
+namespace Meridian;
 
 public class WeatherModel
 {
@@ -106,6 +106,39 @@ public static class LiveWeatherService
 
         // Default location: South Aryad, Alappuzha, Kerala
         return (false, "SOUTH ARYAD", "IN", 9.5255, 76.3310);
+    }
+
+    public static void SaveLocationConfig(bool useAuto, string city, string country, double lat, double lon)
+    {
+        try
+        {
+            string[] searchPaths =
+            {
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "weather_config.json"),
+                Path.Combine(Environment.CurrentDirectory, "weather_config.json")
+            };
+            string targetPath = searchPaths[0];
+            foreach (var p in searchPaths)
+            {
+                if (File.Exists(p)) { targetPath = p; break; }
+            }
+
+            var data = new
+            {
+                use_auto_location = useAuto,
+                city = city,
+                country = country,
+                latitude = lat,
+                longitude = lon
+            };
+            string json = JsonSerializer.Serialize(data, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(targetPath, json);
+            _ = RefreshLiveWeatherAsync();
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[LiveWeather] Config save error: {ex.Message}");
+        }
     }
 
     public static async Task RefreshLiveWeatherAsync()

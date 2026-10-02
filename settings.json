@@ -1,0 +1,9 @@
+{
+  "MusicNotchEnabled": true,
+  "MusicTimeDisplaySeconds": 30.0,
+  "IdleDespawnSeconds": 60.0,
+  "RunOnStartup": false,
+  "WeatherRefreshMinutes": 15,
+  "BackdropType": 3,
+  "WindowOpacity": 0.85
+}

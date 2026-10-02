@@ -1,4 +1,4 @@
-# Liquid Glass Overlay
+# Meridian Dynamic Island
 
 A high-performance Windows desktop overlay featuring a dynamic morphing liquid glass pill with a live real-time clock, frosted diffusion, meniscus refraction, and interactive mouse hover expansion.
 
@@ -31,7 +31,7 @@ The app is a transparent, borderless desktop overlay: there is no visible host w
 - **Replay from Start**:
   - Press **`R`** to restart the spawn drop from $t = 0$.
 - **Snapshot**:
-  - Press **`S`** to export a crystal-clear PNG snapshot (`liquid-glass-snapshot.png`).
+  - Press **`S`** to export a crystal-clear PNG snapshot (`meridian-snapshot.png`).
 - **Quit**:
   - Press **`Esc`** or **Right-Click**.
 
@@ -44,7 +44,7 @@ dotnet run
 Or launch the built executable directly:
 
 ```powershell
-.\bin\Debug\net10.0-windows\LiquidGlassCircle.exe
+.\bin\Release\net10.0-windows10.0.19041.0\Meridian.exe
 ```
 
 
