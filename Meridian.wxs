@@ -1,0 +1,91 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Meridian Dynamic Island"
+           Manufacturer="Meridian"
+           Version="1.0.0"
+           UpgradeCode="4A1B2C3D-5E6F-7A8B-9C0D-1E2F3A4B5C6D"
+           Scope="perUserOrMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Meridian is already installed." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="MeridianIcon" SourceFile="Assets\meridian.ico" />
+    <Property Id="ARPPRODUCTICON" Value="MeridianIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Abhinav2k/Meridian" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Meridian">
+        <Directory Id="AppAssetsFolder" Name="Assets" />
+        <Directory Id="AppFontsFolder" Name="Fonts" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Meridian" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+
+    <ComponentGroup Id="ProductComponents">
+      <!-- Main Executable & Shortcuts -->
+      <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="A1B2C3D4-E5F6-4A5B-8C9D-0E1F2A3B4C5D">
+        <File Id="MeridianExe"
+              Source="publish\win-x64\Meridian.exe"
+              KeyPath="yes">
+          <!-- Start Menu Shortcut -->
+          <Shortcut Id="StartMenuShortcut"
+                    Directory="ApplicationProgramsFolder"
+                    Name="Meridian"
+                    Description="Meridian Dynamic Island for Windows"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="MeridianIcon"
+                    Advertise="no" />
+          <!-- Desktop Shortcut -->
+          <Shortcut Id="DesktopShortcut"
+                    Directory="DesktopFolder"
+                    Name="Meridian"
+                    Description="Meridian Dynamic Island for Windows"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="MeridianIcon"
+                    Advertise="no" />
+        </File>
+      </Component>
+
+      <!-- Configuration Files -->
+      <Component Id="ConfigFiles" Directory="INSTALLFOLDER" Guid="B2C3D4E5-F6A7-4B5C-8D9E-1F2A3B4C5D6E">
+        <File Id="PlayerConfig" Source="publish\win-x64\player_config.json" KeyPath="yes" />
+        <File Id="SettingsConfig" Source="publish\win-x64\settings.json" />
+        <File Id="WeatherConfig" Source="publish\win-x64\weather_config.json" />
+      </Component>
+
+      <!-- Asset Files -->
+      <Component Id="AssetFiles" Directory="AppAssetsFolder" Guid="C3D4E5F6-A7B8-4C5D-9E0F-2A3B4C5D6E7F">
+        <File Id="MeridianLogoPng" Source="publish\win-x64\Assets\meridian-logo.png" KeyPath="yes" />
+        <File Id="MeridianLogoSvg" Source="publish\win-x64\Assets\meridian-logo.svg" />
+        <File Id="MeridianIco" Source="publish\win-x64\Assets\meridian.ico" />
+      </Component>
+
+      <!-- Font Files -->
+      <Component Id="FontFiles" Directory="AppFontsFolder" Guid="D4E5F6A7-B8C9-4D5E-0F1A-3B4C5D6E7F8A">
+        <File Id="FontEternalo" Source="publish\win-x64\Fonts\Eternalo.ttf" KeyPath="yes" />
+        <File Id="FontSFPro" Source="publish\win-x64\Fonts\SF-Pro.ttf" />
+        <File Id="FontSFProItalic" Source="publish\win-x64\Fonts\SF-Pro-Italic.ttf" />
+      </Component>
+
+      <!-- Start Menu Cleanup -->
+      <Component Id="ProgramMenuDir" Directory="ApplicationProgramsFolder" Guid="E5F6A7B8-C9D0-4E5F-1A2B-4C5D6E7F8A9B">
+        <RemoveFolder Id="CleanUpProgramMenuDir" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\Meridian" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Basic UI Setup -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+
+    <Feature Id="MainFeature" Title="Meridian" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+  </Package>
+</Wix>

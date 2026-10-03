@@ -16,3 +16,7 @@ screenshot_music_*.png
 screenshot_weather_*.png
 pill_screenshot_*.png
 weather_*.jpg
+publish/
+*.msi
+*.zip
+*.wixpdb
