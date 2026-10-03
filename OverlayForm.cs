@@ -1787,14 +1787,14 @@ internal sealed class OverlayForm : Form
                     UpdateTimeMaskIfNeeded(force: true);
                 }
             }
-            else if (e.KeyCode is Keys.Right or Keys.N)
+            else if (e.KeyCode == Keys.Right)
             {
                 if (_sysMedia.HasActiveSession)
                 {
                     await _sysMedia.SkipNextAsync();
                 }
             }
-            else if (e.KeyCode is Keys.Left or Keys.P)
+            else if (e.KeyCode == Keys.Left)
             {
                 if (_sysMedia.HasActiveSession)
                 {
@@ -1845,6 +1845,10 @@ internal sealed class OverlayForm : Form
             {
                 // Debug: cycle through all 15 weather conditions (S → 1 → 2 → … → 15 → live)
                 CycleWeatherCardStyle();
+            }
+            else if (e.KeyCode == Keys.W)
+            {
+                SwitchTab(_activeTab == TabWeather ? TabMusic : TabWeather);
             }
         };
 

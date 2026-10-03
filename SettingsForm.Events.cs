@@ -134,10 +134,10 @@ public sealed partial class SettingsForm
         int sec2Y = card1Y + card1H + 20;
         int card2Y = sec2Y + 20;
 
-        // Row 1: Music Track Change Window Segmented Control (x + cw - 380, card2Y + 18, 364, 28)
-        int seg1X = cx + cw - 380;
-        int seg1Y = card2Y + 18;
-        int seg1W = 364;
+        // Row 1: Music Track Change Window Segmented Control (cx + 16, card2Y + 54, cw - 32, 28)
+        int seg1X = cx + 16;
+        int seg1Y = card2Y + 54;
+        int seg1W = cw - 32;
         int seg1H = 28;
 
         if (x >= seg1X && x <= seg1X + seg1W && y >= seg1Y && y <= seg1Y + seg1H)
@@ -155,10 +155,10 @@ public sealed partial class SettingsForm
             }
         }
 
-        // Row 2: Idle Despawn Segmented Control (x + cw - 380, card2Y + 76 + 18, 364, 28)
-        int seg2X = cx + cw - 380;
-        int seg2Y = card2Y + 76 + 18;
-        int seg2W = 364;
+        // Row 2: Idle Despawn Segmented Control (cx + 16, card2Y + 96 + 54, cw - 32, 28)
+        int seg2X = cx + 16;
+        int seg2Y = card2Y + 96 + 54;
+        int seg2W = cw - 32;
         int seg2H = 28;
 
         if (x >= seg2X && x <= seg2X + seg2W && y >= seg2Y && y <= seg2Y + seg2H)
@@ -413,10 +413,10 @@ public sealed partial class SettingsForm
         int sec2Y = card1Y + card1H + 20;
         int card2Y = sec2Y + 20;
 
-        // Row 1: Backdrop Segmented Control (cx + cw - 280, card2Y + 18, 264, 28)
-        int bSegX = cx + cw - 280;
-        int bSegY = card2Y + 18;
-        int bSegW = 264;
+        // Row 1: Backdrop Segmented Control (cx + 16, card2Y + 54, cw - 32, 28)
+        int bSegX = cx + 16;
+        int bSegY = card2Y + 54;
+        int bSegW = cw - 32;
         int bSegH = 28;
         if (x >= bSegX && x <= bSegX + bSegW && y >= bSegY && y <= bSegY + bSegH)
         {
@@ -430,10 +430,10 @@ public sealed partial class SettingsForm
             }
         }
 
-        // Row 2: Translucency Segmented Control (cx + cw - 380, card2Y + 74 + 18, 364, 28)
-        int tSegX = cx + cw - 380;
-        int tSegY = card2Y + 74 + 18;
-        int tSegW = 364;
+        // Row 2: Translucency Segmented Control (cx + 16, card2Y + 96 + 54, cw - 32, 28)
+        int tSegX = cx + 16;
+        int tSegY = card2Y + 96 + 54;
+        int tSegW = cw - 32;
         int tSegH = 28;
         if (x >= tSegX && x <= tSegX + tSegW && y >= tSegY && y <= tSegY + tSegH)
         {

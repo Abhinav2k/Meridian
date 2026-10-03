@@ -199,9 +199,10 @@ Get-Process Meridian
 ### Hotkeys & Shortcuts
 - `Space`: Toggle Play / Pause on active media session (or simulated media).
 - `S`: Cycle Bauhaus weather conditions (`1 -> 2 -> ... -> 15 -> Live`).
+- `W`: Toggle Weather & Music Panels.
 - `1` / `2` / `3` / `4`: Switch tabs (Home / Music / Weather / Chrono).
-- `Right` / `N`: Next track.
-- `Left` / `P`: Previous track.
+- `Right`: Next track.
+- `Left`: Previous track.
 - `Z` / `U`: Shuffle toggle.
 - `Escape`: Exit application.
 - `Right-Click`: Close application.
@@ -211,7 +212,20 @@ Get-Process Meridian
 ## 5. Working Tree & Commit Status
 - **Git Branch**: `master`
 - **Recent Commits**:
+  - `796a6d8`: feat: design and integrate official Meridian Dynamic Island branding logo
+  - `7dae885`: feat: redesign Meridian Settings to macOS System Settings UI language
+  - `b4bce19`: feat: rename project to Meridian, eliminate white titlebar, amplify blur & add Per-Monitor V2 High-DPI support
   - `b5d7e11`: docs: update handover.md with attached notch, curved fillets, weather fixes, and rules
-  - `7728da7`: Added curved concave fillet ears ($R_f=14\text{px}$) to docked notch against screen bezel.
-  - `330cff4`: Established screenshot guardrail in `GEMINI.md`.
-  - `e717c32`: Attached notch mode for music, weather artwork fixes, home timer UI, S key restore.
+
+---
+
+## 6. Completed Tasks in Current Session
+1. **Removed `N` and `P` Shortcuts**:
+   - Removed `Keys.N` and `Keys.P` track skipping from `OverlayForm.cs` so normal keyboard typing never inadvertently skips audio tracks. Dedicated navigation arrow keys (`Right` / `Left`) remain intact.
+   - Removed `N / P` shortcut row from the Keyboard Shortcuts Reference card in `SettingsForm.UI.cs` and made card height dynamic (`shortcuts.Length * 38`). Added `W` hotkey for toggling Weather/Music panels.
+2. **Fixed Display & Timeout Durations Overlap in Settings**:
+   - Re-architected segmented control cards in `SettingsForm.UI.cs` to a stacked macOS System Settings layout: Titles and subtitles occupy the full card width, and segmented controls span across `w - 32` (560px) underneath.
+   - Synchronized mouse hit-testing in `SettingsForm.Events.cs` (`HandleClickIslandNotch` and `HandleClickShortcuts`) to match the new stacked bounding rectangles.
+   - Verified clean zero-overlap presentation across all DPI scales.
+
+

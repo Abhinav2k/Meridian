@@ -364,10 +364,10 @@ public sealed partial class SettingsForm
         RenderSectionHeader(g, "DISPLAY & TIMEOUT DURATIONS", x, sec2Y);
 
         int card2Y = sec2Y + 20;
-        int card2H = 152;
+        int card2H = 192;
         RenderMacGroupedCard(g, x, card2Y, w, card2H);
 
-        // Row 1: Music Track Change Window
+        // Row 1: Music Track Change Window (Stacked Layout)
         int row1Y = card2Y;
         g.DrawString("Music Start & Track Change Display Duration", fontBody, brushWhite, x + 16, row1Y + 12);
         g.DrawString("Clock and media details visibility before docking flush into the notch", fontSub, brushMuted, x + 16, row1Y + 32);
@@ -387,13 +387,13 @@ public sealed partial class SettingsForm
         {
             segItems1[i] = (timerOptions[i].label, Math.Abs(curSecs - timerOptions[i].val) < 0.1);
         }
-        RenderMacSegmentedControl(g, x + w - 380, row1Y + 18, 364, 28, segItems1);
+        RenderMacSegmentedControl(g, x + 16, row1Y + 54, w - 32, 28, segItems1);
 
         // Row Divider
-        RenderRowDivider(g, x, card2Y + 76, w);
+        RenderRowDivider(g, x, card2Y + 96, w);
 
-        // Row 2: Idle Despawn Duration
-        int row2Y = card2Y + 76;
+        // Row 2: Idle Despawn Duration (Stacked Layout)
+        int row2Y = card2Y + 96;
         g.DrawString("Idle Despawn & Unhover Collapse Duration", fontBody, brushWhite, x + 16, row2Y + 12);
         g.DrawString("Duration before expanded island returns to the compact floating pill", fontSub, brushMuted, x + 16, row2Y + 32);
 
@@ -412,7 +412,7 @@ public sealed partial class SettingsForm
         {
             segItems2[i] = (idleOptions[i].label, Math.Abs(curIdle - idleOptions[i].val) < 0.1);
         }
-        RenderMacSegmentedControl(g, x + w - 380, row2Y + 18, 364, 28, segItems2);
+        RenderMacSegmentedControl(g, x + 16, row2Y + 54, w - 32, 28, segItems2);
     }
 
     // ----------------------------------------------------
@@ -625,13 +625,13 @@ public sealed partial class SettingsForm
         RenderSectionHeader(g, "WINDOW BACKDROP & TRANSLUCENCY", x, sec2Y);
 
         int card2Y = sec2Y + 20;
-        int card2H = 148;
+        int card2H = 192;
         RenderMacGroupedCard(g, x, card2Y, w, card2H);
 
-        // Row 1: Backdrop Type
+        // Row 1: Backdrop Type (Stacked Layout)
         int bRowY = card2Y;
-        g.DrawString("Backdrop Material (Windows 11 DWM)", fontBody, brushWhite, x + 16, bRowY + 14);
-        g.DrawString("Translucent Acrylic blurs apps & desktop; Mica samples wallpaper", fontSub, brushMuted, x + 16, bRowY + 34);
+        g.DrawString("Backdrop Material (Windows 11 DWM)", fontBody, brushWhite, x + 16, bRowY + 12);
+        g.DrawString("Translucent Acrylic blurs apps & desktop; Mica samples wallpaper", fontSub, brushMuted, x + 16, bRowY + 32);
 
         int curBackdrop = AppSettings.Current.BackdropType;
         (string bLabel, int bVal)[] backdropOptions =
@@ -645,14 +645,14 @@ public sealed partial class SettingsForm
         {
             segBackdrop[i] = (backdropOptions[i].bLabel, curBackdrop == backdropOptions[i].bVal);
         }
-        RenderMacSegmentedControl(g, x + w - 280, bRowY + 18, 264, 28, segBackdrop);
+        RenderMacSegmentedControl(g, x + 16, bRowY + 54, w - 32, 28, segBackdrop);
 
-        RenderRowDivider(g, x, card2Y + 74, w);
+        RenderRowDivider(g, x, card2Y + 96, w);
 
-        // Row 2: Translucency Opacity
-        int tRowY = card2Y + 74;
-        g.DrawString("Glass Translucency & Opacity", fontBody, brushWhite, x + 16, tRowY + 14);
-        g.DrawString("Adjusts see-through opacity across the window and background blur", fontSub, brushMuted, x + 16, tRowY + 34);
+        // Row 2: Translucency Opacity (Stacked Layout)
+        int tRowY = card2Y + 96;
+        g.DrawString("Glass Translucency & Opacity", fontBody, brushWhite, x + 16, tRowY + 12);
+        g.DrawString("Adjusts see-through opacity across the window and background blur", fontSub, brushMuted, x + 16, tRowY + 32);
 
         double curOpacity = AppSettings.Current.WindowOpacity;
         (string tLabel, double tVal)[] translucencyOptions =
@@ -667,7 +667,7 @@ public sealed partial class SettingsForm
         {
             segTrans[i] = (translucencyOptions[i].tLabel, Math.Abs(curOpacity - translucencyOptions[i].tVal) < 0.035);
         }
-        RenderMacSegmentedControl(g, x + w - 380, tRowY + 18, 364, 28, segTrans);
+        RenderMacSegmentedControl(g, x + 16, tRowY + 54, w - 32, 28, segTrans);
     }
 
     // ----------------------------------------------------
@@ -710,17 +710,16 @@ public sealed partial class SettingsForm
         RenderSectionHeader(g, "KEYBOARD SHORTCUTS REFERENCE", x, sec2Y);
 
         int card2Y = sec2Y + 20;
-        int card2H = 190;
-        RenderMacGroupedCard(g, x, card2Y, w, card2H);
-
         (string key, string desc)[] shortcuts =
         {
             ("S", "Toggle Sleep / Ambient Mode"),
             ("W", "Toggle Weather & Music Panels"),
             ("Space", "Play / Pause Active Media"),
-            ("N / P", "Next Track / Previous Track"),
             ("Esc", "Dock Island into Bezel Notch / Minimize")
         };
+
+        int card2H = shortcuts.Length * 38;
+        RenderMacGroupedCard(g, x, card2Y, w, card2H);
 
         for (int i = 0; i < shortcuts.Length; i++)
         {
